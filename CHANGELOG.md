@@ -9,19 +9,23 @@ what consumers pin against.
 Every entry that adds, renames, removes, or changes the behaviour of a public symbol must also
 satisfy the public-API change checklist in `docs/IMPLEMENTATION_PLAN.md` Appendix B.
 
-## [0.1.1] -- unreleased
+## [0.1.1] — 2026-10-17
 
 The first release under the name `robustmargin`, and the first on PyPI (`decisions/0027`). It
 contains everything prepared for marginkit 0.1.1, the fixes listed under Fixed, and the rename and
-schema change below. `0.1.1rc1` is a TestPyPI-only dry run of the release pipeline (build, Trusted
+schema change below. The release pipeline was dry-run as `0.1.1rc1` on TestPyPI (build, Trusted
 Publishing upload, install check); pre-release tags never reach PyPI.
 
 The version continues the repository's tag history, because the tag `v0.1.0` is marginkit 0.1.0
 and stays where it is. That is why a breaking release has a patch number: no version range can
 span two distribution names, so the new name is what announces the break.
 
-**This release is breaking for every user of marginkit 0.1.0.** No statistical method changed and
-no reported number moved.
+**This release is breaking for every user of marginkit 0.1.0.** It also changes reported numbers in
+two places, both described under Fixed:
+- the exact bounds for a failed fit (`decisions/0028`);
+- log-axis fits with `upper=1.0` fixed, an estimated `lower` and a zero-severity control.
+
+Re-run any analysis that depends on either.
 
 ### Renamed
 - The distribution and the import package are now `robustmargin`, and `marginkit` is gone. There is
@@ -30,7 +34,7 @@ no reported number moved.
   package.
 - Every public module path follows: `robustmargin.report`, `robustmargin.testing`, and so on.
   Exported names, the warning tokens (`NON_MONOTONE: `, `NON_MONOTONE_DATA: `, `OVERDISPERSED: `,
-  `SPARSE_CELLS: `), exception types and raise conditions are unchanged.
+  `SPARSE_CELLS: `), exception types and raise conditions are unchanged by the rename.
 - The repository is `github.com/robustmargin/robustmargin`; `[project.urls]` and the README's
   links point there.
 
@@ -48,6 +52,17 @@ no reported number moved.
   `"1"` or `"2"`. That check existed only for the v1/v2 reader, which is gone. This is a
   loosening: nothing that constructed before fails now.
 
+### Changed -- `Fit` validates the order of its cells
+- `Fit` now raises `ValueError` unless the severities in `cells` are strictly increasing: sorted
+  ascending, with no duplicate severity. The message names the first pair out of order.
+  `report.from_dict` applies the same check, so a card with unsorted cells is rejected on read.
+- Every exact-test rule reads `cells` in order, so an unsorted `Fit` used to make `threshold()`
+  test the wrong levels with no error.
+- `fit_dose_response` always produced sorted cells, and so does every card written from its
+  results or from the `robustmargin.testing` fakes. Only a `Fit` built by hand, or a card edited by
+  hand, is affected. This tightens an invariant,
+  which is a breaking change for that case (`decisions/0029`).
+
 ### Migration from marginkit 0.1.0
 - Replace any `marginkit @ git+...` requirement with `robustmargin>=0.1,<0.2`, and pin the exact
   version in your lockfile.
@@ -58,6 +73,10 @@ no reported number moved.
   prose, not a token to match on.
 - Drop or update any explicit `schema_version` you pass to a result constructor. An object
   built with `"1"`, `"2"` or `"3"` still serialises, but the result can't be read back.
+- If you construct a `Fit` yourself, or edit `cells` in a stored card, give one cell per
+  severity, in increasing order. Pass `cells=obs.cells()` rather than building the tuple by hand.
+- Re-run any analysis that reads `lo`/`hi` from a `SEPARATION`/`NOT_CONVERGED` threshold
+  (`decisions/0028`).
 
 ### Changed
 - The README installs with `pip install robustmargin`. Its links to `docs/PROVENANCE.md`,
@@ -87,7 +106,8 @@ no reported number moved.
 - Warning and exception messages no longer cite internal design documents (decision records,
   plan sections, decision labels). Only the prose changed: the leading tokens `NON_MONOTONE: `,
   `NON_MONOTONE_DATA: `, `OVERDISPERSED: ` and `SPARSE_CELLS: ` are byte-identical, and every
-  exception type and raise condition is unchanged except as noted under Fixed. Match warnings on
+  exception type and raise condition is unchanged except as noted under Fixed and under "Changed --
+  `Fit` validates the order of its cells". Match warnings on
   the token (`w.startswith("NON_MONOTONE: ")`), not on the text after it.
 - The `NON_MONOTONE: ` warning now says precisely which bounds are not reported: the exact
   one-sided bounds. On a converged fit any `lo`/`hi` shown come from the fitted curve; on a failed

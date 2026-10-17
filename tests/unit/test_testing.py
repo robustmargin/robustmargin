@@ -118,6 +118,52 @@ class TestFakeFit:
         assert fit.provenance == {"note": "test"}
 
 
+def _severities_strictly_increase(fit: Fit) -> bool:
+    severities = [cell.severity for cell in fit.cells]
+    return all(a < b for a, b in zip(severities, severities[1:], strict=False))
+
+
+class TestFakeCellsAreStrictlyAscending:
+    """decisions/0029: ``Fit`` rejects ``cells`` that are not strictly ascending in severity, and
+    the fakes are what a consumer builds its own fixtures from. Each must keep producing sorted,
+    duplicate-free cells -- on every status, and in the fits nested inside a threshold or a
+    ratio. (Were a fake to drift, ``Fit`` would already refuse to construct it; these tests say
+    what the property is, and that more than one cell is exercised, so a one-cell fake could
+    never satisfy them vacuously.)"""
+
+    @pytest.mark.parametrize("status", _FIT_STATUSES)
+    def test_fake_fit_cells_are_strictly_ascending_on_every_status(self, status: Status) -> None:
+        fit = fake_fit(status=status)
+
+        assert len(fit.cells) >= 2
+        assert _severities_strictly_increase(fit)
+
+    @pytest.mark.parametrize(("status", "censoring"), _ALLOWED_THRESHOLD_COMBINATIONS)
+    def test_fake_threshold_fit_cells_are_strictly_ascending(
+        self, status: Status, censoring: Censoring
+    ) -> None:
+        threshold = fake_threshold(status=status, censoring=censoring)
+
+        assert len(threshold.fit.cells) >= 2
+        assert _severities_strictly_increase(threshold.fit)
+
+    def test_fake_ratio_operand_fit_cells_are_strictly_ascending(self) -> None:
+        ratio = fake_ratio()
+
+        for operand in (ratio.threshold_a, ratio.threshold_b):
+            assert len(operand.fit.cells) >= 2
+            assert _severities_strictly_increase(operand.fit)
+
+    @pytest.mark.parametrize("status", _FIT_STATUSES)
+    def test_fake_fit_cells_survive_a_json_round_trip_in_order(self, status: Status) -> None:
+        fit = fake_fit(status=status)
+
+        rebuilt = from_dict(to_dict(fit))
+
+        assert isinstance(rebuilt, Fit)
+        assert rebuilt.cells == fit.cells
+
+
 def _observations_from_fit_cells(fit: Fit) -> Observations:
     return Observations.from_counts(
         fit.axis,

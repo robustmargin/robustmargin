@@ -15,6 +15,7 @@ from __future__ import annotations
 import dataclasses
 import json
 from collections.abc import Callable
+from typing import Any, cast
 
 import jsonschema
 import pytest
@@ -622,6 +623,122 @@ class TestFromDictNestedUnknownFieldNamesFieldAndBothVersions:
         assert "not_a_real_field_at_all" in message
         assert "9.9.9" in message
         assert robustmargin.__version__ in message
+
+
+# ------------------------------------------------------------------------------------------
+# decisions/0029: ``Fit.cells`` must be strictly ascending in severity, and ``from_dict`` reaches
+# that check through ``Fit`` construction, so a hand-edited card whose ``cells`` are out of order
+# is rejected on read instead of silently making ``threshold()`` test the wrong levels. Every
+# card ``to_dict`` writes is already sorted (``cells`` is kept in order), so no existing card is
+# affected. Each test first loads the unmodified payload, so the rejection is known to come from
+# the edit and not from some other defect in the fixture.
+# ------------------------------------------------------------------------------------------
+
+
+def _payload(result: Fit | Threshold | Ratio | Scorecard) -> dict[str, Any]:
+    """``to_dict`` with the nested structure typed loosely, so a test can edit a card by hand."""
+    return cast("dict[str, Any]", to_dict(result))
+
+
+def _reverse_cells(fit_payload: dict[str, Any]) -> None:
+    fit_payload["cells"] = list(reversed(fit_payload["cells"]))
+
+
+def _duplicate_a_severity(fit_payload: dict[str, Any]) -> None:
+    """Give the third cell the second cell's severity (counts left alone), so two cells share a
+    severity and the order is otherwise untouched. The zero-severity control is deliberately not
+    the one duplicated: giving a failing cell severity 0.0 would be rejected by a different rule
+    (a failing control under the fake's fixed ``upper = 1.0`` on a log axis), and the test would
+    pass for the wrong reason."""
+    fit_payload["cells"][2]["severity"] = fit_payload["cells"][1]["severity"]
+
+
+class TestFromDictRejectsFitCellsNotStrictlyAscending:
+    def test_bare_fit_card_with_reversed_cells_is_rejected(self) -> None:
+        payload = _payload(fake_fit())
+        from_dict(payload)
+        _reverse_cells(payload)
+
+        with pytest.raises(ValueError):
+            from_dict(payload)
+
+    @pytest.mark.parametrize(
+        "status", [Status.SEPARATION, Status.NOT_CONVERGED], ids=lambda s: s.name
+    )
+    def test_bare_failed_fit_card_with_reversed_cells_is_rejected(self, status: Status) -> None:
+        payload = _payload(fake_fit(status=status))
+        from_dict(payload)
+        _reverse_cells(payload)
+
+        with pytest.raises(ValueError):
+            from_dict(payload)
+
+    def test_bare_fit_card_with_two_cells_at_one_severity_is_rejected(self) -> None:
+        payload = _payload(fake_fit())
+        from_dict(payload)
+        _duplicate_a_severity(payload)
+
+        with pytest.raises(ValueError):
+            from_dict(payload)
+
+    def test_threshold_card_whose_nested_fit_has_reversed_cells_is_rejected(self) -> None:
+        payload = _payload(fake_threshold())
+        from_dict(payload)
+        _reverse_cells(payload["fit"])
+
+        with pytest.raises(ValueError):
+            from_dict(payload)
+
+    def test_threshold_card_whose_nested_fit_has_two_cells_at_one_severity_is_rejected(
+        self,
+    ) -> None:
+        payload = _payload(fake_threshold())
+        from_dict(payload)
+        _duplicate_a_severity(payload["fit"])
+
+        with pytest.raises(ValueError):
+            from_dict(payload)
+
+    @pytest.mark.parametrize("operand", ["threshold_a", "threshold_b"])
+    def test_ratio_card_whose_nested_fit_has_reversed_cells_is_rejected(self, operand: str) -> None:
+        payload = _payload(fake_ratio())
+        from_dict(payload)
+        _reverse_cells(payload[operand]["fit"])
+
+        with pytest.raises(ValueError):
+            from_dict(payload)
+
+    def test_scorecard_whose_nested_fit_has_reversed_cells_is_rejected(self) -> None:
+        card = Scorecard(results=(fake_threshold(),), provenance={})
+        payload = _payload(card)
+        from_dict(payload)
+        _reverse_cells(payload["results"][0]["fit"])
+
+        with pytest.raises(ValueError):
+            from_dict(payload)
+
+    def test_rejection_names_the_first_out_of_order_pair(self) -> None:
+        """``fake_fit`` has cells at severities 0.0, 1.0 and 2.0; reversed, the first
+        out-of-order pair is ``(2.0, 1.0)`` and the later ``(1.0, 0.0)`` is not named."""
+        payload = _payload(fake_fit())
+        _reverse_cells(payload)
+
+        with pytest.raises(ValueError) as exc_info:
+            from_dict(payload)
+
+        message = str(exc_info.value)
+        assert "2.0" in message
+        assert "1.0" in message
+        assert "0.0" not in message
+
+    def test_sorted_cells_card_loads_with_the_cells_in_card_order(self) -> None:
+        fit = fake_fit()
+
+        rebuilt = from_dict(_payload(fit))
+
+        assert isinstance(rebuilt, Fit)
+        assert rebuilt.cells == fit.cells
+        assert [c.severity for c in rebuilt.cells] == sorted(c.severity for c in rebuilt.cells)
 
 
 # ------------------------------------------------------------------------------------------

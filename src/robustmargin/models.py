@@ -376,7 +376,9 @@ class Fit:
         present.
     cells
         The per-severity-level pooled counts the fit was made from
-        (:meth:`~robustmargin.Observations.cells`). Never empty.
+        (:meth:`~robustmargin.Observations.cells`). Never empty, and in strictly increasing
+        order of severity (one cell per tested level), which is checked on construction and
+        never repaired by sorting or pooling.
     status
         The :class:`~robustmargin.Status` of this fit. Never ``UNREACHABLE`` or
         ``FAILS_AT_BASELINE`` (those describe a threshold, not a fit).
@@ -467,6 +469,15 @@ class Fit:
 
         if not self.cells:
             raise ValueError("Fit.cells must not be empty")
+        for index in range(1, len(self.cells)):
+            previous = self.cells[index - 1].severity
+            current = self.cells[index].severity
+            if not current > previous:
+                raise ValueError(
+                    "Fit.cells must be in strictly increasing order of severity (one cell per "
+                    f"tested level), but cells[{index}].severity={current!r} follows "
+                    f"cells[{index - 1}].severity={previous!r}"
+                )
 
         _check_cluster_ids(self.cluster_ids, label="Fit.cluster_ids")
 

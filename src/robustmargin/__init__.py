@@ -60,7 +60,7 @@ from robustmargin.validation import (
     diagnose,
 )
 
-__version__ = "0.1.1rc1"
+__version__ = "0.1.1"
 
 __all__ = [
     "AdjacentPair",

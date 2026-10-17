@@ -492,12 +492,15 @@ class TestSparseCellsWarning:
     _FLAGGED_SEVERITY = 0.09  # E[fail] ~= 0.096 (< 0.1), 1 observed failure: flagged.
     _SILENT_ZERO_OBSERVED_SEVERITY = 0.05  # E[fail] ~= 0.011 (< 0.1), 0 observed: silent.
     _SILENT_ABOVE_CUTOFF_SEVERITY = 0.1522  # E[fail] ~= 0.50 (>= 0.1), 1 observed: silent.
+    # Ascending in severity: ``Fit.cells`` must be strictly ascending (decisions/0029), so the
+    # three roles are listed in that order and indexed below as 0 = zero-observed, 1 = flagged,
+    # 2 = above-cutoff.
     _SEVERITIES = [
-        _FLAGGED_SEVERITY,
         _SILENT_ZERO_OBSERVED_SEVERITY,
+        _FLAGGED_SEVERITY,
         _SILENT_ABOVE_CUTOFF_SEVERITY,
     ]
-    _SUCCESSES = [99, 100, 99]
+    _SUCCESSES = [100, 99, 99]
     _TRIALS = [100, 100, 100]
 
     def _cells(self) -> tuple[Cell, ...]:
@@ -529,11 +532,11 @@ class TestSparseCellsWarning:
         p = self._p()
         n = 100
         # Flagged: expected failures below 0.1, with exactly 1 observed failure.
-        assert n * (1.0 - p[0]) < 0.1
-        assert n - self._SUCCESSES[0] == 1
-        # Silent (zero observed): expected failures below 0.1, but 0 observed failures.
         assert n * (1.0 - p[1]) < 0.1
-        assert n - self._SUCCESSES[1] == 0
+        assert n - self._SUCCESSES[1] == 1
+        # Silent (zero observed): expected failures below 0.1, but 0 observed failures.
+        assert n * (1.0 - p[0]) < 0.1
+        assert n - self._SUCCESSES[0] == 0
         # Silent (at/above cutoff): expected failures in [0.1, 1), with 1 observed failure --
         # this is exactly the shape Amendment 3 alone would have flagged.
         assert 0.1 <= n * (1.0 - p[2]) < 1.0
@@ -571,8 +574,8 @@ class TestSparseCellsWarning:
 
         sparse_warning = next(w for w in diag.warnings if w.startswith("SPARSE_CELLS: "))
         p = self._p()
-        flagged_expected = 100 * (1.0 - p[0])
-        other_expecteds = [100 * (1.0 - p[1]), 100 * (1.0 - p[2])]
+        flagged_expected = 100 * (1.0 - p[1])
+        other_expecteds = [100 * (1.0 - p[0]), 100 * (1.0 - p[2])]
 
         numbers = [float(m) for m in _SPARSE_FLOAT_RE.findall(sparse_warning)]
         assert any(abs(n - flagged_expected) < 0.01 for n in numbers), (

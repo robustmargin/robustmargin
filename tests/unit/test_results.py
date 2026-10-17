@@ -740,6 +740,172 @@ class TestFitCells:
             )
 
 
+# ------------------------------------------------------------------------------------------
+# decisions/0029: ``Fit.cells`` must be strictly ascending in severity. Every exact-test rule in
+# ``censoring.py`` reads ``cells`` in order -- RIGHT the last cell, LEFT the first nonzero cell,
+# the fixed-sequence scans from each end -- so an unsorted or duplicated table made
+# ``threshold()`` silently test the wrong levels. Nothing is sorted or pooled for the caller:
+# malformed cells are an error. The check applies on every status, because the exact-test rules
+# read ``cells`` of a *failed* fit (those are the fits they exist for).
+# ------------------------------------------------------------------------------------------
+
+# Every status a ``Fit`` may carry. UNREACHABLE and FAILS_AT_BASELINE describe a threshold and
+# ``Fit`` rejects them for an unrelated reason (rule 9), so they cannot isolate the cells check.
+_FIT_STATUSES: tuple[Status, ...] = (
+    Status.OK,
+    Status.SEPARATION,
+    Status.NOT_CONVERGED,
+    Status.CONTROL_INCOMPATIBLE,
+)
+
+# The zero-severity cell is always an all-success 100/100. A *failing* control under the fixed
+# upper=1.0 of ``_params()`` on this log axis is rejected by a different rule (rule 10), which
+# would make an ordering test pass for the wrong reason.
+_SEV_0 = Cell(severity=0.0, successes=100, trials=100)
+_SEV_1 = Cell(severity=1.0, successes=90, trials=100)
+_SEV_1_AGAIN = Cell(severity=1.0, successes=80, trials=100)
+_SEV_2 = Cell(severity=2.0, successes=60, trials=100)
+_SEV_3 = Cell(severity=3.0, successes=30, trials=100)
+
+# Each shape breaks "strictly increasing" in a different place, so a check that compared only the
+# first pair, or only the last, or only the ends, would miss one of them.
+_UNSORTED: dict[str, tuple[Cell, ...]] = {
+    "two-cells-descending": (_SEV_1, _SEV_0),
+    "fully-reversed": (_SEV_3, _SEV_2, _SEV_1, _SEV_0),
+    "swap-in-the-middle": (_SEV_0, _SEV_2, _SEV_1, _SEV_3),
+    "swap-at-the-end": (_SEV_0, _SEV_1, _SEV_3, _SEV_2),
+    "returns-to-an-earlier-severity": (_SEV_0, _SEV_2, _SEV_3, _SEV_1),
+    "control-last": (_SEV_1, _SEV_2, _SEV_0),
+}
+_DUPLICATED: dict[str, tuple[Cell, ...]] = {
+    "control-repeated": (_SEV_0, _SEV_0, _SEV_1),
+    "duplicate-in-the-middle": (_SEV_0, _SEV_1, _SEV_1_AGAIN, _SEV_2),
+    "duplicate-at-the-end": (_SEV_0, _SEV_1, _SEV_1_AGAIN),
+    "exact-repeat-of-a-row": (_SEV_0, _SEV_1, _SEV_1),
+    "only-two-cells-at-one-severity": (_SEV_1, _SEV_1_AGAIN),
+}
+
+
+class TestFitCellsStrictlyAscending:
+    @pytest.mark.parametrize("status", _FIT_STATUSES, ids=lambda s: s.name)
+    @pytest.mark.parametrize("cells", _UNSORTED.values(), ids=list(_UNSORTED))
+    def test_cells_not_sorted_ascending_raise_value_error(
+        self, cells: tuple[Cell, ...], status: Status
+    ) -> None:
+        with pytest.raises(ValueError):
+            _fit_with_axis(_AXIS, status=status, cells=cells)
+
+    @pytest.mark.parametrize("status", _FIT_STATUSES, ids=lambda s: s.name)
+    @pytest.mark.parametrize("cells", _DUPLICATED.values(), ids=list(_DUPLICATED))
+    def test_two_cells_at_the_same_severity_raise_value_error(
+        self, cells: tuple[Cell, ...], status: Status
+    ) -> None:
+        with pytest.raises(ValueError):
+            _fit_with_axis(_AXIS, status=status, cells=cells)
+
+    @pytest.mark.parametrize("cells", _UNSORTED.values(), ids=list(_UNSORTED))
+    def test_the_same_cells_in_ascending_order_construct(self, cells: tuple[Cell, ...]) -> None:
+        """What each rejected shape above lacks is order and nothing else: sorted, the identical
+        counts build a fit, and it holds them in that order."""
+        ascending = tuple(sorted(cells, key=lambda c: c.severity))
+
+        fit = _fit_with_axis(_AXIS, cells=ascending)
+
+        assert fit.cells == ascending
+
+    @pytest.mark.parametrize("status", _FIT_STATUSES, ids=lambda s: s.name)
+    def test_strictly_ascending_cells_construct_in_the_order_given(self, status: Status) -> None:
+        cells = (_SEV_0, _SEV_1, _SEV_2, _SEV_3)
+
+        fit = _fit_with_axis(_AXIS, status=status, cells=cells)
+
+        assert fit.cells == cells
+
+    @pytest.mark.parametrize("status", _FIT_STATUSES, ids=lambda s: s.name)
+    def test_a_single_cell_is_accepted(self, status: Status) -> None:
+        fit = _fit_with_axis(_AXIS, status=status, cells=(_SEV_1,))
+
+        assert fit.cells == (_SEV_1,)
+
+    def test_unsorted_cells_given_as_a_list_are_rejected(self) -> None:
+        """``Fit`` normalises ``cells`` to a tuple before validating; a list must not slip past
+        the order check by being a different sequence type."""
+        with pytest.raises(ValueError):
+            _fit_with_axis(_AXIS, cells=cast(Any, [_SEV_1, _SEV_0]))
+
+    def test_replacing_cells_on_a_valid_fit_runs_the_same_check(self) -> None:
+        """``dataclasses.replace`` re-runs ``__post_init__``, so a valid fit cannot be turned
+        into an unsorted one that way."""
+        fit = _ok_fit()
+
+        with pytest.raises(ValueError):
+            dataclasses.replace(fit, cells=(_SEV_1, _SEV_0))
+
+
+def _ordering_error(cells: tuple[Cell, ...], status: Status = Status.OK) -> str:
+    with pytest.raises(ValueError) as exc_info:
+        _fit_with_axis(_AXIS, status=status, cells=cells)
+    return str(exc_info.value)
+
+
+class TestFitCellsOrderingMessage:
+    """The message names the first out-of-order pair (decisions/0029). Substrings only: the
+    exact wording is not API. Severities are chosen so that their text is unambiguous (no one
+    severity's text is a substring of another's), and that it cites no private document is
+    checked with the other user-visible messages in
+    ``test_warning_strings_avoid_private_doc_citations.py``."""
+
+    _LOW = Cell(severity=0.0, successes=100, trials=100)
+    _A = Cell(severity=1.5, successes=90, trials=100)
+    _A_AGAIN = Cell(severity=1.5, successes=80, trials=100)
+    _B = Cell(severity=7.25, successes=60, trials=100)
+    _C = Cell(severity=3.125, successes=50, trials=100)
+    _D = Cell(severity=9.5, successes=30, trials=100)
+    _E = Cell(severity=6.0625, successes=20, trials=100)
+
+    def test_descending_pair_message_names_both_severities(self) -> None:
+        message = _ordering_error((self._A, self._LOW))
+
+        assert "1.5" in message
+        assert "0.0" in message
+
+    def test_message_names_the_first_descending_pair_and_not_a_later_one(self) -> None:
+        """Order is ``0.0, 1.5, 7.25, 3.125, 9.5, 6.0625``: the pairs ``(7.25, 3.125)`` and
+        ``(9.5, 6.0625)`` are both out of order, and the first is the one reported."""
+        message = _ordering_error((self._LOW, self._A, self._B, self._C, self._D, self._E))
+
+        assert "7.25" in message
+        assert "3.125" in message
+        assert "9.5" not in message
+        assert "6.0625" not in message
+
+    def test_message_for_duplicate_severities_names_the_repeated_severity(self) -> None:
+        message = _ordering_error((self._LOW, self._A, self._A_AGAIN))
+
+        assert "1.5" in message
+
+    def test_message_names_a_leading_duplicate_not_a_later_descent(self) -> None:
+        """``0.0, 1.5, 1.5, 7.25, 3.125``: the duplicate at ``1.5`` comes first and is the one
+        named, not the later ``(7.25, 3.125)`` descent."""
+        message = _ordering_error((self._LOW, self._A, self._A_AGAIN, self._B, self._C))
+
+        assert "1.5" in message
+        assert "7.25" not in message
+        assert "3.125" not in message
+
+    @pytest.mark.parametrize("status", _FIT_STATUSES, ids=lambda s: s.name)
+    def test_message_names_the_pair_on_every_status(self, status: Status) -> None:
+        message = _ordering_error((self._B, self._C), status=status)
+
+        assert "7.25" in message
+        assert "3.125" in message
+
+    def test_message_names_the_field(self) -> None:
+        message = _ordering_error((self._B, self._C))
+
+        assert "cells" in message
+
+
 class TestFitIsFrozen:
     def test_is_frozen(self) -> None:
         fit = _ok_fit()

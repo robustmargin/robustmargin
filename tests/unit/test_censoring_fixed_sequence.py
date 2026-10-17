@@ -470,3 +470,68 @@ class TestRightAndLeftAreUnchanged:
         assert result.hi == 1.0
         assert result.lo is None
         assert result.status is failed_status
+
+
+class TestUnsortedCellsCannotReachTheExactTestRules:
+    """Regression, ``decisions/0029`` (the unsorted-cells gap raised by the stats review of
+    ``0028``). Every exact-test rule reads ``fit.cells`` in order -- ``RIGHT`` the last cell,
+    ``LEFT`` the first nonzero cell, the scans from each end -- and ``Fit`` did not check that
+    order, so a hand-built (or hand-edited) fit with its cells out of order made ``classify``
+    test the wrong levels with no error. Out-of-order cells now fail at ``Fit`` construction.
+
+    Each case below is a pair: the unsorted cells (which used to give the wrong answer, quoted
+    in the docstring) must not build, and the same cells in ascending order give the right one.
+    """
+
+    def test_cells_that_used_to_give_left_at_the_wrong_severity_cannot_be_built(
+        self, failed_status: Status
+    ) -> None:
+        """``P F F F`` with the severity-3 cell listed first among the nonzero ones. In list
+        order the "first nonzero cell" was severity 3, so ``classify`` returned ``LEFT`` with
+        ``hi = 3.0``; the lowest failing level is 1.0."""
+        control, one, two, three = _grid("P F F F")
+
+        with pytest.raises(ValueError):
+            _failed_fit((control, three, one, two), failed_status)
+
+    def test_cells_that_used_to_give_right_at_a_passing_level_below_a_failing_one_cannot_be_built(
+        self, failed_status: Status
+    ) -> None:
+        """``P P F`` with the failing severity-2 cell listed before the passing severity-1 one.
+        In list order the "last cell" was severity 1, which passes, so ``classify`` returned
+        ``RIGHT`` with ``lo = 1.0`` -- a claim that no tested level fails, with a confidently
+        failing level at 2.0."""
+        control, one, two = _grid("P P F")
+
+        with pytest.raises(ValueError):
+            _failed_fit((control, two, one), failed_status)
+
+    def test_the_left_cells_in_ascending_order_give_left_at_the_lowest_failing_severity(
+        self, failed_status: Status
+    ) -> None:
+        result = _classify("P F F F", failed_status)
+
+        assert result.censoring is Censoring.LEFT
+        assert result.hi == 1.0
+        assert result.lo is None
+        assert result.status is failed_status
+
+    def test_the_right_cells_in_ascending_order_give_the_bracket_not_right(
+        self, failed_status: Status
+    ) -> None:
+        result = _classify("P P F", failed_status)
+
+        _assert_fallback_shape(result, failed_status)
+        assert result.lo == 1.0
+        assert result.hi == 2.0
+
+    def test_replacing_the_cells_of_a_valid_fit_with_unsorted_ones_raises(
+        self, failed_status: Status
+    ) -> None:
+        """The route these tests use to hand-build a fit, ``dataclasses.replace``, runs the same
+        check, so no test of ``classify`` can pass unsorted cells in by accident."""
+        control, one, two = _grid("P P F")
+        valid = _failed_fit((control, one, two), failed_status)
+
+        with pytest.raises(ValueError):
+            dataclasses.replace(valid, cells=(control, two, one))

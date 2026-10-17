@@ -33,9 +33,10 @@ after the token may change.
 from __future__ import annotations
 
 import ast
+import dataclasses
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -56,7 +57,7 @@ from robustmargin import (
     threshold,
 )
 from robustmargin.report import from_dict, to_dict
-from robustmargin.testing import fake_threshold
+from robustmargin.testing import fake_fit, fake_threshold
 
 _FORBIDDEN_DOC_CITATION = re.compile(
     r"decisions/\d{4}|plan section|plan §|§\d|IMPLEMENTATION_PLAN|STATISTICS\.md|REVIEWS\.md"
@@ -287,8 +288,10 @@ def _sparse_cells_fit() -> Fit:
     from scipy.stats import norm
 
     mu, s, upper, lower = 0.6931471805599453, 1.0, 1.0, 0.0  # mu = log(2)
-    severities = [0.09, 0.05, 0.1522]
-    successes_ = [99, 100, 99]
+    # Ascending in severity, as ``Fit.cells`` must be: 0.05 has no observed failure, 0.09 is the
+    # flagged cell, 0.1522 is above the cutoff.
+    severities = [0.05, 0.09, 0.1522]
+    successes_ = [100, 99, 99]
     trials_ = [100, 100, 100]
     cells = tuple(
         Cell(severity=sv, successes=y, trials=n)
@@ -399,6 +402,47 @@ def _collect_dynamic_messages() -> list[str]:
     messages.append(str(excinfo_unrecognised.value))
 
     return messages
+
+
+def _collect_cell_ordering_messages() -> list[str]:
+    """The ``Fit.cells`` ordering errors (``decisions/0029``): the construction error for a
+    descending pair and for a duplicated severity, and the same error reached through
+    ``from_dict`` on a card whose cells were reversed by hand. Each is read by a person holding a
+    hand-built fit or a hand-edited card, who cannot look up a document either. Kept apart from
+    ``_collect_dynamic_messages`` so the token-prefix tests below do not depend on it."""
+    messages: list[str] = []
+    fit = fake_fit()
+    # Never touch the zero-severity cell's counts: a failing control under the fake's fixed
+    # upper=1.0 is rejected by a different rule, which would put another message here.
+    control, level_one = fit.cells[0], fit.cells[1]
+
+    with pytest.raises(ValueError) as excinfo_descending:
+        dataclasses.replace(fit, cells=tuple(reversed(fit.cells)))
+    messages.append(str(excinfo_descending.value))
+
+    repeated = dataclasses.replace(level_one, successes=level_one.successes - 1)
+    with pytest.raises(ValueError) as excinfo_duplicate:
+        dataclasses.replace(fit, cells=(control, level_one, repeated))
+    messages.append(str(excinfo_duplicate.value))
+
+    reversed_card = cast("dict[str, Any]", to_dict(fit))
+    reversed_card["cells"] = list(reversed(reversed_card["cells"]))
+    with pytest.raises(ValueError) as excinfo_reversed_card:
+        from_dict(reversed_card)
+    messages.append(str(excinfo_reversed_card.value))
+
+    return messages
+
+
+def test_cell_ordering_errors_do_not_cite_an_unpublished_document() -> None:
+    messages = _collect_cell_ordering_messages()
+    assert len(messages) == 3, "the three ordering errors were not all produced -- a fixture broke"
+
+    offending = [m for m in messages if _FORBIDDEN_DOC_CITATION.search(m)]
+    assert not offending, (
+        "Fit.cells ordering error message(s) cite a document that is not in the public "
+        "repository:\n" + "\n".join(f"  {m!r}" for m in offending)
+    )
 
 
 def test_dynamic_warning_and_exception_paths_do_not_cite_an_unpublished_document() -> None:
