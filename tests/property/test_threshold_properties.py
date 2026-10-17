@@ -1,4 +1,4 @@
-"""Property tests for ``threshold()`` (plan section 6.4; hypothesis).
+"""Property tests for ``threshold()`` (hypothesis).
 
 Mirrors ``tests/property/test_models_properties.py``'s conventions: small examples so real
 ``fit_dose_response``/``threshold`` calls stay fast, ``hypothesis.assume`` to skip examples that
@@ -6,21 +6,22 @@ do not converge to an interior, closed threshold (the headline properties below 
 a **successful, uncensored** threshold does), and no hidden randomness beyond hypothesis's own
 (seeded, deterministic) search.
 
-Five properties, matching plan section 6.4 and the test-author brief:
+Five properties:
 
-- **Scale invariance (the headline unit-correctness property, ROADMAP's "unit correctness is a
-  correctness property").** Rescaling ``x -> c*x`` scales ``value``, ``lo`` and ``hi`` by
+- **Scale invariance (the headline unit-correctness property: unit correctness is a
+  correctness property).** Rescaling ``x -> c*x`` scales ``value``, ``lo`` and ``hi`` by
   exactly ``c``, on both a log and a linear axis, for both ``interval_method="profile"`` and
   ``"delta"``.
 - **Row permutation** changes nothing.
-- **Aggregated and disaggregated inputs** give the same threshold (R1), following directly from
-  Phase 4's already-proven "same fit" property.
+- **Aggregated and disaggregated inputs** give the same threshold, following directly from the
+  fit-level "same fit" property.
 - **With ``upper`` fixed at 1.0, adding an all-success zero-severity control** leaves the
-  threshold unchanged (R3), on a log axis (the only axis a zero-severity control means anything
+  threshold unchanged, on a log axis (the only axis a zero-severity control means anything
   on).
 
-The last three reduce to "the same ``Fit`` gives the same ``Threshold``" plus Phase 4's own
-already-proven fit-level invariants, so they are direct, not just structurally analogous.
+The last three reduce to "the same ``Fit`` gives the same ``Threshold``" plus the fit-level
+invariants proven in ``tests/property/test_models_properties.py``, so they are direct, not just
+structurally analogous.
 """
 
 from __future__ import annotations
@@ -53,7 +54,7 @@ _RESCALE_FACTOR = st.floats(min_value=0.1, max_value=10.0, allow_nan=False, allo
 @st.composite
 def _non_separated_counts(draw: st.DrawFn) -> tuple[list[float], list[int], list[int]]:
     """A counts table with **every** level carrying at least one success and one failure, which
-    provably never separates (plan section 5.2's pre-fit check): see
+    provably never separates (the pre-fit check): see
     ``tests/property/test_models_properties.py`` for the argument, reused verbatim here.
     """
     n = draw(st.integers(min_value=2, max_value=4))
@@ -77,7 +78,7 @@ def _informative_counts(draw: st.DrawFn) -> tuple[list[float], list[int], list[i
 
     ``_non_separated_counts`` draws each level's successes independently and uniformly at 10-40
     trials, so most of what it produces is a shallow, non-monotone curve whose profile deviance
-    never crosses the chi-square target -- a real result (`decisions/0013`) but a vacuous input
+    never crosses the chi-square target -- a real result but a vacuous input
     for a scale-invariance property, and enough of them to trip hypothesis's filter health
     check. This generator keeps the same no-separation guarantee (every level keeps at least one
     success and one failure) while producing designs where a closed interval exists.
@@ -152,7 +153,7 @@ def _closed_threshold_or_none(fit: Fit, *, interval_method: str) -> Threshold | 
     if t.status is not Status.OK or t.censoring is not Censoring.NONE:
         return None
     if t.lo is None or t.hi is None:
-        # decisions/0013: (OK, NONE) no longer implies finite bounds. A design too coarse to
+        # (OK, NONE) does not imply finite bounds. A design too coarse to
         # constrain the threshold reports the estimate with no interval, which is a real result
         # but not a *closed* one, so it is not what these scale-invariance properties are about.
         return None
@@ -297,7 +298,7 @@ def test_adding_an_all_success_control_leaves_a_fixed_u_1_threshold_unchanged(
         fit_with, definition=Definition.absolute(0.5), interval_method="profile", level=_LEVEL
     )
 
-    # Plan section 6.4's property is about the *fit*, and that much holds exactly: with `u`
+    # The control-row property is about the *fit*, and that much holds exactly: with `u`
     # fixed at 1 an all-success control contributes `lchoose(n, n) + n*log(1) = 0` to the
     # likelihood, an identity recorded in `tools/drc_reference/README.md`.
     assert fit_without.params == fit_with.params
@@ -322,8 +323,8 @@ def test_adding_an_all_success_control_leaves_a_fixed_u_1_threshold_unchanged(
 def test_wider_confidence_level_never_gives_a_narrower_interval(
     counts: tuple[list[float], list[int], list[int]],
 ) -> None:
-    """Interval containment/monotonicity (plan section 6.4's third bullet, "a wider confidence
-    level never produces a narrower interval"): 0.99 must bracket at least as widely as 0.80.
+    """Interval containment/monotonicity ("a wider confidence level never produces a narrower
+    interval"): 0.99 must bracket at least as widely as 0.80.
     """
     fit = _fit_fixed_trivial(_from_counts(counts, axis=_LOG_AXIS))
     assume(fit.status is Status.OK)
@@ -367,7 +368,7 @@ def test_interval_containment_lo_le_value_le_hi_whenever_all_three_are_finite(
 def test_a_monotone_curves_absolute_threshold_moves_monotonically_with_the_criterion(
     counts: tuple[list[float], list[int], list[int]],
 ) -> None:
-    """Monotonicity (plan section 6.4's second bullet): for a fitted curve that is decreasing by
+    """Monotonicity: for a fitted curve that is decreasing by
     construction (every ``binomial`` fit is, in this release), a *lower* target performance
     solves for a *larger or equal* threshold severity -- reaching a smaller fraction of the
     dynamic range never requires *less* severity.
@@ -389,13 +390,13 @@ def test_a_monotone_curves_absolute_threshold_moves_monotonically_with_the_crite
 
 
 def test_censored_threshold_never_has_a_finite_point_estimate() -> None:
-    """Censoring never yields a finite point estimate (plan section 6.4's fourth bullet): a
-    ``RIGHT``-censored result has ``value=None`` and a labelled bound (``lo``), never a number.
-    Uses the fixed, non-hypothesis PID x wind worked case (plan section 5.5) directly, since
+    """Censoring never yields a finite point estimate: a ``RIGHT``-censored result has
+    ``value=None`` and a labelled bound (``lo``), never a number. Uses the fixed,
+    non-hypothesis ``system_a_axis_2`` worked case (complete separation) directly, since
     complete separation with all-success data is the reliable way to reach ``RIGHT`` on a
     log-or-linear axis without depending on a hypothesis search finding it by chance.
     """
-    axis = Axis(name="wind", unit="m/s", scale="linear")
+    axis = Axis(name="axis_2", unit="m/s", scale="linear")
     obs = Observations.from_counts(
         axis,
         severity=[0.0, 2.0, 5.0, 10.0],

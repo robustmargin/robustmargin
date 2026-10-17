@@ -1,4 +1,4 @@
-"""Property tests for the failed-fit exact bracket (``decisions/0028``).
+"""Property tests for the failed-fit exact bracket.
 
 Two properties of ``censoring.classify`` on a failed fit (``SEPARATION`` / ``NOT_CONVERGED``)
 whose result is an exact-bound fallback (censoring ``NONE``, not ``FAILS_AT_BASELINE``, no
@@ -15,8 +15,8 @@ whose result is an exact-bound fallback (censoring ``NONE``, not ``FAILS_AT_BASE
   passing (or failing) cell sits behind a gap.
 * **Clean data is unchanged.** When the confidently passing cells form a prefix of the nonzero
   severities and the confidently failing cells a suffix of all severities, at both confidences,
-  the result equals what the max-anywhere rule gave. ``0028``: "When the confidently passing and
-  failing cells are each contiguous from their end, the result is identical."
+  the result equals what a max-anywhere rule would give: when the confidently passing and
+  failing cells are each contiguous from their end, the two rules are identical.
 
 Examples are small and the search is hypothesis's own (seeded, deterministic) one; the explicit
 ``@example`` cases keep both properties from being vacuous by guaranteeing the interesting
@@ -230,7 +230,7 @@ _CLEAN_LEVEL = 0.95
 def _max_anywhere_rule(
     cells: tuple[Cell, ...], *, target: float, level: float
 ) -> tuple[float | None, float | None]:
-    """The rule ``0028`` replaces, from its description: ``lo`` the highest nonzero severity
+    """The max-anywhere rule, as an oracle for clean data: ``lo`` the highest nonzero severity
     whose lower bound clears the target, ``hi`` the lowest severity whose upper bound is below
     it, over every cell at the bracket confidence; one determined side is rescanned at ``level``
     and the other forced to ``None``."""

@@ -1,5 +1,5 @@
-# robustmargin CI. ROADMAP section 2's "no CI-as-a-service" non-goal forbids *building* a CI
-# service; using GitHub Actions is what zeta-bench already does.
+# robustmargin CI: lint and types, the test matrix, the coverage simulations, and the packaging
+# shape of the built artifacts.
 name: ci
 
 on:
@@ -38,7 +38,8 @@ jobs:
       # because the floor set is not installable above it: numpy 1.26.0 and scipy 1.11.0 both
       # declare python_requires <3.13, and neither they nor statsmodels 0.14.0 publish cp313
       # wheels. A newer interpreter only ever resolves to newer dependencies, so testing the
-      # floor on 3.11 is the entire guarantee plan R9 asks for. See ci/constraints-min.txt.
+      # floor on 3.11 is the entire guarantee that loose dependency floors need. See
+      # ci/constraints-min.txt.
       # Do not expand this into a full cross product; it cannot resolve.
       matrix:
         include:
@@ -85,17 +86,16 @@ jobs:
           retention-days: 7
 
   coverage-simulations:
-    name: coverage simulations (plan 6.3)
+    name: coverage simulations
     runs-on: ubuntu-latest
-    # Plan section 6.3's simulations are 2,000 replicates per design. They are excluded from
+    # The coverage simulations are 2,000 replicates per design. They are excluded from
     # the `test` matrix by pyproject.toml's `-m "not slow"`, and run here once, on one
     # interpreter, rather than four times. `pull_request` only: they guard a statistical
     # property that cannot regress without a source change, so a push to main re-running them
-    # buys nothing. The numbers they produce are recorded in docs/validation.md.
+    # buys nothing.
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
-    # About 34 min before 0.1.0; about 52 min since, because every fit_dose_response call also
-    # refits the other two links for Diagnostics (decisions/0023). A flag that skips the link
-    # comparison would bring this back down, and needs its own decision.
+    # Each fit_dose_response call also refits the other two links for Diagnostics, which is
+    # most of this job's run time. A flag that skips the link comparison would shorten it.
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
@@ -109,7 +109,7 @@ jobs:
       # suite's measurement and this run would distort it. `-s` is load-bearing: the whole
       # point of this job is the coverage table these tests print, and pytest captures stdout
       # for passing tests, so without it the job burns half an hour and logs nothing but
-      # PASSED. docs/validation.md quotes these numbers, so they have to be readable here.
+      # PASSED.
       - run: pytest -m slow --no-cov -s
 
   package:
@@ -121,8 +121,8 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-      # build and twine are deliberately not in the dev extra: they are needed here and
-      # nowhere else, and the dev extra is the list the implementation plan specifies.
+      # build and twine are deliberately not in the dev extra: they are needed here and in
+      # the release workflow, and nowhere else.
       - run: pip install build twine
       - run: python -m build
       - run: twine check dist/*

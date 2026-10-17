@@ -1,6 +1,4 @@
-"""Coverage simulation for the monotonicity check's false-positive rate (plan section 6.3's own
-pattern, applied to plan section 5.7's monotonicity check;
-``docs/decisions/0023-fit-diagnostics-and-schema-v3.md``'s "Amendment 1").
+"""Coverage simulation for the monotonicity check's false-positive rate.
 
 Marked ``slow`` and excluded from the default run, mirroring
 ``tests/coverage/test_profile_coverage.py``. Run locally with::
@@ -10,12 +8,10 @@ Marked ``slow`` and excluded from the default run, mirroring
 Simulates from a genuinely monotone probit (``u=0.9``, ``l=0.1``, ``mu=0``, ``s=0.5``) on an
 11-level design (an exact-zero control plus ``logspace(-2, 2, 10)``), ``n=400`` per level, and
 counts how often :func:`~robustmargin.check_monotonicity`'s Holm-corrected check raises **any**
-false flag across 2,000 replicates. Since the check needs only counts (Amendment 1's whole
-point), every replicate is usable regardless of whether a curve could be fit to it -- unlike the
-superseded per-``Diagnostics`` version of this simulation, there is no "failed fit" category
-here at all. decisions/0023 states this design measured roughly 2-3% in the run that motivated
-the Holm correction (a per-pair, uncorrected test was roughly 25% on the same design); this test
-re-establishes that figure rather than relying on the record, and asserts the plan's own bound,
+false flag across 2,000 replicates. Since the check needs only counts, every replicate is usable
+regardless of whether a curve could be fit to it, so there is no "failed fit" category here at
+all. This design measures roughly 2-3% with the Holm correction (a per-pair, uncorrected test
+is roughly 25% on the same design); this test re-establishes that figure and asserts the bound
 ``<= 0.05``.
 """
 
@@ -77,12 +73,11 @@ def test_false_flag_rate_on_a_correctly_monotone_curve_is_at_most_5_percent() ->
         f"\nmonotonicity false-flag rate (11-level rich design, n=400, {_REPLICATES} replicates)\n"
         f"  rate    : {result['rate']:.4f} of {int(result['replicates'])} replicates\n"
         f"  seed    : {_SEED}\n"
-        "  decisions/0023 recorded roughly 0.02-0.03 for this design; this run re-establishes "
+        "  roughly 0.02-0.03 is expected for this design; this run re-establishes "
         "that figure rather than assuming it still holds."
     )
 
     assert result["rate"] <= 0.05, (
-        f"false-flag rate {result['rate']:.4f} exceeds the plan's 0.05 bound on a correctly "
-        "monotone curve -- this is a method finding (decisions/0023's Holm correction), not a "
-        "flaky test"
+        f"false-flag rate {result['rate']:.4f} exceeds the 0.05 bound on a correctly "
+        "monotone curve -- this is a method finding (the Holm correction), not a flaky test"
     )

@@ -1,33 +1,31 @@
-"""Property tests for ``fit_dose_response`` (plan section 6.4; hypothesis).
+"""Property tests for ``fit_dose_response`` (hypothesis).
 
-Four properties, matching the test-author brief and the Phase 4 plan's Files table:
+Four properties:
 
-- Aggregated counts give a fit identical to the equivalent ``from_observations`` rows (R1).
+- Aggregated counts give a fit identical to the equivalent ``from_observations`` rows.
 - Row permutation changes nothing.
 - With ``u=1`` fixed, adding an all-success control row leaves the fit unchanged.
 - On a log axis, ``x -> c*x`` shifts ``mu`` by ``log(c)`` and leaves ``s`` unchanged.
 
 The first two do **not** require the fit to converge: two representations of *exactly the same
 counts* must give exactly the same ``Fit`` -- including when that fit fails, since
-``fit_dose_response`` is a deterministic function of the pooled cell counts (R1's own wording),
-not of row order or representation. The third and fourth properties are about what a
-**successful** fit does, so they use ``hypothesis.assume`` to skip examples that do not
-converge, after choosing strategies designed to make that the common case (per the brief:
-"keep designs non-separated").
+``fit_dose_response`` is a deterministic function of the pooled cell counts, not of row order or
+representation. The third and fourth properties are about what a **successful** fit does, so they
+use ``hypothesis.assume`` to skip examples that do not converge, after choosing strategies
+designed to make that the common case (designs are kept non-separated).
 
-Examples are kept small (few levels, small trial counts) so real optimizer calls stay fast, per
-the brief.
+Examples are kept small (few levels, small trial counts) so real optimizer calls stay fast.
 
 **The control-row property above (``test_adding_an_all_success_control_leaves_a_fixed_u_1_fit_
 unchanged``) only ever calls ``_fit_fixed_trivial`` (``upper=1.0, lower=0.0``), the ``GLM``
-path.** `docs/REVIEWS.md` R10 "Still open" item 1 reports that the *other* fixed-``upper=1.0``
-path -- ``lower="estimate"``, ``GenericLikelihoodModel`` -- violates the same plan section 6.4
-property: statsmodels' own ``LikelihoodModel.fit`` minimises ``-loglike(params) / nobs``, and
-``nobs`` changes when a row is added even though the control's own contribution to the
-log-likelihood is exactly ``0``. ``test_adding_an_all_success_control_to_the_generic_path_
-leaves_status_unchanged`` below extends the same strategy to that path, asserting status
-equality unconditionally (never behind an ``assume``, which would hide exactly the mismatch
-this property exists to catch -- the lesson of R9's "assume... stepping around a defect").
+path.** The *other* fixed-``upper=1.0`` path -- ``lower="estimate"``, ``GenericLikelihoodModel``
+-- must satisfy the same property, and a naive implementation would violate it: statsmodels' own
+``LikelihoodModel.fit`` minimises ``-loglike(params) / nobs``, and ``nobs`` changes when a row is
+added even though the control's own contribution to the log-likelihood is exactly ``0``.
+``test_adding_an_all_success_control_to_the_generic_path_leaves_status_unchanged`` below extends
+the same strategy to that path, asserting status equality unconditionally (never behind an
+``assume``, which would hide exactly the mismatch this property exists to catch -- an
+``assume`` can step around a defect).
 """
 
 from __future__ import annotations
@@ -76,7 +74,7 @@ def _counts_with_optional_control(
 @st.composite
 def _non_separated_counts(draw: st.DrawFn) -> tuple[list[float], list[int], list[int]]:
     """A counts table with **every** level carrying at least one success and one failure
-    (strictly interior counts), which makes plan section 5.2's pre-fit separation check
+    (strictly interior counts), which makes the pre-fit separation check
     provably never trigger: with every level contributing both a success and a failure, the
     highest severity with a success is the overall maximum severity, and the lowest severity
     with a failure is the overall minimum, so "highest success <= lowest failure" only holds
@@ -185,7 +183,7 @@ def test_adding_an_all_success_control_leaves_a_fixed_u_1_fit_unchanged(
     fit_without = _fit_fixed_trivial(without_control)
     fit_with = _fit_fixed_trivial(with_control)
 
-    # The control row is dropped from the u=1,l=0 GLM likelihood entirely (plan section 5.1),
+    # The control row is dropped from the u=1,l=0 GLM likelihood entirely,
     # and contributes exactly 0 to the full binomial log-likelihood (an all-success row's term
     # is lchoose(n,0) + n*log(1) == 0 identically) -- so status, params, covariance and
     # log_likelihood must all agree exactly, not just approximately.
@@ -228,11 +226,11 @@ def test_rescaling_severity_shifts_mu_by_log_c_and_leaves_s_unchanged(
 
 
 def _fit_generic_upper_fixed(obs: Observations) -> Fit:
-    """``upper=1.0`` fixed, ``lower="estimate"`` -- the ``GenericLikelihoodModel`` path (D7
-    ``decisions/0004``), not the ``GLM`` path ``_fit_fixed_trivial`` above exercises.
-    ``link="logit"``: the regression this property targets (`docs/REVIEWS.md` R10 item 1) is
-    confirmed reachable under ``logit`` on designs this strategy draws, in every environment
-    checked (`tests/unit/test_models_control_row_invariance.py`'s module docstring has the full
+    """``upper=1.0`` fixed, ``lower="estimate"`` -- the ``GenericLikelihoodModel`` path, not the
+    ``GLM`` path ``_fit_fixed_trivial`` above exercises.
+    ``link="logit"``: the violation this property targets is reachable under ``logit`` on
+    designs this strategy draws, in every environment checked
+    (`tests/unit/test_models_control_row_invariance.py`'s module docstring has the full
     cross-environment table) -- either directly on the pinned ``@example`` below, or via
     Hypothesis's own random search finding a different counterexample under the same link, which
     is why this single, fixed link is enough here even though it is not the link that most
@@ -249,29 +247,27 @@ def test_adding_an_all_success_control_to_the_generic_path_leaves_status_unchang
     counts: tuple[list[float], list[int], list[int]],
     control_trials: int,
 ) -> None:
-    """`docs/REVIEWS.md` R10 "Still open" item 1: the same control-row invariance plan section
-    6.4 asks for, now on the ``upper=1.0`` fixed, ``lower="estimate"`` path. Status equality is
-    asserted unconditionally, with no ``assume`` guarding it -- an ``assume(both OK)`` here would
-    discard exactly the examples that demonstrate the defect, the same mistake R9 records for a
-    different property. When both sides do converge, the reported ``mu``/``s``/``lower`` and
-    ``log_likelihood`` must also agree (the control's own contribution to the likelihood is
-    exactly ``0`` at every parameter value, not only at the optimum, so a converged fit cannot
-    legitimately move when the control is added).
+    """The control-row invariance of the ``upper=1.0`` fixed, ``lower="estimate"`` path: adding
+    an all-success zero-severity control must not change the status. Status equality is asserted
+    unconditionally, with no ``assume`` guarding it -- an ``assume(both OK)`` here would discard
+    exactly the examples that demonstrate a defect. When both sides do converge, the reported
+    ``mu``/``s``/``lower`` and ``log_likelihood`` must also agree (the control's own
+    contribution to the likelihood is exactly ``0`` at every parameter value, not only at the
+    optimum, so a converged fit cannot legitimately move when the control is added).
 
-    The ``@example`` above is the exact `docs/REVIEWS.md` R10 fixture (also pinned, independent
-    of Hypothesis, in `tests/unit/test_models_control_row_invariance.py`) and is run on every
-    invocation regardless of what Hypothesis's own search happens to draw. **It is not, on its
-    own, a guarantee that this property fails pre-fix on every platform**: verified in a fresh
-    ``python:3.11`` container (Linux/x86_64, dependencies resolved to "latest"), that pinned
-    example *passes* under ``link="logit"`` -- on that platform/dependency combination the
-    no-control ``logit`` fit on this exact fixture already fails to converge on its own, for the
-    unrelated reason `tests/unit/test_models_control_row_invariance.py` documents, so the
-    equality holds trivially either way. The test still failed there, because Hypothesis's own
-    random search independently found two different counts tables under the same ``logit`` link
-    where the defect does show up. Keeping both the ``@example`` (deterministic coverage of one
-    specific, previously-reported input) and the random search (broader, and in practice the
-    one that mattered on that platform) is the point -- neither alone was sufficient evidence in
-    every environment checked.
+    The ``@example`` above is a pinned fixture (also pinned, independent of Hypothesis, in
+    `tests/unit/test_models_control_row_invariance.py`) and is run on every invocation
+    regardless of what Hypothesis's own search happens to draw. **It is not, on its own, a
+    guarantee that a violation is caught on every platform**: on Linux/x86_64 with dependencies
+    resolved to "latest", that pinned example *passes* under ``link="logit"`` even against a
+    faulty implementation -- on that platform/dependency combination the no-control ``logit``
+    fit on this exact fixture already fails to converge on its own, for the unrelated reason
+    `tests/unit/test_models_control_row_invariance.py` documents, so the equality holds
+    trivially either way. Hypothesis's own random search can independently find counts tables
+    under the same ``logit`` link where a violation does show up. Keeping both the ``@example``
+    (deterministic coverage of one specific input) and the random search (broader, and in
+    practice the one that matters on that platform) is the point -- neither alone is sufficient
+    evidence in every environment.
     """
     severity, successes, trials = counts
 

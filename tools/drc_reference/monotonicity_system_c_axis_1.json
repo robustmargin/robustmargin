@@ -7,18 +7,18 @@
     "generated_at": "2026-09-29 01:23:03 UTC"
   },
   "dataset": {
-    "series": "ppo_sensor_noise",
+    "series": "system_c_axis_1",
     "severity_low": 0,
     "severity_high": 0.01,
     "successes_low": 57,
     "trials_low": 200,
     "successes_high": 143,
     "trials_high": 300,
-    "note": "tests/data/zeta_matrix_counts.csv, series ppo_sensor_noise, the two lowest severities."
+    "note": "tests/data/pooled_counts.csv, series system_c_axis_1, the two lowest severities."
   },
   "fisher_test": {
     "alternative": "greater",
-    "table_convention": "matrix(c(successes_high, failures_high, successes_low, failures_low), nrow=2, byrow=TRUE) -- robustmargin's own convention, decisions/0023 Amendment 1 item 4",
+    "table_convention": "matrix(c(successes_high, failures_high, successes_low, failures_low), nrow=2, byrow=TRUE) -- robustmargin's own convention",
     "p_value": 1.16696240142351e-05,
     "estimate_odds_ratio": 2.2812831144809
   }

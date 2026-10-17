@@ -1,11 +1,10 @@
 """Property tests for ``robustmargin.types.Observations`` (hypothesis).
 
-Two invariants from plan section 6.4: aggregated and disaggregated inputs give the same fit
-(here, the same ``.cells()``, since Phase 3 has no fit yet) -- R1 -- and permuting rows changes
-nothing. A third property exercises the fakes' round-trip through ``report.to_dict`` /
-``from_dict`` across the combinations ``robustmargin.testing`` produces, complementing the
-exhaustive parametrised check in ``tests/unit/test_testing.py`` with hypothesis's own example
-generation and shrinking.
+Two invariants: aggregated and disaggregated inputs give the same pooled cells (the same
+``.cells()``, so the same fit), and permuting rows changes nothing. A third property exercises the
+fakes' round-trip through ``report.to_dict`` / ``from_dict`` across the combinations
+``robustmargin.testing`` produces, complementing the exhaustive parametrised check in
+``tests/unit/test_testing.py`` with hypothesis's own example generation and shrinking.
 """
 
 from __future__ import annotations
@@ -51,7 +50,7 @@ def _counts(draw: st.DrawFn) -> tuple[list[float], list[int], list[int]]:
 def test_aggregated_and_disaggregated_inputs_give_identical_cells(
     counts: tuple[list[float], list[int], list[int]],
 ) -> None:
-    """R1: ``from_counts`` and ``from_observations`` of the same data agree on ``.cells()``."""
+    """``from_counts`` and ``from_observations`` of the same data agree on ``.cells()``."""
     severities, successes, trials = counts
 
     aggregated = Observations.from_counts(

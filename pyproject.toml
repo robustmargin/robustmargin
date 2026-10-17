@@ -58,7 +58,6 @@ dev = [
 [project.urls]
 Homepage = "https://github.com/robustmargin/robustmargin"
 Source = "https://github.com/robustmargin/robustmargin"
-Changelog = "https://github.com/robustmargin/robustmargin/blob/main/CHANGELOG.md"
 Issues = "https://github.com/robustmargin/robustmargin/issues"
 
 [tool.setuptools.packages.find]

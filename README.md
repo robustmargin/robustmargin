@@ -25,10 +25,6 @@ pip install robustmargin
 
 Runtime dependencies are `numpy`, `scipy`, and `statsmodels`, with loose minimum versions.
 
-robustmargin was developed under the name `marginkit` and renamed before its first PyPI release.
-This project does not publish the `marginkit` project on PyPI, so don't install it expecting this
-package.
-
 ## Worked example
 
 Finney's (1971) toxicity data: groups of insects exposed to increasing doses, with the number
@@ -224,24 +220,14 @@ assert from_dict(json.loads(text)) == card
 assert load_schema()["$schema"] == "https://json-schema.org/draft/2020-12/schema"
 ```
 
-The JSON follows `schema/scorecard-v4.json`, a JSON Schema shipped inside the package. It
+The JSON follows `schema/scorecard-v1.json`, a JSON Schema shipped inside the package. It
 covers binary outcomes only, and reading is strict: a card with fields this version does not know
 is rejected, not silently trimmed. To read a stored card, use a robustmargin at least as new as the
-one that wrote it. The card's `library_version` field records which version that was. Cards
-written under the package's earlier name, `marginkit` (schema 1 to 3), are not read: loading one
-raises `ValueError`.
+one that wrote it. The card's `library_version` field records which version that was.
 
 For your own tests, `robustmargin.testing` provides `fake_fit`, `fake_threshold` and `fake_ratio`.
 They return schema-valid results in every status and censoring state, and each is labelled as a
 fake rather than an estimate.
-
-## Provenance
-
-robustmargin's break-point and censoring conventions come from
-[zeta-bench](https://github.com/badkoubeh/zeta-bench) (`robustness/cards.py::break_point`). Its
-dose-response estimation is new. See
-[PROVENANCE.md](https://github.com/robustmargin/robustmargin/blob/main/docs/PROVENANCE.md)
-for what was carried over and what deliberately differs.
 
 ## Development
 
@@ -255,7 +241,6 @@ pytest            # enforces 90% branch coverage
 CI runs the tests on Python 3.11, 3.12, and 3.13 against current dependencies. It also runs them
 on Python 3.11 against the oldest supported versions, pinned in
 [`ci/constraints-min.txt`](https://github.com/robustmargin/robustmargin/blob/main/ci/constraints-min.txt).
-Changes are recorded in [`CHANGELOG.md`](https://github.com/robustmargin/robustmargin/blob/main/CHANGELOG.md).
 
 ## License
 

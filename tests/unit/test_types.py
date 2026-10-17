@@ -1,11 +1,8 @@
 """Unit tests for ``robustmargin.types``: ``Axis``, ``Observations``, ``Definition``, ``Cell``,
 and the ``Status`` / ``IntervalShape`` enums.
 
-All of this is new to robustmargin (plan section 4, Phase 3) -- there is no zeta-bench code to
-port here, unlike ``grid_break_point``. Every validation rule is exercised as its own test, one
-behaviour per test, per ``CLAUDE.md``'s naming convention, so a loosened check shows up as one
-specific failing test rather than a vague one. The list of rules is the "Details the plan
-leaves open" section of the Phase 3 plan, not an invention of this file's author.
+Every validation rule is exercised as its own test, one behaviour per test, so a loosened check
+shows up as one specific failing test rather than a vague one.
 """
 
 from __future__ import annotations
@@ -21,8 +18,7 @@ _AXIS = Axis(name="noise", unit="m", scale="log")
 
 
 class TestStatusEnum:
-    """``Status`` is a ``StrEnum`` whose value equals its member name, following ``Censoring``
-    (plan section 4.2)."""
+    """``Status`` is a ``StrEnum`` whose value equals its member name, following ``Censoring``."""
 
     def test_members_and_values(self) -> None:
         members = {member.name: member.value for member in Status}
@@ -44,10 +40,9 @@ class TestStatusEnum:
 class TestIntervalShapeEnum:
     """``IntervalShape`` is a ``StrEnum`` whose value equals its member name.
 
-    ``HALF_OPEN`` was added by `decisions/0022` (schema ``"2"``): a deliberate, decided
-    enum-membership change, not a drift to guard against -- this test's job is to catch an
-    *undecided* change to the set, and once one is decided, updating the pinned set is exactly
-    what keeps the test meaningful for the next one.
+    ``HALF_OPEN`` is a member because a Fieller set can be bounded on one side only. This
+    test's job is to catch an *undecided* change to the set: a deliberate change updates the
+    pinned set, which is exactly what keeps the test meaningful for the next one.
     """
 
     def test_members_and_values(self) -> None:
@@ -67,15 +62,15 @@ class TestIntervalShapeEnum:
 
 class TestAxis:
     def test_valid_construction_stores_every_field(self) -> None:
-        axis = Axis(name="sensor_noise", unit="m", scale="log", citation="ISO/TS 22133")
+        axis = Axis(name="axis_1", unit="m", scale="log", citation="ISO/TS 22133")
 
-        assert axis.name == "sensor_noise"
+        assert axis.name == "axis_1"
         assert axis.unit == "m"
         assert axis.scale == "log"
         assert axis.citation == "ISO/TS 22133"
 
     def test_citation_defaults_to_none(self) -> None:
-        axis = Axis(name="wind", unit="m/s", scale="linear")
+        axis = Axis(name="axis_2", unit="m/s", scale="linear")
 
         assert axis.citation is None
 
@@ -117,9 +112,8 @@ class TestDefinition:
         assert definition.value == 0.95
 
     def test_absolute_accepts_any_finite_value_including_above_one(self) -> None:
-        """Whether ``a`` is reachable is a Phase 5 ``UNREACHABLE`` status (plan section 5.3),
-        not a Phase 3 construction error, so an out-of-range-looking value must still
-        construct."""
+        """Whether ``a`` is reachable is the ``UNREACHABLE`` status of a threshold, not a
+        construction error, so an out-of-range-looking value must still construct."""
         definition = Definition.absolute(1.5)
 
         assert definition.value == 1.5
@@ -130,7 +124,7 @@ class TestDefinition:
             Definition.absolute(value)
 
     def test_absolute_rejects_a_bool(self) -> None:
-        """Round4 spec section 1: a bool satisfies ``math.isfinite`` (``isfinite(True)`` is
+        """A bool satisfies ``math.isfinite`` (``isfinite(True)`` is
         ``True``), so the existing finiteness check alone does not reject it."""
         with pytest.raises(ValueError):
             Definition.absolute(True)
@@ -173,8 +167,8 @@ class TestDefinition:
 
 
 class TestCell:
-    """``Cell`` follows the same count rules as ``Observations`` (plan section 4's field
-    table), since it is a single pooled row of the same data."""
+    """``Cell`` follows the same count rules as ``Observations``, since it is a single pooled
+    row of the same data."""
 
     def test_valid_construction(self) -> None:
         cell = Cell(severity=0.05, successes=122, trials=300)
@@ -206,33 +200,32 @@ class TestCell:
             cast(Any, cell).successes = 2
 
     def test_bool_successes_raises_value_error(self) -> None:
-        """Rule 18: ``True``/``False`` satisfy the numeric ``0 <= successes <= trials`` checks
+        """``True``/``False`` satisfy the numeric ``0 <= successes <= trials`` checks
         by coercion, so a dedicated bool check is needed."""
         with pytest.raises(ValueError):
             Cell(severity=0.0, successes=True, trials=2)
 
     def test_non_whole_trials_raises_value_error(self) -> None:
-        """Rule 18: ``from_counts`` already rejects a non-whole ``trials`` via
+        """``from_counts`` already rejects a non-whole ``trials`` via
         ``_as_whole_int``; direct ``Cell`` construction bypasses that classmethod entirely."""
         with pytest.raises(ValueError):
             Cell(severity=0.0, successes=1, trials=2.5)
 
     def test_bool_severity_raises_value_error(self) -> None:
-        """Round4 spec section 1: ``True < 0.0`` is ``False``, so the existing "severity must
+        """``True < 0.0`` is ``False``, so the existing "severity must
         be non-negative" check alone does not reject a bool severity."""
         with pytest.raises(ValueError):
             Cell(severity=True, successes=1, trials=2)
 
     @pytest.mark.parametrize("value", [float("nan"), float("inf")])
     def test_non_finite_severity_raises_value_error(self, value: float) -> None:
-        """Round4 spec section 1: neither ``nan < 0.0`` nor ``inf < 0.0`` is ``True``, so the
+        """Neither ``nan < 0.0`` nor ``inf < 0.0`` is ``True``, so the
         existing non-negativity check alone does not reject either."""
         with pytest.raises(ValueError):
             Cell(severity=value, successes=1, trials=2)
 
     def test_whole_number_float_counts_are_accepted_and_stored_as_int(self) -> None:
-        """Round4 spec section 2: this reverses the earlier int-only behaviour -- a
-        whole-number float such as ``200.0`` is accepted and stored as ``int``, because JSON
+        """A whole-number float such as ``200.0`` is accepted and stored as ``int``, because JSON
         Schema cannot tell ``200.0`` from ``200`` (a real round-trip through ``json.loads``
         would produce exactly this)."""
         cell = Cell(severity=0.0, successes=200.0, trials=200.0)
@@ -243,14 +236,13 @@ class TestCell:
         assert type(cell.trials) is int
 
     def test_non_whole_float_successes_still_raises_value_error(self) -> None:
-        """Round4 spec section 2: only a *whole-number* float is accepted; ``2.5`` stays
-        rejected."""
+        """Only a *whole-number* float is accepted; ``2.5`` stays rejected."""
         with pytest.raises(ValueError):
             Cell(severity=0.0, successes=2.5, trials=10)
 
 
 class TestObservationsRequiredKeywords:
-    """``outcome`` and ``direction`` are required keywords with no default (design choice 2):
+    """``outcome`` and ``direction`` are required keywords with no default:
     a wrong default would silently flip a threshold, so omitting either is a ``TypeError``, not
     a lenient accept."""
 
@@ -437,7 +429,7 @@ class TestValidationErrors:
             )
 
     def test_negative_severity_raises_value_error(self) -> None:
-        """R6: signed axes are split by the caller, so ``Observations`` itself never accepts a
+        """Signed axes are split by the caller, so ``Observations`` itself never accepts a
         negative severity."""
         with pytest.raises(ValueError):
             Observations.from_counts(
@@ -620,7 +612,7 @@ class TestObservationsIsFrozen:
 
 
 class TestObservationsDirectConstructionTypeStrictness:
-    """Rule 18: the same whole-number/bool strictness ``from_counts`` already enforces via
+    """The same whole-number/bool strictness ``from_counts`` already enforces via
     ``_as_whole_int`` must also hold for direct ``Observations(...)`` construction, which
     bypasses that classmethod and its conversion entirely."""
 
@@ -647,7 +639,7 @@ class TestObservationsDirectConstructionTypeStrictness:
             )
 
     def test_bool_severity_raises_value_error(self) -> None:
-        """Round4 spec section 1: ``Observations.severity`` rejects a bool, including through
+        """``Observations.severity`` rejects a bool, including through
         direct construction -- ``from_counts`` cannot exercise this case at all, since its own
         ``float(v)`` conversion already turns a bool into a plain ``1.0``/``0.0`` before
         ``__post_init__`` ever sees it."""
@@ -662,8 +654,8 @@ class TestObservationsDirectConstructionTypeStrictness:
             )
 
     def test_whole_number_float_counts_are_accepted_and_stored_as_int(self) -> None:
-        """Round4 spec section 2: the same whole-number-float acceptance ``Cell`` gets also
-        holds for direct ``Observations`` construction."""
+        """The same whole-number-float acceptance ``Cell`` gets also holds for direct
+        ``Observations`` construction."""
         obs = Observations(
             axis=_AXIS,
             outcome="success",

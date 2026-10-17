@@ -1,12 +1,13 @@
 """Coverage-closing tests for the estimated-asymptote profile path in
 ``robustmargin.intervals``: ``_MuSubstitutedLogLikelihood``, ``_optimizer_start_from_fit``,
-``_estimated_profile_llf`` and ``_profile_interval_estimated`` (plan section 5.4, this module's
-own docstring on why the offset trick does not apply once an asymptote moves).
+``_estimated_profile_llf`` and ``_profile_interval_estimated`` (see ``intervals.py``'s own
+docstring on why the offset trick does not apply once an asymptote moves).
 
-This is the path ``marginbench`` needs -- a consistency rate with a chance floor means
-``upper="estimate"`` (D7, ``decisions/0004``) -- and nothing in the suite reaches it: every
-existing ``upper="estimate"`` case is ``sac_sensor_noise``, which is ``Status.SEPARATION`` and
-short-circuits into the exact-bound fallback before any interval is ever computed.
+This is the path a design with a chance floor needs -- a consistency rate with a chance floor
+means ``upper="estimate"`` -- and no other test reaches it: every other ``upper="estimate"``
+case in the suite built from the pooled-counts fixture is ``system_b_axis_1``, which is
+``Status.SEPARATION`` and short-circuits into the exact-bound fallback before any interval is
+ever computed.
 
 Uses the committed ``tools/drc_reference/estimated_asymptotes.json`` simulation (true ``mu=0,
 s=0.5, upper=0.9, lower=0.1``, an 11-point log design with an exact ``severity=0`` control,
@@ -100,7 +101,7 @@ def _simulation_observations() -> Observations:
 
 
 def _target_for(definition: Definition, *, upper: float, lower: float) -> float:
-    """Plan section 5.3's target performance, reimplemented independently of
+    """The target performance for a definition, reimplemented independently of
     ``robustmargin.intervals._target_for`` so :func:`_expected_value` checks the solve rather than
     restating it."""
     if definition.kind == "absolute":
@@ -317,23 +318,24 @@ class TestUpperEstimatedLowerFixedAtZero:
 
 
 class TestSparseEstimatedFitStillClosesItsProfile:
-    """A regression test for the Phase 5 stats review's W3, on the estimated-asymptote path.
+    """A regression test on the estimated-asymptote path: a sparse design still closes its
+    profile on both sides.
 
-    This class originally asserted ``OPEN_LOWER`` here, and that outcome was an **artefact of a
-    defect**, not a property of the design. The inner profile fit ran BFGS and then a Newton
-    polish, and took Newton's log-likelihood unconditionally; when Newton raised
-    ``LinAlgError("Singular matrix")`` at an outlying theta, the whole inner evaluation returned
-    ``None`` and the side was opened -- discarding a perfectly usable BFGS profile value
-    underneath it. The fix takes ``max(bfgs.llf, newton.llf)`` and lets a Newton failure fall
-    back to the BFGS value.
+    An ``OPEN_LOWER`` outcome here would be an **artefact of a defect**, not a property of the
+    design. The inner profile fit runs BFGS and then a Newton polish. Taking Newton's
+    log-likelihood unconditionally would be wrong: when Newton raises
+    ``LinAlgError("Singular matrix")`` at an outlying theta, the whole inner evaluation would
+    return ``None`` and the side would be opened -- discarding a perfectly usable BFGS profile
+    value underneath it. The implementation takes ``max(bfgs.llf, newton.llf)`` and lets a
+    Newton failure fall back to the BFGS value.
 
-    So this design does close on both sides, and the test now pins that. Subsampling the
+    So this design closes on both sides, and the test pins that. Subsampling the
     committed 11-level simulation to ``n=12`` per level (successes rounded proportionally from
     the ``n=400`` counts -- deterministic, no random draw, reproducible bit-for-bit) is kept
     because it is a genuinely sparse design that exercises the failure-prone inner fit.
 
     **A verified ``OPEN_UPPER``/``OPEN_LOWER`` case on the estimated-asymptote path is therefore
-    still outstanding** (``docs/REVIEWS.md`` R8 #7). Do not treat this class as covering it.
+    still outstanding.** Do not treat this class as covering it.
     """
 
     @staticmethod
@@ -353,10 +355,10 @@ class TestSparseEstimatedFitStillClosesItsProfile:
         return fit
 
     def test_absolute_0_85_profile_closes_both_sides(self) -> None:
-        """Before W3's fix this returned ``OPEN_LOWER`` with `lo=None`, because a singular
-        Hessian in the Newton polish discarded the BFGS profile value. A too-low ``ell_p``
-        inflates ``2 * (llf_hat - ell_p)``, so the defect's other face is a silently *narrowed*
-        interval; here it cost a bound outright.
+        """A singular Hessian in the Newton polish must not discard the BFGS profile value
+        (which would return ``OPEN_LOWER`` with `lo=None`). A too-low ``ell_p`` inflates
+        ``2 * (llf_hat - ell_p)``, so the defect's other face is a silently *narrowed* interval;
+        here it would cost a bound outright.
         """
         fit = self._sparse_fit()
 

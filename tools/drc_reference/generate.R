@@ -1,16 +1,16 @@
 #!/usr/bin/env Rscript
-# robustmargin's R `drc` reference fixtures (plan sections 6.1-6.2, Phase 4 plan).
+# robustmargin's R `drc` reference fixtures.
 #
-# Writes JSON files under tools/drc_reference/ that Phase 4-6 tests read. Tests never run R
-# themselves (hard constraint 1: R is a local tool only, never an importable dependency); this
+# Writes JSON files under tools/drc_reference/ that the reference tests read. Tests never run R
+# themselves (R is a local tool only, never an importable dependency of robustmargin); this
 # script is how the fixtures get (re)generated, by hand, in the pinned container documented in
 # tools/drc_reference/README.md.
 #
 # Every JSON file records the R, drc and MASS versions actually used, plus (where relevant) the
 # drc -> robustmargin parameter mapping this run empirically confirmed:
 #   mu = log(e); s is +-1/b depending on which response was fit and which direction it moves in
-#   (see the "mapping" block written into each file -- section 5.1's "check drc's sign
-#   convention" turned into a recorded fact, not a comment).
+#   (see the "mapping" block written into each file -- drc's sign convention is checked against
+#   predict() and recorded as a fact, not left as a comment).
 #
 # Run via the exact container command in the README. Do not run against a host R install: the
 # CRAN snapshot and package versions must be pinned and reproducible.
@@ -88,7 +88,7 @@ m_ln <- drm(affected / total ~ dose, weights = total, data = finney71, fct = LN.
 m_ll <- drm(affected / total ~ dose, weights = total, data = finney71, fct = LL.2(), type = "binomial")
 
 # glm equivalents, fit on the dose > 0 subset only: log(0) is undefined, and this mirrors
-# robustmargin's own rule (section 5.1) of dropping an all-success zero-severity control from the
+# robustmargin's own rule of dropping an all-success zero-severity control from the
 # likelihood when both asymptotes are fixed at 1/0. The zero-dose row is kept out of `fdat` for
 # every glm fit below, and the parity check further down confirms this changes nothing, because
 # a 0-failure row's log-likelihood contribution is exactly zero (lchoose(n, 0) + n*log(1) = 0).
@@ -102,15 +102,15 @@ fit_glm <- function(link) {
     vcov = matrix_to_fixture(vcov(g)),
     logLik = as.numeric(logLik(g)),
     converged = isTRUE(g$converged),
-    # decisions/0023 (Phase 7 diagnostics): R-native goodness-of-fit fields, added so
+    # R-native goodness-of-fit fields, added so
     # tests/reference/test_diagnostics_drc.py's TestAgainstRNativeGofFields class has a second,
     # fully R-computed cross-check independent of that file's own Python recomputation from
     # coef/logLik above. df_residual is 3 (fdat, the dose>0 subset, has 5 rows; 2 estimated
     # parameters; 5-2=3) -- fdat never contains the dose=0 row at all (it was subsetted out above
     # because log(0) is undefined, not because glm() drops it itself), which is what makes this
     # comparable to robustmargin's own diagnose(), whose *own* exclusion of the dose=0 control is
-    # structural (decisions/0023 Amendment 2, item 1: a log-axis severity-0 cell under a fixed
-    # upper=1.0), not a coincidence of the two happening to remove the same row.
+    # structural (a log-axis severity-0 cell under a fixed upper=1.0), not a coincidence of the
+    # two happening to remove the same row.
     deviance = as.numeric(deviance(g)),
     pearson_chi2 = as.numeric(sum(residuals(g, type = "pearson")^2)),
     df_residual = as.numeric(df.residual(g)),
@@ -121,7 +121,7 @@ glm_probit <- fit_glm("probit")
 glm_logit <- fit_glm("logit")
 glm_cloglog <- fit_glm("cloglog")
 
-# decisions/0007: drc's own vcov comes from a *numerical* Hessian inside its optimizer, so it is
+# drc's own vcov comes from a *numerical* Hessian inside its optimizer, so it is
 # cross-checked here against an independently-computed observed-information vcov: the negative
 # full binomial log-likelihood, in drc's own (b, e) parametrisation, differentiated numerically
 # with base R's own optimHess() at drc's reported coef (not re-optimized), then inverted. This
@@ -165,8 +165,8 @@ observed_hessian_check <- function(drc_model, form) {
       "(base R's optimHess(), not drc's internal optimizer), evaluated at drc's own",
       "coefficients and inverted. Confirms drc's vcov is the OBSERVED information (matches",
       "this independent computation to within 1e-5 relative on finney71), not merely close to",
-      "it by coincidence -- decisions/0007's basis for using drc's vcov, not glm's",
-      "expected-information cov_params(), as the covariance parity reference."
+      "it by coincidence -- which is why drc's vcov, not glm's expected-information",
+      "cov_params(), is the covariance parity reference."
     )
   )
 }
@@ -177,7 +177,7 @@ dose_p_50 <- dose.p(g_probit_obj, p = 0.5)
 # Parity check written into the fixture, not just asserted here: drc's LN.2 logLik on the FULL
 # 6-row dataset (including the dose=0 control) against the glm probit logLik on the 5-row
 # dose>0 subset. Both equal -10.47968... to the precision that matters here; the equality is
-# the point (section 5.1's zero-control-dropping rule is provably a no-op on the likelihood
+# the point (the zero-control-dropping rule is provably a no-op on the likelihood
 # value, not just an implementation convenience).
 loglik_parity <- list(
   drc_LN2_full_dataset = as.numeric(logLik(m_ln)),
@@ -188,8 +188,8 @@ loglik_parity <- list(
   note = paste(
     "drc's logLik() is the FULL binomial log-likelihood, including the binomial coefficient",
     "(confirmed by matching a manual lchoose-based computation on drc's own fitted values).",
-    "Dropping the all-success dose=0 control row from the GLM likelihood (robustmargin section",
-    "5.1's rule for the fixed u=1,l=0 path) changes the log-likelihood by exactly 0, because",
+    "Dropping the all-success dose=0 control row from the GLM likelihood (robustmargin's rule",
+    "for the fixed u=1,l=0 path) changes the log-likelihood by exactly 0, because",
     "an n_successes=0-failure row's binomial log-likelihood term (lchoose(n,0) + n*log(1)) is",
     "identically 0 -- this is a mathematical identity, not a coincidence of this dataset."
   )
@@ -222,7 +222,7 @@ finney71_fixture <- list(
     glm_df_residual = as.numeric(nrow(fdat) - length(coef(g_probit_obj))),
     robustmargin_diagnose_df = as.numeric(nrow(fdat) - length(coef(g_probit_obj))),
     note = paste(
-      "decisions/0023 Amendment 2's factual correction: drc's drm() fits the FULL 6-row",
+      "A note on residual degrees of freedom: drc's drm() fits the FULL 6-row",
       "finney71 (LN.2/LL.2 handle dose=0 directly on the log scale), so drc's own residual df",
       "is 4 (6 rows - 2 parameters). glm() here and robustmargin's diagnose() both report df=3",
       "(5 rows - 2 parameters), but for two DIFFERENT reasons that happen to agree on this",
@@ -231,7 +231,7 @@ finney71_fixture <- list(
       "'drop' the row on its own. robustmargin's diagnose(), by contrast, fits all 6 rows and then",
       "excludes the dose=0 cell from its own deviance/Pearson/df computation STRUCTURALLY (a",
       "log-axis severity-0 cell under a fixed upper=1.0), never because a computed probability",
-      "happens to round to exactly 1.0 (the pre-Amendment-2 bug, C1). drc's df=4 is not directly",
+      "happens to round to exactly 1.0. drc's df=4 is not directly",
       "comparable to either: it is neither subsetting nor structural exclusion, just an ordinary",
       "fit on all 6 rows."
     )
@@ -278,9 +278,9 @@ finney71_fixture <- list(
 write_fixture(finney71_fixture, "finney71.json")
 
 # =================================================================================================
-# 2. section 6.2 profile-likelihood reference: finney71 probit, ED50, offset-trick + uniroot.
-#    A Phase 5 fixture (no test reads it in Phase 4); generated now because generate.R is
-#    written once for the whole set the Phase 4 plan lists.
+# 2. Profile-likelihood reference: finney71 probit, ED50, offset-trick + uniroot.
+#    Independent of drc: it is a plain glm() refit at each candidate location, used to check
+#    robustmargin's own profile-likelihood interval.
 # =================================================================================================
 
 theta_hat <- as.numeric(-coef(g_probit_obj)[1] / coef(g_probit_obj)[2])
@@ -307,8 +307,8 @@ hi_theta <- uniroot(f, lower = theta_hat, upper = theta_hat + 3)$root
 profile_fixture <- list(
   versions = versions,
   note = paste(
-    "Independent R implementation of the offset-trick profile likelihood (plan section 5.4,",
-    "6.2), fit on the same finney71 dose>0 subset as the glm probit fixture above. theta is",
+    "Independent R implementation of the offset-trick profile likelihood, fit on the same",
+    "finney71 dose>0 subset as the glm probit fixture above. theta is",
     "log(dose); zstar is qnorm(target proportion) for the ED50 (0 for probit p=0.5)."
   ),
   model = "probit, fixed upper=1 lower=0, finney71 dose>0 subset",
@@ -324,8 +324,7 @@ profile_fixture <- list(
 write_fixture(profile_fixture, "finney71_profile.json")
 
 # =================================================================================================
-# 3. selenium EDcomp -- Fieller and delta interval references for a ratio of ED50s. A Phase 6
-#    fixture (no test reads it in Phase 4).
+# 3. selenium EDcomp -- Fieller and delta interval references for a ratio of ED50s.
 # =================================================================================================
 
 data(selenium)
@@ -435,7 +434,7 @@ tight_convergence_note <- paste(
   "robustmargin_logLik >= tight_logLik - 1e-6 rather than the usual two-sided 1e-4 relative bound,",
   "and why mu uses an absolute tolerance (its true value is 0, where a relative tolerance is",
   "ill-posed) while s/upper/lower use a looser 1e-3 relative tolerance -- the tight refit is",
-  "itself only converged to about that precision, not to plan section 6.1's usual 1e-4."
+  "itself only converged to about that precision, not to the usual 1e-4 relative tolerance."
 )
 
 # Sign convention (empirically confirmed against predict(), not assumed -- see scratch
@@ -443,7 +442,7 @@ tight_convergence_note <- paste(
 # severity=0 down to l at high severity). For both LN.3 and LN.4, b comes out negative, and
 # mu=log(e), s=-1/b, upper=d, lower=c reproduces predict() exactly via robustmargin's own formula
 # P_success(x) = u - (u-l)*Phi((log(x)-mu)/s) with u=d, l=c substituted in directly (matching
-# the plan's "lower=c, upper=d" mapping literally, with no 1-minus flip needed, because the
+# the "lower=c, upper=d" mapping literally, with no 1-minus flip needed, because the
 # response fit here is success, not failure).
 mapping_estimated <- list(
   response_fit = "successes/trials (success, decreasing with severity)",
@@ -513,47 +512,47 @@ estimated_fixture <- list(
 write_fixture(estimated_fixture, "estimated_asymptotes.json")
 
 # =================================================================================================
-# 5. decisions/0023 Amendment 1: the zeta PPO x sensor_noise monotonicity reversal's raw one-sided
+# 5. The non-monotone series' (system_c_axis_1) monotonicity reversal's raw one-sided
 #    Fisher exact p-value, from R directly -- 57/200 at severity 0.0 vs 143/300 at severity 0.01
-#    (tests/data/zeta_matrix_counts.csv). robustmargin's own check_monotonicity() tests this same
+#    (tests/data/pooled_counts.csv). robustmargin's own check_monotonicity() tests this same
 #    pair against scipy's fisher_exact (tests/unit/test_monotonicity.py) and, once this fixture is
 #    regenerated, against this R-native number too (tests/reference/test_monotonicity_drc.py).
 # =================================================================================================
 
-ppo_severity_0 <- c(successes = 57, trials = 200)
-ppo_severity_0_01 <- c(successes = 143, trials = 300)
+severity_0 <- c(successes = 57, trials = 200)
+severity_0_01 <- c(successes = 143, trials = 300)
 
-# robustmargin's own table/alternative convention (decisions/0023 Amendment 1, item 4): for
+# robustmargin's own table/alternative convention: for
 # direction="decreasing" with a success outcome, [[successes_high, failures_high],
 # [successes_low, failures_low]], alternative="greater" -- "the higher severity performs better".
-ppo_table <- matrix(
+pair_table <- matrix(
   c(
-    ppo_severity_0_01["successes"], ppo_severity_0_01["trials"] - ppo_severity_0_01["successes"],
-    ppo_severity_0["successes"], ppo_severity_0["trials"] - ppo_severity_0["successes"]
+    severity_0_01["successes"], severity_0_01["trials"] - severity_0_01["successes"],
+    severity_0["successes"], severity_0["trials"] - severity_0["successes"]
   ),
   nrow = 2, byrow = TRUE
 )
-ppo_fisher <- fisher.test(ppo_table, alternative = "greater")
+pair_fisher <- fisher.test(pair_table, alternative = "greater")
 
-ppo_monotonicity_fixture <- list(
+monotonicity_fixture <- list(
   versions = versions,
   dataset = list(
-    series = "ppo_sensor_noise",
+    series = "system_c_axis_1",
     severity_low = 0.0,
     severity_high = 0.01,
-    successes_low = as.numeric(ppo_severity_0["successes"]),
-    trials_low = as.numeric(ppo_severity_0["trials"]),
-    successes_high = as.numeric(ppo_severity_0_01["successes"]),
-    trials_high = as.numeric(ppo_severity_0_01["trials"]),
-    note = "tests/data/zeta_matrix_counts.csv, series ppo_sensor_noise, the two lowest severities."
+    successes_low = as.numeric(severity_0["successes"]),
+    trials_low = as.numeric(severity_0["trials"]),
+    successes_high = as.numeric(severity_0_01["successes"]),
+    trials_high = as.numeric(severity_0_01["trials"]),
+    note = "tests/data/pooled_counts.csv, series system_c_axis_1, the two lowest severities."
   ),
   fisher_test = list(
     alternative = "greater",
-    table_convention = "matrix(c(successes_high, failures_high, successes_low, failures_low), nrow=2, byrow=TRUE) -- robustmargin's own convention, decisions/0023 Amendment 1 item 4",
-    p_value = as.numeric(ppo_fisher$p.value),
-    estimate_odds_ratio = as.numeric(ppo_fisher$estimate)
+    table_convention = "matrix(c(successes_high, failures_high, successes_low, failures_low), nrow=2, byrow=TRUE) -- robustmargin's own convention",
+    p_value = as.numeric(pair_fisher$p.value),
+    estimate_odds_ratio = as.numeric(pair_fisher$estimate)
   )
 )
-write_fixture(ppo_monotonicity_fixture, "zeta_ppo_sensor_noise_monotonicity.json")
+write_fixture(monotonicity_fixture, "monotonicity_system_c_axis_1.json")
 
 cat("\nAll fixtures written under", out_dir, "\n")

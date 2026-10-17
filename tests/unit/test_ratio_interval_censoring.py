@@ -1,10 +1,9 @@
-"""Censoring/status propagation through ``ratio_interval()`` (plan section 5.6).
+"""Censoring/status propagation through ``ratio_interval()``.
 
-**What is settled, and by what.** ``decisions/0015`` settles ``REVIEWS.md`` R6 #6: a censored or
-failed input threshold propagates a flag, never a number
+**The rule.** A censored or failed input threshold propagates a flag, never a number
 (``estimate``/``lo``/``hi``/``shape`` all ``None``, matching :class:`~robustmargin.Ratio`'s own
 ``__post_init__`` invariant), **and** which specific :class:`~robustmargin.Censoring` the
-``Ratio`` carries is direction-aware, per 0015's table:
+``Ratio`` carries is direction-aware, per this table:
 
 | ``threshold_a`` | ``threshold_b`` | ``Ratio.censoring`` |
 |---|---|---|
@@ -20,28 +19,27 @@ failed input threshold propagates a flag, never a number
 
 ``TestCensoringDirectionTable`` below is the specific version of this, using two ``Status.OK``
 thresholds each time so the direction-flip logic is tested in isolation from any fit-level
-failure. Per this phase's coordinator brief: a ``(Status.OK, Censoring.RIGHT)`` threshold is a
-*legal, non-failed* result (`decisions/0012`, `docs/STATISTICS.md`'s threshold-status-coupling
-line: "RIGHT/LEFT take the fit's status", and ``(OK, RIGHT)``/``(OK, LEFT)`` are both reachable),
-so the ``Ratio`` built from one carries ``Status.OK`` together with its (possibly flipped)
-censoring flag -- never a failure status.
+failure. A ``(Status.OK, Censoring.RIGHT)`` threshold is a *legal, non-failed* result (RIGHT/LEFT
+take the fit's status, and ``(OK, RIGHT)``/``(OK, LEFT)`` are both reachable), so the ``Ratio``
+built from one carries ``Status.OK`` together with its (possibly flipped) censoring flag -- never
+a failure status.
 
-**The status rule is also settled, and pinned in ``TestStatusPropagationRule``**:
+**The status rule is pinned in ``TestStatusPropagationRule``**:
 ``Ratio.status`` is ``Status.OK`` only when both input thresholds are ``Status.OK``; when exactly
 one has failed (``SEPARATION``, ``NOT_CONVERGED``, ``UNREACHABLE``, ``FAILS_AT_BASELINE`` or
 ``CONTROL_INCOMPATIBLE``), that failure wins, on either side; when both have failed with
 *different* statuses, the ``Ratio`` takes ``threshold_a``'s and carries a ``warnings`` entry (the
 same "no coherent single reason" rationale as the both-censored row of the table above -- two
 failures resolving to one status is itself a judgement call, not a derivation). This is why
-``TestNumeratorProblemPropagatesWithACleanDenominator`` and its mirror now assert
+``TestNumeratorProblemPropagatesWithACleanDenominator`` and its mirror assert
 ``result.status is status`` directly (one clean side means "one failure wins" determines the
-result exactly), and why ``TestCensoringDirectionAppliesRegardlessOfStatus`` now asserts
+result exactly), and why ``TestCensoringDirectionAppliesRegardlessOfStatus`` asserts
 ``.status`` too, not only ``.censoring``.
 
 Building real censored/failed fits for every combination would be disproportionate to what this
 file checks, so every threshold here comes from ``robustmargin.testing.fake_threshold``, which
-already produces schema-valid objects for each ``(status, censoring)`` combination plan section
-5.5 allows, on a shared axis/definition (so the axis/definition guards, tested separately in
+already produces schema-valid objects for each allowed ``(status, censoring)`` combination, on
+a shared axis/definition (so the axis/definition guards, tested separately in
 ``tests/unit/test_ratio_interval_guards.py``, never fire here by accident).
 """
 
@@ -52,7 +50,7 @@ import pytest
 from robustmargin import Censoring, Ratio, Status, ratio_interval
 from robustmargin.testing import fake_threshold
 
-# The fourteen (status, censoring) combinations plan section 5.5 allows for a Threshold,
+# The fourteen (status, censoring) combinations allowed for a Threshold,
 # mirroring robustmargin.testing._ALLOWED_THRESHOLD_COMBINATIONS. (Status.OK, Censoring.NONE) is
 # the one "clean" combination and is exercised as the control case below, not as a "problem"
 # case in this list.
@@ -108,8 +106,8 @@ class TestNumeratorProblemPropagatesWithACleanDenominator:
 
 class TestDenominatorProblemPropagatesWithACleanNumerator:
     """The mirror of the above: ``b`` carries the problem, ``a`` is clean. Same status-rule
-    reasoning as above applies (`decisions/0015`'s status propagation is symmetric: "one failure
-    wins" does not care which side the failure is on)."""
+    reasoning as above applies (status propagation is symmetric: "one failure wins" does not
+    care which side the failure is on)."""
 
     @pytest.mark.parametrize(("status", "censoring"), _PROBLEM_COMBINATIONS)
     def test_no_numbers_when_b_is_not_ok_and_none(
@@ -130,7 +128,7 @@ class TestBothSidesProblemPropagates:
     generic "no numbers" half:
 
     - ``(OK, RIGHT) / (OK, LEFT)``: both ``Status.OK`` -> ``Ratio.status is OK``; censoring is
-      the "both censored" row of ``decisions/0015``'s table (``threshold_a``'s flag, ``RIGHT``),
+      the "both censored" row of the table (``threshold_a``'s flag, ``RIGHT``),
       identical to ``TestCensoringDirectionTable.test_both_censored_*``'s first case.
     - ``(SEPARATION, NONE) / (OK, OPEN_UPPER)``: one failure (``a``) wins -> ``SEPARATION``;
       censoring has one ``NONE`` side and one ``OPEN_UPPER`` side, so the direction table's
@@ -219,15 +217,15 @@ class TestBothSidesCleanIsTheControlCase:
 
 
 # ------------------------------------------------------------------------------------------
-# decisions/0015: the direction-aware censoring table, and the status/censoring decoupling it
-# implies for a threshold that is censored but not otherwise failed.
+# The direction-aware censoring table, and the status/censoring decoupling it implies for a
+# threshold that is censored but not otherwise failed.
 # ------------------------------------------------------------------------------------------
 
 
 class TestCensoringDirectionTable:
-    """``decisions/0015``'s table, cell by cell. Every threshold here is ``Status.OK`` (a
-    converged fit whose one-sided bound or open profile side is the *only* thing wrong with it,
-    e.g. the ``pid_wind`` worked case in plan section 5.5), so ``Ratio.status`` is asserted to be
+    """The table, cell by cell. Every threshold here is ``Status.OK`` (a converged fit whose
+    one-sided bound or open profile side is the *only* thing wrong with it, e.g. the
+    ``system_a_axis_2`` worked case), so ``Ratio.status`` is asserted to be
     ``Status.OK`` throughout -- a censored-but-converged input is not a failed one.
     """
 
@@ -253,7 +251,7 @@ class TestCensoringDirectionTable:
     def test_right_denominator_with_clean_numerator_flips_to_left(self) -> None:
         """A larger denominator (``sigma*_b`` held only to exceed ``x_max_b``) pushes the ratio
         **down** -- ``RIGHT`` on ``b`` becomes ``LEFT`` on the ratio, the whole point of doing
-        this by direction rather than by copying (`decisions/0015`)."""
+        this by direction rather than by copying."""
         t_a = fake_threshold(status=Status.OK, censoring=Censoring.NONE)
         t_b = fake_threshold(status=Status.OK, censoring=Censoring.RIGHT)
 
@@ -319,7 +317,7 @@ class TestCensoringDirectionTable:
     def test_both_censored_carries_threshold_as_flag_plus_a_warning(
         self, censoring_a: Censoring, censoring_b: Censoring
     ) -> None:
-        """ "No coherent direction exists" (`decisions/0015`): the ``Ratio`` carries
+        """ "No coherent direction exists": the ``Ratio`` carries
         ``threshold_a``'s own censoring flag, unflipped, together with an explicit warning."""
         t_a = fake_threshold(status=Status.OK, censoring=censoring_a)
         t_b = fake_threshold(status=Status.OK, censoring=censoring_b)
@@ -334,17 +332,16 @@ class TestCensoringDirectionTable:
 
 
 class TestCensoringDirectionAppliesRegardlessOfStatus:
-    """The direction a ``Censoring`` value implies (module docstring, `decisions/0015`) is a
+    """The direction a ``Censoring`` value implies (module docstring) is a
     property of what ``RIGHT``/``LEFT``/``OPEN_*`` themselves mean against a tested range, not of
     why a threshold does not have a point value -- so the same flip applies whether the
     denominator's ``RIGHT`` came from a converged fit or from a ``SEPARATION``/``NOT_CONVERGED``
-    exact-bound fallback (plan section 5.2's "falls back to the exact censoring bound, labelled",
-    which still classifies as ``RIGHT``/``LEFT`` per plan section 5.5's table).
+    exact-bound fallback (a failed fit "falls back to the exact censoring bound, labelled",
+    which still classifies as ``RIGHT``/``LEFT``).
 
-    **The status rule is now settled too** (this file's "what remains open" note is updated
-    accordingly): ``Status.OK`` only when both inputs are ``Status.OK``; otherwise one failure
-    wins. Here ``t_a`` is ``OK`` and ``t_b`` is ``NOT_CONVERGED``, so the ratio's status is
-    ``NOT_CONVERGED`` -- asserted directly below, no longer left unpinned.
+    The status rule applies as usual: ``Status.OK`` only when both inputs are ``Status.OK``;
+    otherwise one failure wins. Here ``t_a`` is ``OK`` and ``t_b`` is ``NOT_CONVERGED``, so the
+    ratio's status is ``NOT_CONVERGED`` -- asserted directly below.
     """
 
     def test_right_denominator_from_a_not_converged_fallback_still_flips_to_left(self) -> None:
@@ -359,7 +356,7 @@ class TestCensoringDirectionAppliesRegardlessOfStatus:
 
 
 class TestStatusPropagationRule:
-    """``decisions/0015``'s status propagation, pinned directly: ``Status.OK`` only when both
+    """Status propagation, pinned directly: ``Status.OK`` only when both
     inputs are ``Status.OK``; when exactly one input has failed, that failure's status wins
     (symmetric -- it does not matter which side); when both inputs have failed with *different*
     statuses, the ``Ratio`` takes ``threshold_a``'s status and carries a ``warnings`` entry (no

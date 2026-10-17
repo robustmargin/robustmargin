@@ -1,15 +1,14 @@
 """Regression test for the generic (estimated-asymptote) fitting path's control-row
-sensitivity, reported in `docs/REVIEWS.md` R10 "Still open" item 1 (itself inherited from the
-Phase 7 stats review, finding W3).
+sensitivity.
 
-Plan section 6.4 requires that, with ``upper`` fixed at 1, adding an all-success zero-severity
-control row leaves a fit unchanged: the control contributes exactly ``lchoose(n, n) + n*log(1)
-== 0`` to the full binomial log-likelihood, for every parameter value, not only at the optimum.
+With ``upper`` fixed at 1, adding an all-success zero-severity control row must leave a fit
+unchanged: the control contributes exactly ``lchoose(n, n) + n*log(1) == 0`` to the full
+binomial log-likelihood, for every parameter value, not only at the optimum.
 ``tests/property/test_models_properties.py``'s
-``test_adding_an_all_success_control_leaves_a_fixed_u_1_fit_unchanged`` already pins this down
-for the ``upper=1.0, lower=0.0`` (``GLM``) path. This file pins the same property for the
-``upper=1.0, lower="estimate"`` (``GenericLikelihoodModel``) path, which R10 found violates it:
-statsmodels' own ``LikelihoodModel.fit`` minimises ``-loglike(params) / nobs`` (``nobs =
+``test_adding_an_all_success_control_leaves_a_fixed_u_1_fit_unchanged`` pins this down for the
+``upper=1.0, lower=0.0`` (``GLM``) path. This file pins the same property for the
+``upper=1.0, lower="estimate"`` (``GenericLikelihoodModel``) path, which a naive implementation
+violates: statsmodels' own ``LikelihoodModel.fit`` minimises ``-loglike(params) / nobs`` (``nobs =
 self.endog.shape[0]``, i.e. the number of *rows*, not pooled trials), so adding a
 zero-contribution control row changes ``nobs`` and, with it, the scale at which ``gtol``/``tol``
 decide convergence -- even though the log-likelihood *function itself* is unchanged at every
@@ -17,11 +16,11 @@ parameter value.
 
 **Stated as invariance, not as an absolute "converges" assertion**, and **parametrized over all
 three links, not one.** Both choices come from the same empirical finding, made by running this
-exact fixture (pre-fix) in three environments: this development machine (macOS/x86_64,
-``numpy==2.4.6 scipy==1.17.1 statsmodels==0.15.0``), a fresh ``python:3.11`` container
-(Linux/x86_64) at the same, independently-resolved "latest" versions, and the same container
-against ``ci/constraints-min.txt``'s floors (``numpy==1.26.0 scipy==1.11.1
-statsmodels==0.14.0``):
+exact fixture against an implementation without the correction, in three environments: this
+development machine (macOS/x86_64, ``numpy==2.4.6 scipy==1.17.1 statsmodels==0.15.0``), a fresh
+``python:3.11`` container (Linux/x86_64) at the same, independently-resolved "latest" versions, and
+the same container against ``ci/constraints-min.txt``'s floors
+(``numpy==1.26.0 scipy==1.11.1 statsmodels==0.14.0``):
 
 ==============  =======================  =======================  =======================
 link            macOS, latest             Linux, latest             Linux, floor
@@ -34,12 +33,11 @@ link            macOS, latest             Linux, latest             Linux, floor
 The defect is real in all three environments, but *which link's own "no control" fit happens to
 sit on the converging side of this exact fixture's convergence boundary is itself
 platform/dependency-version-dependent* -- an artifact of floating-point and BLAS differences
-nudging an already-near-boundary optimisation, not of this defect changing shape. A version of
-this test that asserted a specific status for one hand-picked link (an earlier version asserted
-``without_control.status is Status.OK`` as a "premise" for ``link="logit"`` alone) would have
-reported nothing at all on Linux at "latest": ``logit`` holds trivially there (both sides fail,
-for the unrelated boundary reason, saying nothing about this defect), while ``probit`` is the
-link that actually demonstrates it there.
+nudging an already-near-boundary optimisation, not of the defect changing shape. A test that
+asserted a specific status for one hand-picked link (``without_control.status is Status.OK`` as
+a "premise" for ``link="logit"`` alone) would report nothing at all on Linux at "latest":
+``logit`` holds trivially there (both sides fail, for the unrelated boundary reason, saying
+nothing about this defect), while ``probit`` is the link that actually demonstrates it there.
 
 Parametrizing over all three links and asserting *status equality only* (never a specific side)
 fixes this: in every environment checked so far, at least one of ``probit``/``logit`` lands on
@@ -58,7 +56,7 @@ from robustmargin import Axis, Observations, Status, fit_dose_response
 
 _AXIS = Axis(name="severity", unit="unit", scale="log")
 
-# The exact counts R10 reports the defect against: five well-separated log-spaced levels, trial
+# The exact counts the defect is demonstrated against: five well-separated log-spaced levels, trial
 # counts of 50, and a success rate that falls smoothly from 48/50 to 3/50 -- not a knife-edge
 # design by construction. Whether any *specific* link's own no-control fit happens to converge
 # on it is still platform-dependent (see the module docstring's table), which is exactly why the
@@ -88,12 +86,12 @@ def _obs(*, with_control: bool) -> Observations:
     )
 
 
-class TestGenericPathControlRowInvarianceR10:
-    """``upper=1.0`` fixed, ``lower="estimate"`` -- the ``GenericLikelihoodModel`` path (D7
-    ``decisions/0004``). All three links are parametrized (see the module docstring's
-    cross-platform table): on any one platform, at most one or two of the three actually
-    exercise the regression pre-fix, but which one(s) do is not the same on every platform, so
-    all three are kept rather than narrowed to whichever looked informative on a single machine.
+class TestGenericPathControlRowInvariance:
+    """``upper=1.0`` fixed, ``lower="estimate"`` -- the ``GenericLikelihoodModel`` path. All three
+    links are parametrized (see the module docstring's cross-platform table): on any one platform,
+    at most one or two of the three actually exercise the regression, but which one(s) do is not the
+    same on every platform, so all three are kept rather than narrowed to whichever looked
+    informative on a single machine.
     """
 
     @pytest.mark.parametrize("link", ["probit", "logit", "cloglog"])
@@ -115,7 +113,7 @@ class TestGenericPathControlRowInvarianceR10:
         )
 
         if without_control.status is not Status.OK:
-            # S3 (stats review): a link that is vacuous on this platform (both sides already
+            # A link that is vacuous on this platform (both sides already
             # fail, for the unrelated boundary reason the module docstring documents) still owes
             # evidence -- the two fits must fail for the *same* reason, not merely the same
             # status. Two different failure reasons behind one shared status would mean adding

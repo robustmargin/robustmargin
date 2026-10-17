@@ -1,34 +1,22 @@
-"""``decisions/0027``: score-card schema ``"4"``, and a reader that reads ``"4"`` only.
+"""Score-card schema ``"1"``, and a reader that reads ``"1"`` only.
 
-0027 renames the package to ``robustmargin`` and spends one schema bump on it. What it fixes, and
-what this file pins:
+What this file pins:
 
-* ``SCHEMA_VERSION`` is ``"4"``, and so is every result type's ``schema_version`` default,
+* ``SCHEMA_VERSION`` is ``"1"``, and so is every result type's ``schema_version`` default,
   including everything built by ``robustmargin.testing.fake_*``.
-* ``load_schema()`` returns the v4 document, ``$id == "urn:robustmargin:schema:scorecard-v4"``.
-  v4 is v3 with **exactly two changes**: that ``$id``, and ``Scorecard``'s ``marginkit_version``
-  property and ``required`` entry renamed to ``library_version``. The structural digest below
-  is how "nothing else moves" is pinned without keeping the retired v3 document in the tree.
-* ``load_schema("1")`` / ``("2")`` / ``("3")`` raise ``FileNotFoundError``: those files left the
-  package. This is a recorded exception to Appendix B item 4 (read the previous schema).
-* ``Scorecard.library_version`` replaces ``marginkit_version`` in Python and in JSON.
-* ``from_dict`` on any payload whose ``schema_version`` is ``"1"``, ``"2"`` or ``"3"`` raises
-  ``ValueError`` and never mis-reads it -- a whole ``Scorecard``, a bare result, or one nested
-  inside a ``"4"`` card. The message names the version found (its ``repr``), says it is the
-  marginkit card format, and says this reader reads schema ``'4'`` only. It does not cite
-  ``docs/`` or ``decisions/`` (``test_warning_strings_avoid_private_doc_citations.py``). Any
-  other unrecognised version keeps the existing "unknown schema_version" error, which does
-  **not** say ``marginkit``.
-
-The word ``marginkit`` appears in this file only where it is the thing under test: the retired
-card format's name, the retired field name, and the retired URN. Dataclass constructors do not
-validate ``schema_version``, and this change adds no such validation, so nothing here depends on
-what a constructor does with a ``schema_version`` it is handed.
-
-Replaces ``test_schema_v3.py``, ``test_schema_rewrite_fidelity.py`` and
-``test_ratio_interval_schema_v2.py``, whose subject was reading and writing schemas ``"1"`` to
-``"3"``; what they pinned about the *current* document (``Fit.diagnostics``/``.monotonicity``,
-``HALF_OPEN``, JSON round trips, schema validation of fakes) is kept here, against v4.
+* ``load_schema()`` returns the packaged document, whose ``$id`` is
+  ``"urn:robustmargin:schema:scorecard-v1"``; ``scorecard-v1.json`` is the only schema file in the
+  package, and ``load_schema`` of any other version raises ``FileNotFoundError``.
+* The document's validation structure -- properties, types, enums, ``$ref``s, ``required`` lists,
+  ``additionalProperties`` -- is pinned by a structural digest (``$id``, ``title`` and
+  ``description`` prose are left out), so a change to the card format cannot slip in as a
+  rewording.
+* ``from_dict`` on any payload whose ``schema_version`` is not ``"1"`` raises the ordinary
+  "unknown schema_version" ``ValueError`` and never mis-reads it -- a whole ``Scorecard``, a bare
+  result, or one nested inside a current card.
+* What the schema carries: ``Fit.diagnostics`` and ``Fit.monotonicity`` as optional fields,
+  ``IntervalShape.HALF_OPEN``, ``Scorecard.library_version``, JSON round trips, and validation of
+  the fakes and of a card built from real fits.
 """
 
 from __future__ import annotations
@@ -67,7 +55,8 @@ from robustmargin import (
 from robustmargin.report import SCHEMA_VERSION, from_dict, load_schema, to_dict
 from robustmargin.testing import fake_fit, fake_ratio, fake_threshold
 
-_RETIRED_VERSIONS: tuple[str, ...] = ("1", "2", "3")
+# Versions that are not the one packaged version. "" and "0" are malformed rather than later.
+_OTHER_VERSIONS: tuple[str, ...] = ("0", "2", "3", "4", "5", "")
 _LEVEL = 0.95
 _AXIS = Axis(name="severity", unit="unit", scale="log")
 
@@ -156,18 +145,16 @@ def _threshold_with_grid() -> Threshold:
     )
 
 
-def _assert_old_version_error(excinfo: pytest.ExceptionInfo[ValueError], version: str) -> None:
+def _assert_unknown_version_error(excinfo: pytest.ExceptionInfo[ValueError], version: str) -> None:
     message = str(excinfo.value)
+    assert "unknown schema_version" in message
     assert repr(version) in message
-    assert "marginkit" in message
-    assert "reads schema_version '4' only" in message
+    assert "'1'" in message, "the error should name the one version this reader reads"
     assert "unknown field" not in message
-    assert "docs/" not in message
-    assert "decisions/" not in message
 
 
 # ------------------------------------------------------------------------------------------
-# schema_version is "4" everywhere
+# schema_version is "1" everywhere
 # ------------------------------------------------------------------------------------------
 
 # `UNREACHABLE` and `FAILS_AT_BASELINE` describe whether a *threshold* can be solved, so a `Fit`
@@ -185,18 +172,18 @@ _DEFAULT_BUILDERS: dict[str, Callable[[], Any]] = {
 }
 
 
-class TestSchemaVersionIsFour:
-    def test_schema_version_constant_is_4(self) -> None:
-        assert SCHEMA_VERSION == "4"
+class TestSchemaVersionIsOne:
+    def test_schema_version_constant_is_1(self) -> None:
+        assert SCHEMA_VERSION == "1"
 
     @pytest.mark.parametrize("type_name", list(_DEFAULT_BUILDERS))
-    def test_a_freshly_built_result_defaults_to_schema_version_4(self, type_name: str) -> None:
-        assert _DEFAULT_BUILDERS[type_name]().schema_version == "4"
+    def test_a_freshly_built_result_defaults_to_schema_version_1(self, type_name: str) -> None:
+        assert _DEFAULT_BUILDERS[type_name]().schema_version == "1"
 
-    def test_directly_constructed_grid_break_point_defaults_to_schema_version_4(self) -> None:
-        assert GridBreakPoint(0.1, 0.2, Censoring.NONE).schema_version == "4"
+    def test_directly_constructed_grid_break_point_defaults_to_schema_version_1(self) -> None:
+        assert GridBreakPoint(0.1, 0.2, Censoring.NONE).schema_version == "1"
 
-    def test_every_schema_version_in_a_serialised_card_of_fakes_is_4(self) -> None:
+    def test_every_schema_version_in_a_serialised_card_of_fakes_is_1(self) -> None:
         card = _card(_grid_result(), fake_fit(), fake_threshold(), fake_ratio())
 
         versions = _schema_versions_in(_dump(card))
@@ -204,21 +191,21 @@ class TestSchemaVersionIsFour:
         # The card itself, four results, and the fit / thresholds / fits nested inside them:
         # a recursion that missed the nested ones would see fewer than ten.
         assert len(versions) >= 10
-        assert set(versions) == {"4"}
+        assert set(versions) == {"1"}
 
     @pytest.mark.parametrize("status", _FIT_STATUSES, ids=lambda s: s.name)
-    def test_a_fake_fit_of_every_status_is_tagged_4_throughout(self, status: Status) -> None:
+    def test_a_fake_fit_of_every_status_is_tagged_1_throughout(self, status: Status) -> None:
         fit = fake_fit(status=status)
 
-        assert fit.schema_version == "4"
-        assert set(_schema_versions_in(_dump(fit))) == {"4"}
+        assert fit.schema_version == "1"
+        assert set(_schema_versions_in(_dump(fit))) == {"1"}
 
     @pytest.mark.parametrize("status", list(Status), ids=lambda s: s.name)
-    def test_a_fake_threshold_of_every_status_is_tagged_4_throughout(self, status: Status) -> None:
+    def test_a_fake_threshold_of_every_status_is_tagged_1_throughout(self, status: Status) -> None:
         t = fake_threshold(status=status, censoring=Censoring.NONE)
 
-        assert t.schema_version == "4"
-        assert set(_schema_versions_in(_dump(t))) == {"4"}
+        assert t.schema_version == "1"
+        assert set(_schema_versions_in(_dump(t))) == {"1"}
 
 
 # ------------------------------------------------------------------------------------------
@@ -227,38 +214,38 @@ class TestSchemaVersionIsFour:
 
 
 class TestLoadSchema:
-    def test_default_schema_id_is_the_robustmargin_v4_urn(self) -> None:
-        assert _schema()["$id"] == "urn:robustmargin:schema:scorecard-v4"
+    def test_default_schema_id_is_the_robustmargin_v1_urn(self) -> None:
+        assert _schema()["$id"] == "urn:robustmargin:schema:scorecard-v1"
 
-    def test_load_schema_4_is_the_default(self) -> None:
-        assert load_schema("4") == _schema()
+    def test_load_schema_1_is_the_default(self) -> None:
+        assert load_schema("1") == _schema()
 
-    @pytest.mark.parametrize("version", [*_RETIRED_VERSIONS, "5"])
+    @pytest.mark.parametrize("version", ["2", "3", "4", "5"])
     def test_load_schema_for_a_version_that_is_not_packaged_raises_file_not_found(
         self, version: str
     ) -> None:
         with pytest.raises(FileNotFoundError):
             load_schema(version)
 
-    def test_only_the_v4_document_is_packaged(self) -> None:
+    def test_only_the_v1_document_is_packaged(self) -> None:
         schema_dir = Path(robustmargin.__file__).resolve().parent / "schema"
 
         names = sorted(p.name for p in schema_dir.glob("scorecard-v*.json"))
 
-        assert names == ["scorecard-v4.json"]
+        assert names == ["scorecard-v1.json"]
 
-    def test_the_root_still_describes_a_scorecard(self) -> None:
+    def test_the_root_describes_a_scorecard(self) -> None:
         assert _schema()["properties"]["type"]["const"] == "Scorecard"
 
 
 # ------------------------------------------------------------------------------------------
-# v4 is v3 with exactly two changes
+# The document's structure
 # ------------------------------------------------------------------------------------------
 
 
 def _structural_digest(schema: dict[str, Any]) -> str:
     """SHA-256 of the schema's *validation content*: the root ``$id`` (pinned on its own above),
-    every ``title`` / ``description`` annotation (prose, which a rename legitimately rewrites)
+    every ``title`` / ``description`` annotation (prose, which rewording legitimately changes)
     and the order of every ``required`` list (a set, semantically) are left out; everything
     else -- properties, types, enums, ``$ref``s, ``additionalProperties`` -- is in."""
 
@@ -283,20 +270,18 @@ def _structural_digest(schema: dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-# Computed once from the retired v3 document -- `git show ef0d719:src/marginkit/schema/
-# scorecard-v3.json`, its last committed form -- with the two changes of decisions/0027 applied
-# (`marginkit_version` -> `library_version` in the Scorecard `properties` and `required`), then
-# passed through `_structural_digest`. If this fails, the v4 document differs from "v3 plus those
-# two changes" in some field, type, enum member or invariant, which 0027 says does not happen:
-# diff scorecard-v4.json against that commit's v3 to find it.
-_V4_STRUCTURAL_DIGEST = "6f7a70d8e037caefe6ae88b615443b180eab240971e7f8c8250568b232f86829"
+# The digest of the packaged document's validation structure. If this fails, the document's
+# fields, types, enum members or invariants changed, which is a change to the card format: it must
+# be a deliberate schema_version change with the reader updated to match, not a silent edit.
+# Recompute with `_structural_digest(load_schema())` only after that decision.
+_SCHEMA_STRUCTURAL_DIGEST = "6f7a70d8e037caefe6ae88b615443b180eab240971e7f8c8250568b232f86829"
 
 
-class TestSchemaV4IsV3WithTwoChanges:
-    def test_v4_structure_is_v3_structure_with_only_library_version_renamed(self) -> None:
-        assert _structural_digest(_schema()) == _V4_STRUCTURAL_DIGEST, (
-            "scorecard-v4.json differs from the retired v3 document in more than its $id and "
-            "the Scorecard marginkit_version -> library_version rename (decisions/0027 item 3)"
+class TestSchemaStructure:
+    def test_structure_matches_the_pinned_digest(self) -> None:
+        assert _structural_digest(_schema()) == _SCHEMA_STRUCTURAL_DIGEST, (
+            "scorecard-v1.json's validation structure changed (properties, types, enums, "
+            "required lists or additionalProperties); that is a card-format change"
         )
 
     def test_digest_helper_is_sensitive_to_a_validation_change(self) -> None:
@@ -312,12 +297,15 @@ class TestSchemaV4IsV3WithTwoChanges:
         reworded["title"] = "different title"
         reordered = copy.deepcopy(schema)
         reordered["required"] = list(reversed(reordered["required"]))
+        renamed = copy.deepcopy(schema)
+        renamed["$id"] = "urn:example:another-id"
 
         assert _structural_digest(widened) != baseline
         assert _structural_digest(reworded) == baseline
         assert _structural_digest(reordered) == baseline
+        assert _structural_digest(renamed) == baseline
 
-    def test_scorecard_root_requires_library_version_and_not_marginkit_version(self) -> None:
+    def test_scorecard_root_requires_exactly_these_fields(self) -> None:
         schema = _schema()
 
         assert set(schema["required"]) == {
@@ -328,7 +316,6 @@ class TestSchemaV4IsV3WithTwoChanges:
             "schema_version",
         }
         assert schema["properties"]["library_version"] == {"type": "string"}
-        assert "marginkit_version" not in schema["properties"]
 
     @pytest.mark.parametrize(
         ("def_name", "enum_type"),
@@ -351,31 +338,20 @@ class TestSchemaV4IsV3WithTwoChanges:
 
 
 class TestScorecardLibraryVersion:
-    def test_library_version_is_a_field_and_marginkit_version_is_not(self) -> None:
+    def test_library_version_is_a_scorecard_field(self) -> None:
         names = {f.name for f in dataclasses.fields(Scorecard)}
 
         assert "library_version" in names
-        assert "marginkit_version" not in names
 
     def test_library_version_defaults_to_the_package_version(self) -> None:
         card = _card(fake_fit())
 
         assert card.library_version == robustmargin.__version__
 
-    def test_there_is_no_marginkit_version_attribute(self) -> None:
-        assert not hasattr(_card(fake_fit()), "marginkit_version")
-
-    def test_the_constructor_rejects_a_marginkit_version_keyword(self) -> None:
-        retired_keyword: dict[str, Any] = {"marginkit_version": "0.1.1"}
-
-        with pytest.raises(TypeError):
-            Scorecard(results=(fake_fit(),), provenance={}, **retired_keyword)
-
-    def test_to_dict_writes_library_version_and_no_marginkit_version(self) -> None:
+    def test_to_dict_writes_library_version(self) -> None:
         payload = _dump(Scorecard(results=(fake_fit(),), provenance={}, library_version="9.9.9"))
 
         assert payload["library_version"] == "9.9.9"
-        assert "marginkit_version" not in payload
 
     def test_library_version_survives_a_json_round_trip(self) -> None:
         card = Scorecard(results=(fake_fit(),), provenance={}, library_version="9.9.9")
@@ -386,43 +362,28 @@ class TestScorecardLibraryVersion:
         assert reloaded.library_version == "9.9.9"
         assert reloaded == card
 
-    def test_a_v4_card_carrying_a_marginkit_version_key_is_rejected_as_unknown(self) -> None:
+    def test_a_card_carrying_an_unrecognised_key_is_rejected_naming_it(self) -> None:
         payload = _dump(_card(fake_fit()))
-        payload["marginkit_version"] = "0.1.1"
+        payload["extra_key"] = "0.1.1"
 
         with pytest.raises(ValueError) as excinfo:
             from_dict(payload)
 
-        assert "marginkit_version" in str(excinfo.value)
+        assert "extra_key" in str(excinfo.value)
 
-    def test_a_v4_card_with_library_version_renamed_back_is_rejected_as_unknown(self) -> None:
+    def test_a_card_missing_library_version_is_rejected(self) -> None:
         payload = _dump(_card(fake_fit()))
-        payload["marginkit_version"] = payload.pop("library_version")
+        del payload["library_version"]
 
         with pytest.raises(ValueError) as excinfo:
             from_dict(payload)
 
-        assert "marginkit_version" in str(excinfo.value)
+        assert "library_version" in str(excinfo.value)
 
 
 # ------------------------------------------------------------------------------------------
-# Reading a retired schema version raises, and never mis-reads
+# A schema_version other than "1" raises, and never mis-reads
 # ------------------------------------------------------------------------------------------
-
-
-def _old_shaped_card_payload(version: str) -> dict[str, Any]:
-    """A payload shaped like a card the retired format actually wrote: every ``schema_version``
-    set to ``version``, the ``library_version`` key under its old name ``marginkit_version``,
-    and -- for ``"1"``/``"2"`` -- the ``Fit`` keys that only ``"3"`` introduced removed outright."""
-    payload: dict[str, Any] = _with_schema_version_everywhere(
-        _dump(_card(fake_threshold())), version
-    )
-    payload["marginkit_version"] = payload.pop("library_version")
-    if version in ("1", "2"):
-        fit = payload["results"][0]["fit"]
-        del fit["diagnostics"]
-        del fit["monotonicity"]
-    return payload
 
 
 # (builder, path from the result down to the object whose schema_version is set). `()` is the
@@ -442,120 +403,81 @@ _NESTING_CASES: list[tuple[str, Callable[[], Any], tuple[str, ...]]] = [
 _NESTING_IDS = [case[0] for case in _NESTING_CASES]
 
 
-class TestOldSchemaVersionsAreRejected:
-    @pytest.mark.parametrize("version", _RETIRED_VERSIONS)
-    def test_a_whole_old_card_raises_naming_the_version(self, version: str) -> None:
+class TestUnknownSchemaVersionsAreRejected:
+    @pytest.mark.parametrize("version", _OTHER_VERSIONS)
+    def test_a_whole_card_tagged_with_another_version_raises_naming_the_version(
+        self, version: str
+    ) -> None:
         payload = _with_schema_version_everywhere(_dump(_card(fake_threshold())), version)
 
         with pytest.raises(ValueError) as excinfo:
             from_dict(payload)
 
-        _assert_old_version_error(excinfo, version)
+        _assert_unknown_version_error(excinfo, version)
 
-    @pytest.mark.parametrize("version", _RETIRED_VERSIONS)
-    def test_a_genuinely_old_shaped_card_is_caught_at_its_version_not_its_old_field_name(
-        self, version: str
-    ) -> None:
-        """The old card's ``marginkit_version`` key would be an unknown field to the v4 reader;
-        the version check runs first, so the caller is told what the card *is*."""
-        payload = _old_shaped_card_payload(version)
-        assert "marginkit_version" in payload
-
-        with pytest.raises(ValueError) as excinfo:
-            from_dict(_json_round_trip(payload))
-
-        _assert_old_version_error(excinfo, version)
-
-    @pytest.mark.parametrize("version", _RETIRED_VERSIONS)
-    def test_an_old_card_root_with_current_children_still_raises(self, version: str) -> None:
+    @pytest.mark.parametrize("version", _OTHER_VERSIONS)
+    def test_a_card_root_with_current_children_still_raises(self, version: str) -> None:
         payload = _dump(_card(fake_threshold()))
         payload["schema_version"] = version
 
         with pytest.raises(ValueError) as excinfo:
             from_dict(payload)
 
-        _assert_old_version_error(excinfo, version)
+        _assert_unknown_version_error(excinfo, version)
 
-    @pytest.mark.parametrize("version", _RETIRED_VERSIONS)
+    @pytest.mark.parametrize("version", _OTHER_VERSIONS)
     @pytest.mark.parametrize(("name", "build", "path"), _NESTING_CASES, ids=_NESTING_IDS)
-    def test_an_old_object_nested_inside_a_current_card_raises(
+    def test_an_object_of_another_version_nested_inside_a_current_card_raises(
         self, name: str, build: Callable[[], Any], path: tuple[str, ...], version: str
     ) -> None:
         payload = _dump(_card(build()))
-        assert set(_schema_versions_in(payload)) == {"4"}
+        assert set(_schema_versions_in(payload)) == {"1"}
         _navigate(payload, ("results", 0, *path))["schema_version"] = version
 
         with pytest.raises(ValueError) as excinfo:
             from_dict(_json_round_trip(payload))
 
-        _assert_old_version_error(excinfo, version)
+        _assert_unknown_version_error(excinfo, version)
 
-    @pytest.mark.parametrize("version", _RETIRED_VERSIONS)
+    @pytest.mark.parametrize("version", _OTHER_VERSIONS)
     @pytest.mark.parametrize(("name", "build", "path"), _NESTING_CASES, ids=_NESTING_IDS)
-    def test_an_old_bare_result_or_part_of_one_raises(
+    def test_a_bare_result_or_part_of_one_of_another_version_raises(
         self, name: str, build: Callable[[], Any], path: tuple[str, ...], version: str
     ) -> None:
         payload = _dump(build())
-        assert set(_schema_versions_in(payload)) == {"4"}
+        assert set(_schema_versions_in(payload)) == {"1"}
         _navigate(payload, path)["schema_version"] = version
 
         with pytest.raises(ValueError) as excinfo:
             from_dict(_json_round_trip(payload))
 
-        _assert_old_version_error(excinfo, version)
+        _assert_unknown_version_error(excinfo, version)
 
+    def test_the_error_is_the_same_ordinary_error_for_every_other_version(self) -> None:
+        """No version gets a message of its own: each is just not the one version read."""
+        shapes = set()
+        for version in _OTHER_VERSIONS:
+            payload = _dump(fake_fit())
+            payload["schema_version"] = version
+            with pytest.raises(ValueError) as excinfo:
+                from_dict(payload)
+            shapes.add(str(excinfo.value).replace(repr(version), "<version>"))
 
-class TestUnrecognisedSchemaVersionKeepsTheExistingError:
-    """A version outside 1-4 is not "an old marginkit card": it keeps the plain
-    "unknown schema_version" error, and that error does not name marginkit."""
+        assert len(shapes) == 1, shapes
 
-    @pytest.mark.parametrize("version", ["5", "999", "0", "10", ""])
-    def test_a_bare_result_with_an_unrecognised_version_says_unknown_schema_version(
-        self, version: str
-    ) -> None:
+    @pytest.mark.parametrize("version", ["999", "10", "1.0", " 1", "1 "])
+    def test_a_near_miss_of_the_supported_version_is_also_unknown(self, version: str) -> None:
         payload = _dump(fake_fit())
         payload["schema_version"] = version
 
         with pytest.raises(ValueError) as excinfo:
             from_dict(payload)
 
-        message = str(excinfo.value)
-        assert "unknown schema_version" in message
-        assert repr(version) in message
-        assert "marginkit" not in message
-
-    @pytest.mark.parametrize("version", ["5", "999"])
-    def test_a_card_with_an_unrecognised_root_version_says_unknown_schema_version(
-        self, version: str
-    ) -> None:
-        payload = _dump(_card(fake_fit()))
-        payload["schema_version"] = version
-
-        with pytest.raises(ValueError) as excinfo:
-            from_dict(payload)
-
-        message = str(excinfo.value)
-        assert "unknown schema_version" in message
-        assert "marginkit" not in message
-
-    @pytest.mark.parametrize("version", ["5", "999"])
-    def test_an_unrecognised_version_nested_in_a_current_card_says_unknown_schema_version(
-        self, version: str
-    ) -> None:
-        payload = _dump(_card(fake_threshold()))
-        payload["results"][0]["fit"]["schema_version"] = version
-
-        with pytest.raises(ValueError) as excinfo:
-            from_dict(payload)
-
-        message = str(excinfo.value)
-        assert "unknown schema_version" in message
-        assert repr(version) in message
-        assert "marginkit" not in message
+        _assert_unknown_version_error(excinfo, version)
 
 
 # ------------------------------------------------------------------------------------------
-# What v4 does carry: round trips and validation, kept from the v2/v3 files
+# What the schema carries: round trips and validation
 # ------------------------------------------------------------------------------------------
 
 
@@ -576,7 +498,7 @@ _FAKE_BUILDERS: dict[str, Callable[[], Any]] = {
 }
 
 
-class TestV4RoundTripsAndValidates:
+class TestRoundTripsAndValidates:
     @pytest.mark.parametrize("name", list(_FAKE_BUILDERS))
     def test_every_fake_round_trips_through_json_text(self, name: str) -> None:
         result = _FAKE_BUILDERS[name]()
@@ -603,7 +525,7 @@ class TestV4RoundTripsAndValidates:
         assert reloaded == card
 
     @pytest.mark.parametrize("name", list(_FAKE_BUILDERS))
-    def test_reading_and_rewriting_a_v4_payload_is_byte_identical(self, name: str) -> None:
+    def test_reading_and_rewriting_a_payload_is_byte_identical(self, name: str) -> None:
         payload = _json_round_trip(_dump(_card(_FAKE_BUILDERS[name]())))
 
         rewritten = _dump(from_dict(payload))
@@ -746,7 +668,7 @@ def _real_fails_at_baseline_threshold() -> Threshold:
     return t
 
 
-class TestARealCardIsSchemaFourThroughout:
+class TestARealCardIsSchemaOneThroughout:
     def _real_card(self) -> Scorecard:
         return Scorecard(
             results=(
@@ -757,14 +679,14 @@ class TestARealCardIsSchemaFourThroughout:
                 _real_fails_at_baseline_threshold(),
                 _grid_result(),
             ),
-            provenance={"run": "schema-v4", "nested": {"k": [1, 2, None, True, 3.5]}},
+            provenance={"run": "schema-v1", "nested": {"k": [1, 2, None, True, 3.5]}},
         )
 
-    def test_every_schema_version_in_the_serialised_card_is_4(self) -> None:
+    def test_every_schema_version_in_the_serialised_card_is_1(self) -> None:
         versions = _schema_versions_in(_dump(self._real_card()))
 
         assert len(versions) >= 12
-        assert set(versions) == {"4"}
+        assert set(versions) == {"1"}
 
     def test_the_card_validates_against_the_packaged_schema(self) -> None:
         jsonschema.Draft202012Validator(_schema()).validate(_dump(self._real_card()))

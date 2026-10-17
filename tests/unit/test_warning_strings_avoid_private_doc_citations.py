@@ -1,22 +1,21 @@
-"""`docs/REVIEWS.md` R10 "Still open" item 3: user-facing strings must not cite documents that
-are not in the public repository.
+"""User-facing strings must not cite documents that are not in the public repository.
 
-`docs/`, `CLAUDE.md` and `docs/IMPLEMENTATION_PLAN.md` are not shipped with the package (see
-`.gitignore`): a consumer who reads a warning or exception message naming ``decisions/0023``,
-"plan section 5.7", ``IMPLEMENTATION_PLAN`` or ``STATISTICS.md``/``REVIEWS.md`` has no way to
-look any of them up. About 35 runtime string literals across ``src/robustmargin/*.py`` do exactly
-this today (warning messages built with ``warnings.append``/``collected_warnings.append``, and
-``raise ValueError(...)`` messages) -- confirmed by the static scan below before this test was
-written, per `CLAUDE.md`'s working rhythm.
+The project's own working documents (decision records, the implementation plan, the statistics and
+review notes) are not shipped with the package: a consumer who reads a warning or exception
+message naming a decision record, a plan section or one of those notes has no way to look any of
+them up. This file scans for such citations in the runtime string literals across
+``src/robustmargin/*.py`` (warning messages built with ``warnings.append``/
+``collected_warnings.append``, and ``raise ValueError(...)`` messages).
 
 Two complementary checks:
 
 1. A static scan over every non-docstring string literal in ``src/robustmargin/*.py`` (the
    authoritative, complete check: it cannot miss a reachable-but-untested code path, unlike any
    dynamic exercise). Docstrings are identified structurally (the first statement of a module,
-   class or function body) and are out of scope, per the brief -- they document *why* a rule
-   exists for a contributor reading the source, which is a different audience from someone
-   reading a message a running program printed.
+   class or function body) and are out of scope here -- they document *why* a rule exists for a
+   contributor reading the source, which is a different audience from someone reading a message a
+   running program printed. ``test_tracked_text_is_self_contained.py`` scans docstrings and
+   comments too.
 2. A dynamic exercise of a representative sample of the real warning- and exception-producing
    paths, through the public API (plus ``robustmargin.testing``'s fakes and direct, public
    dataclass construction for paths that need a specific, otherwise hard-to-reach ``Fit``/
@@ -25,9 +24,8 @@ Two complementary checks:
    direct evidence that real, user-visible text is affected, not just unreachable dead code.
 
 The ``UPPER_CASE: `` tokens themselves (``NON_MONOTONE_DATA: ``, ``NON_MONOTONE: ``,
-``OVERDISPERSED: ``, ``SPARSE_CELLS: ``) are frozen API (`decisions/0011`, `decisions/0023`) and
-are pinned here too, so a fix for this finding cannot accidentally touch them: only the prose
-after the token may change.
+``OVERDISPERSED: ``, ``SPARSE_CELLS: ``) are frozen API and are pinned here too, so a rewording of
+the prose cannot accidentally touch them: only the text after the token may change.
 """
 
 from __future__ import annotations
@@ -182,7 +180,7 @@ def test_the_scan_itself_catches_a_known_bad_literal() -> None:
 
 
 def _wrong_sign_fit() -> Fit:
-    """`decisions/0005` case 1: success rate rises with severity, the opposite of
+    """The wrong-sign case: success rate rises with severity, the opposite of
     ``direction="decreasing"``, with overlap at every level (no separation) -- ``NOT_CONVERGED``
     with ``_WRONG_SIGN_OR_FLAT_WARNING``."""
     obs = Observations.from_counts(
@@ -197,9 +195,8 @@ def _wrong_sign_fit() -> Fit:
 
 
 def _control_incompatible_fit() -> Fit:
-    """A fixed ``upper=1.0`` with a failing zero-severity control, on a log axis (plan section
-    5.1): the likelihood is zero, so ``fit_dose_response`` reports ``CONTROL_INCOMPATIBLE``
-    before fitting at all."""
+    """A fixed ``upper=1.0`` with a failing zero-severity control, on a log axis: the likelihood
+    is zero, so ``fit_dose_response`` reports ``CONTROL_INCOMPATIBLE`` before fitting at all."""
     obs = Observations.from_counts(
         _LOG_AXIS,
         severity=[0.0, 0.01, 0.05, 0.1],
@@ -240,7 +237,7 @@ def _non_monotone_converged_fit_and_threshold() -> tuple[Fit, object]:
 def _overdispersed_fit() -> Fit:
     """Three fixed-asymptote (``upper=0.75``, ``lower=0.25``) cells at exact ``z`` values
     (``-50, 0, +50``), with the middle cell's observed count chosen so the Pearson dispersion is
-    strictly above the 1.5 threshold (plan section 5.7) -- the same construction `tests/unit/
+    strictly above the 1.5 threshold -- the same construction `tests/unit/
     test_validation.py::TestDispersionWarning` uses, independently reproduced here."""
     from scipy.special import gammaln, xlogy
     from scipy.stats import norm
@@ -282,8 +279,8 @@ def _overdispersed_fit() -> Fit:
 
 def _sparse_cells_fit() -> Fit:
     """A fixed ``upper=1, lower=0`` fit with one cell whose expected-failure count is below the
-    0.1 cutoff with exactly one observed failure (`decisions/0023` Amendments 2-4) -- the same
-    construction `tests/unit/test_validation.py::TestSparseCellsWarning` uses."""
+    0.1 cutoff with exactly one observed failure -- the same construction `tests/unit/
+    test_validation.py::TestSparseCellsWarning` uses."""
     from scipy.special import gammaln, xlogy
     from scipy.stats import norm
 
@@ -342,20 +339,20 @@ def _collect_dynamic_messages() -> list[str]:
     messages.extend(diagnose(_overdispersed_fit()).warnings)
     messages.extend(diagnose(_sparse_cells_fit()).warnings)
 
-    # ratio_interval: dependence='paired' is not implemented (decisions/0008's sibling, D6).
+    # ratio_interval: dependence='paired' is not implemented in this release.
     t_a = fake_threshold(status=Status.OK, censoring=Censoring.NONE)
     t_b = fake_threshold(status=Status.OK, censoring=Censoring.NONE)
     with pytest.raises(ValueError) as excinfo_paired:
         ratio_interval(t_a, t_b, method="fieller", dependence="paired")
     messages.append(str(excinfo_paired.value))
 
-    # ratio_interval: an explicit level that disagrees with both thresholds' own (decisions/0016).
+    # ratio_interval: an explicit level that disagrees with both thresholds' own.
     with pytest.raises(ValueError) as excinfo_level:
         ratio_interval(t_a, t_b, method="fieller", dependence="independent", level=0.80)
     messages.append(str(excinfo_level.value))
 
     # threshold(): definition.kind='relative' on a failed fit with no zero-severity control cell
-    # to fall back to (decisions/0008).
+    # to fall back to.
     no_control_fit = Fit(
         axis=_LOG_AXIS,
         outcome="success",
@@ -377,35 +374,28 @@ def _collect_dynamic_messages() -> list[str]:
         )
     messages.append(str(excinfo_relative.value))
 
-    # from_dict: a card tagged with a retired schema_version (decisions/0027) -- once on a whole
-    # card, once nested inside a current one, once on a bare result -- and a version that is not
-    # retired but not recognised either. The retired-version message is new text written to be
-    # read by a person holding an old file, which is exactly the reader who cannot look up a
-    # document, so it is held to the same rule as every other message here.
-    for retired in ("1", "2", "3"):
-        old_card = to_dict(fake_threshold())
-        old_card["schema_version"] = retired
-        with pytest.raises(ValueError) as excinfo_retired_bare:
-            from_dict(old_card)
-        messages.append(str(excinfo_retired_bare.value))
+    # from_dict: a card tagged with a schema_version that is not recognised -- once on a whole
+    # card, once nested inside a current one. The message is read by a person holding a card from
+    # elsewhere, which is exactly the reader who cannot look up a document, so it is held to the
+    # same rule as every other message here.
+    for unrecognised_version in ("0", "2", "999"):
+        unrecognised = to_dict(fake_threshold())
+        unrecognised["schema_version"] = unrecognised_version
+        with pytest.raises(ValueError) as excinfo_unrecognised:
+            from_dict(unrecognised)
+        messages.append(str(excinfo_unrecognised.value))
 
     nested_card: dict[str, Any] = to_dict(Scorecard(results=(fake_threshold(),), provenance={}))
     nested_card["results"][0]["fit"]["schema_version"] = "3"
-    with pytest.raises(ValueError) as excinfo_retired_nested:
+    with pytest.raises(ValueError) as excinfo_nested:
         from_dict(nested_card)
-    messages.append(str(excinfo_retired_nested.value))
-
-    unrecognised = to_dict(fake_threshold())
-    unrecognised["schema_version"] = "999"
-    with pytest.raises(ValueError) as excinfo_unrecognised:
-        from_dict(unrecognised)
-    messages.append(str(excinfo_unrecognised.value))
+    messages.append(str(excinfo_nested.value))
 
     return messages
 
 
 def _collect_cell_ordering_messages() -> list[str]:
-    """The ``Fit.cells`` ordering errors (``decisions/0029``): the construction error for a
+    """The ``Fit.cells`` ordering errors: the construction error for a
     descending pair and for a duplicated severity, and the same error reached through
     ``from_dict`` on a card whose cells were reversed by hand. Each is read by a person holding a
     hand-built fit or a hand-edited card, who cannot look up a document either. Kept apart from

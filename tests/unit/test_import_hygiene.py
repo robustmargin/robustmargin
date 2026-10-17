@@ -1,7 +1,7 @@
 """Import hygiene: importing ``robustmargin`` must not drag in banned dependencies.
 
-CLAUDE.md hard constraint 1 forbids any GPU, ML-framework, or plotting dependency, at any
-time, for any reason. The only way to check that honestly is to import the real package in a
+robustmargin forbids any GPU, ML-framework, or plotting dependency, at any time, for any
+reason. The only way to check that honestly is to import the real package in a
 fresh interpreter and inspect ``sys.modules`` there — asserting against ``sys.modules`` inside
 the running pytest process is worthless, since pytest and unrelated test modules have already
 imported arbitrary things by the time any test body runs.
@@ -13,7 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Visible in one place so later phases can extend it as new forbidden dependencies are named.
+# Visible in one place so it can be extended as new forbidden dependencies are named.
 # `pandas` is deliberately absent: `statsmodels` requires pandas, so its presence in
 # `sys.modules` after importing `robustmargin` is unavoidable and is not a constraint violation.
 # Do not "tighten" this test by adding it.
@@ -62,7 +62,7 @@ def test_importing_robustmargin_does_not_load_forbidden_modules() -> None:
 def test_robustmargin_version_is_a_nonempty_string() -> None:
     """``robustmargin.__version__`` must exist and be a non-empty string.
 
-    The exact value is not asserted: it changes every phase, and pinning it here would make
+    The exact value is not asserted: it changes every release, and pinning it here would make
     this test a maintenance tax rather than a hygiene check.
     """
     import robustmargin
@@ -71,10 +71,8 @@ def test_robustmargin_version_is_a_nonempty_string() -> None:
     assert robustmargin.__version__ != ""
 
 
-# Phase 3 addition (plan section 7 Phase 3 "Tests"): robustmargin.report and
-# robustmargin.testing are importable submodules, not re-exported from
-# robustmargin/__init__.py (plan section 4's layout --
-# `report.py`, `testing.py`). Neither may pull in a dev-only dependency merely by being imported --
+# robustmargin.report and robustmargin.testing are importable submodules, not re-exported from
+# robustmargin/__init__.py. Neither may pull in a dev-only dependency merely by being imported --
 # jsonschema is a dev extra used by robustmargin.testing's *own* test suite and by consumers'
 # validators, not by loading the module itself; hypothesis and pytest belong to robustmargin's own
 # test suite. A production install of a consumer that only imports these modules must not need
@@ -114,45 +112,18 @@ def test_importing_report_and_testing_does_not_load_dev_only_modules() -> None:
     )
 
 
-# decisions/0027 item 2: no shim. Nothing named after the old distribution ships -- no import
-# package, no alias module, no re-export -- because a top-level `marginkit` inside this wheel
-# would overwrite, or be overwritten by, whatever another account publishes under that name.
+# The source tree holds one importable package. Nothing else ships -- no second import package, no
+# alias module, no re-export -- because a top-level package inside this wheel would overwrite, or
+# be overwritten by, whatever another project publishes under that name.
 _SRC_DIR = Path(__file__).resolve().parents[2] / "src"
 
 
-def test_src_holds_exactly_the_robustmargin_package_and_no_marginkit_shim() -> None:
+def test_src_holds_exactly_the_robustmargin_package() -> None:
     """The source tree has one importable package, ``robustmargin``, and no top-level module.
-    Judged from the files on disk rather than from ``import marginkit`` failing, because a
-    development environment may still carry a stale editable install of the old name."""
+    Judged from the files on disk rather than from an import failing, because a development
+    environment may carry a stale editable install of another name."""
     packages = sorted(p.name for p in _SRC_DIR.iterdir() if (p / "__init__.py").is_file())
     top_level_modules = sorted(p.name for p in _SRC_DIR.glob("*.py"))
 
     assert packages == ["robustmargin"]
     assert top_level_modules == []
-
-
-_ALIAS_SUBPROCESS_SCRIPT = """
-import sys
-
-import robustmargin  # noqa: F401
-import robustmargin.report  # noqa: F401
-import robustmargin.testing  # noqa: F401
-
-print(",".join(sorted(name for name in sys.modules if name.split(".")[0] == "marginkit")))
-"""
-
-
-def test_importing_robustmargin_registers_no_marginkit_alias_in_sys_modules() -> None:
-    """A compatibility alias could be installed by *executing* an import rather than by a
-    directory on disk; a fresh interpreter shows whether importing the package, its report
-    module and its testing module leaves any ``marginkit`` entry behind."""
-    result = subprocess.run(
-        [sys.executable, "-c", _ALIAS_SUBPROCESS_SCRIPT],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    assert result.returncode == 0, f"subprocess failed to import robustmargin: {result.stderr}"
-
-    aliases = [name for name in result.stdout.strip().split(",") if name]
-    assert not aliases, f"marginkit entries appeared in sys.modules: {aliases}"

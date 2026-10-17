@@ -1,4 +1,4 @@
-"""``ratio_interval()``'s guards (plan section 5.6): the checks that must raise before -- or
+"""``ratio_interval()``'s guards: the checks that must raise before -- or
 instead of -- any Fieller/log-delta computation happens.
 
 Four of these mirror invariants ``Ratio.__post_init__`` already enforces (axis name, axis unit,
@@ -11,11 +11,11 @@ or by checking earlier) rather than silently swallowing the mismatch or crashing
 other than ``ValueError``.
 
 Two guards have no ``Ratio``-level equivalent, because they are about the *call*, not the
-resulting object: ``dependence="paired"`` (v0.2 Phase 9, not yet implemented -- mirrors
-``threshold()``'s own guard, ``threshold.py``'s ``dependence == "paired"`` check) and ``level``
-inheritance (design choice for this phase: ``level=None`` takes the level from the two input
-thresholds, which must agree; an explicit ``level`` that contradicts them also raises -- hard
-constraint 3, no silent fallback to a value the caller did not ask for).
+resulting object: ``dependence="paired"`` (not implemented -- mirrors ``threshold()``'s own
+guard, ``threshold.py``'s ``dependence == "paired"`` check) and ``level`` inheritance
+(``level=None`` takes the level from the two input thresholds, which must agree; an explicit
+``level`` that contradicts them also raises -- no silent fallback to a value the caller did not
+ask for).
 
 This file constructs ``Fit``/``Threshold`` objects directly rather than fitting real data,
 mirroring ``tests/unit/test_results.py``'s own helpers (``_params``, ``_covariance``,
@@ -117,7 +117,7 @@ def _threshold(
 class TestAxisNameGuard:
     def test_mismatched_axis_name_raises(self) -> None:
         t_a = _threshold(axis=_AXIS)
-        t_b = _threshold(axis=Axis(name="wind", unit="m", scale="log"))
+        t_b = _threshold(axis=Axis(name="axis_2", unit="m", scale="log"))
 
         with pytest.raises(ValueError):
             ratio_interval(t_a, t_b, method="fieller", dependence="independent")
@@ -159,11 +159,11 @@ class TestClusterIdGuard:
 
 
 class TestPairedDependenceNotImplemented:
-    """v0.2, plan section 5.6/D6: ``dependence="paired"`` is not implemented in this release.
+    """``dependence="paired"`` is not implemented in this release.
 
     ``threshold()`` raises ``ValueError`` for the same request (``threshold.py``); this mirrors
     that choice for ``ratio_interval()`` rather than picking ``NotImplementedError``, so the two
-    functions are consistent about how a v0.2 feature requested early is reported.
+    functions are consistent about how an unimplemented option is reported.
     """
 
     def test_dependence_paired_raises_value_error(self) -> None:
@@ -175,10 +175,10 @@ class TestPairedDependenceNotImplemented:
 
 
 class TestLevelInheritance:
-    """Design choice for this phase (not a ``Ratio``-level rule): ``level=None`` takes the
-    level from the two input thresholds, which must agree; passing an explicit ``level`` that
-    contradicts them also raises. Silently defaulting to one side's level, or to some other
-    value the caller never asked for, would violate hard constraint 3."""
+    """Not a ``Ratio``-level rule: ``level=None`` takes the level from the two input
+    thresholds, which must agree; passing an explicit ``level`` that contradicts them also
+    raises. Silently defaulting to one side's level, or to some other value the caller never
+    asked for, would be a silent fallback."""
 
     def test_level_none_is_inherited_when_both_thresholds_agree(self) -> None:
         t_a = _threshold(level=0.95)
@@ -212,11 +212,10 @@ class TestLevelInheritance:
 
 
 class TestSameFitObjectGuard:
-    """``decisions/0018``'s amendment (Phase 6 stats review W3): the cluster-id check
-    (``TestClusterIdGuard`` above) cannot see two thresholds drawn off the *same* ``Fit``
-    object when that fit carries no cluster ids at all -- ``fit.cluster_ids is None`` on both
-    sides, so the overlap check trivially passes, yet the ratio would be identically ``1`` with
-    zero true variance (same number, same data). ``t_a.fit is t_b.fit`` needs no new public
+    """The cluster-id check (``TestClusterIdGuard`` above) cannot see two thresholds drawn off the
+    *same* ``Fit`` object when that fit carries no cluster ids at all -- ``fit.cluster_ids is None``
+    on both sides, so the overlap check trivially passes, yet the ratio would be identically ``1``
+    with zero true variance (same number, same data). ``t_a.fit is t_b.fit`` needs no new public
     field and cannot be produced by two genuinely disjoint samples, so it is checked directly.
 
     This does **not** conflict with ``Ratio``'s own docstring ("equal fits are not rejected: two
@@ -238,8 +237,8 @@ class TestSameFitObjectGuard:
         """Two separately constructed ``Fit`` objects that happen to carry identical values
         (``fit_a == fit_b`` by the dataclass's own field-by-field equality) but are not the same
         object (``fit_a is not fit_b``) model two disjoint samples that produced the same counts
-        -- a value-equality check for this was tried and removed in Phase 3 precisely so this
-        stays legal (``Ratio``'s own docstring, quoted above)."""
+        -- a value-equality check would reject that valid case, so there is none (``Ratio``'s
+        own docstring, quoted above)."""
         fit_a = _fit(mu=0.0)
         fit_b = _fit(mu=0.0)
         assert fit_a == fit_b
@@ -257,7 +256,7 @@ def _threshold_with_log_scale_se(
 ) -> Threshold:
     """A ``status=OK``, ``censoring=NONE`` threshold with a known log-scale delta standard
     error, for constructing a combined ``log_delta`` variance large enough to overflow
-    (``decisions/0020``). Mirrors ``tests/unit/test_ratio_interval_shape.py``'s
+    (the ``log_delta`` overflow guard). Mirrors ``tests/unit/test_ratio_interval_shape.py``'s
     ``_fit_with_known_natural_variance`` / ``_threshold_with_known_natural_variance``: ``z*=0``
     at ``absolute(0.5)`` with fixed ``upper=1, lower=0`` on a symmetric link, so
     ``Cov(mu, mu) = sigma_log**2`` reproduces ``Var(log(value)) = sigma_log**2`` exactly.
@@ -296,12 +295,12 @@ def _threshold_with_log_scale_se(
 
 
 class TestLogDeltaOverflowRaises:
-    """``decisions/0020``: when the combined log-scale standard error is too large to
+    """When the combined log-scale standard error is too large to
     exponentiate (``sigma_log(ratio) > ~357`` at ``level=0.95``, the point past which
     ``z * sigma_log(ratio)`` exceeds ``intervals.py``'s own ``_MAX_LOG_HALF_WIDTH = 700``),
     ``method="log_delta"`` raises ``ValueError`` naming the standard error and pointing at
     ``method="fieller"`` -- there is no legal non-``BOUNDED`` shape ``Ratio`` can report for this
-    method, so a flag is not an option here (unlike ``0017``/``0019``, where one is).
+    method, so a flag is not an option here (unlike the Fieller shapes, where one is).
     """
 
     def test_log_delta_raises_on_combined_standard_error_overflow(self) -> None:
@@ -315,14 +314,13 @@ class TestLogDeltaOverflowRaises:
 
 
 class TestLogDeltaUnderflowRaisesFromRatioIntervalNotFromRatio:
-    """Regression (Phase 6 outsider `/code-review` of PR #8, ``docs/REVIEWS.md`` R9 #12): a
-    ``log_delta`` half-width can sit *under* ``_MAX_LOG_HALF_WIDTH`` (700, the overflow guard
-    ``TestLogDeltaOverflowRaises`` above exercises) and still underflow the exponentiated ``lo``
-    to exactly ``0.0`` -- ``math.isfinite(0.0)`` is ``True``, so before the fix this endpoint
-    passed ``ratio_interval``'s own check and the failure only surfaced downstream, from
-    ``Ratio.__post_init__``'s generic ``method='log_delta' requires lo > 0`` invariant, with none
-    of ``decisions/0020``'s "there is no defensible bounded interval, use method='fieller'"
-    context. ``ratio_interval`` must be the one to raise now, not ``Ratio``.
+    """Regression: a ``log_delta`` half-width can sit *under* ``_MAX_LOG_HALF_WIDTH`` (700, the
+    overflow guard ``TestLogDeltaOverflowRaises`` above exercises) and still underflow the
+    exponentiated ``lo`` to exactly ``0.0`` -- ``math.isfinite(0.0)`` is ``True``, so
+    ``ratio_interval``'s own check would pass it and the failure would only surface downstream, from
+    ``Ratio.__post_init__``'s generic ``method='log_delta' requires lo > 0`` invariant, with none of
+    the "there is no defensible bounded interval, use method='fieller'" context. ``ratio_interval``
+    must be the one to raise, not ``Ratio``.
 
     **Reachable through the public API**, verified directly (not a below-the-public-API
     construction): splitting the variance across *both* inputs, rather than putting it all on
@@ -346,7 +344,7 @@ class TestLogDeltaUnderflowRaisesFromRatioIntervalNotFromRatio:
             ratio_interval(t_a, t_b, method="log_delta", dependence="independent", level=0.95)
 
         message = str(exc_info.value)
-        # Substance, not exact wording (test-author brief): the message must be about
+        # Substance, not exact wording: the message must be about
         # ratio_interval's own endpoint/interval reasoning, not Ratio's generic invariant name.
         assert "ratio_interval" in message
         assert "Ratio.lo must be > 0" not in message

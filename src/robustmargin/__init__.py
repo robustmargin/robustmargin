@@ -1,9 +1,5 @@
 """Robustness-margin estimation: thresholds with confidence intervals.
 
-robustmargin's break-point and censoring **conventions** come from zeta-bench
-(``robustness/cards.py::break_point``). Its dose-response **estimation is new**. See
-https://github.com/robustmargin/robustmargin/blob/main/docs/PROVENANCE.md.
-
 The package exports the vocabulary types (:class:`Axis`, :class:`Observations`,
 :class:`Definition`, :class:`Cell`), the status and interval-shape enums (:class:`Status`,
 :class:`IntervalShape`, alongside :class:`Censoring`), the result dataclasses (:class:`Fit`,

@@ -144,9 +144,8 @@ class Ratio:
         particular a ``"NON_MONOTONE_DATA: "`` entry on either input threshold propagates
         through, on every path (censored/failed and the ``OK``+``NONE`` path alike).
     schema_version
-        The serialised-result schema version this object belongs to. Defaults to ``"4"``, the
-        only version ``from_dict`` reads; ``"1"``, ``"2"`` and ``"3"`` (the card format of this
-        package's former name, ``marginkit``) are rejected.
+        The serialised-result schema version this object belongs to. Defaults to ``"1"``, the
+        only version ``from_dict`` reads; any other version is rejected.
     provenance
         An opaque mapping the caller may attach to record where the inputs came from.
         robustmargin stores it and never interprets it. Empty by default.
@@ -164,7 +163,7 @@ class Ratio:
     censoring: Censoring
     status: Status
     warnings: tuple[str, ...] = ()
-    schema_version: str = "4"
+    schema_version: str = "1"
     provenance: Mapping[str, JSONValue] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -199,14 +198,12 @@ class Ratio:
         if not (0.0 < self.level < 1.0):
             raise ValueError(f"Ratio.level must satisfy 0 < level < 1, got {self.level!r}")
 
-        # The shared-`Fit`-object check deliberately does **not** live here, unlike the
-        # cluster-id check below. `Ratio` is public; raising here would reject a direct
-        # `Ratio(...)` construction that was previously legal, which is a public-API break
-        # rather than a statistical fix. It lives in `ratio_interval` instead, which is where
-        # every real caller goes through -- see that function for the actual check. This is a
-        # deliberate inconsistency between the two guards, not drift: it is safe to leave the
-        # cluster-id check here (below) because that check has always been enforced at this
-        # level and never had a construction path that predates it.
+        # The constructor does not check `threshold_a.fit is threshold_b.fit`. A directly
+        # constructed `Ratio` over one `Fit` under `dependence="independent"` is accepted,
+        # although its interval is wrong (that ratio is identically 1 with zero variance);
+        # `ratio_interval` refuses it, and every real caller goes through that function. The
+        # check stays out of the constructor so that the public type's accepted inputs do not
+        # change. The cluster-id check below is enforced here.
         if self.dependence == "independent":
             ids_a = self.threshold_a.fit.cluster_ids
             ids_b = self.threshold_b.fit.cluster_ids
@@ -803,11 +800,9 @@ def ratio_interval(
 
     # The shared-`Fit`-object check lives here, in the function, rather than in
     # `Ratio.__post_init__` where the cluster-id check below (delegated to `Ratio`'s own
-    # construction) lives. `Ratio` is public; raising from its constructor would reject a
-    # direct `Ratio(...)` build that was previously legal, so `Ratio`'s accepted inputs are
-    # deliberately kept unchanged. Every real caller goes through this function, so the check
-    # is just as effective here -- the inconsistency in *where* the two checks live is
-    # deliberate, not drift (see the matching comment in `Ratio.__post_init__`).
+    # construction) lives. `Ratio`'s constructor does not check it, so that the public type's
+    # accepted inputs do not change; every real caller goes through this function (see the
+    # matching comment in `Ratio.__post_init__`).
     if dependence == "independent" and t_a.fit is t_b.fit:
         raise ValueError(
             "ratio_interval: threshold_a.fit and threshold_b.fit are the very same Fit object, "

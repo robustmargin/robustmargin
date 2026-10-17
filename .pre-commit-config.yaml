@@ -1,5 +1,5 @@
-# All hooks are `local` with `language: system`, matching zeta-bench's convention and running
-# the same ruff and mypy that the `dev` extra installs. Nothing is pinned to an upstream mirror
+# All hooks are `local` with `language: system`, running the same ruff and mypy that the `dev`
+# extra installs. Nothing is pinned to an upstream mirror
 # tag, so the versions here cannot drift from the versions CI and `/pre-pr-check` use.
 #
 # pytest is deliberately absent. The 90% coverage gate belongs in CI, not in a commit hook.

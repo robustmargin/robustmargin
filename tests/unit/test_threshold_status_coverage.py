@@ -1,13 +1,13 @@
-"""``Status``/``Censoring`` member coverage for ``threshold()`` that the committed zeta matrix
-(``tests/unit/test_threshold_zeta.py``) does not reach on its own: ``CONTROL_INCOMPATIBLE``,
-``NOT_CONVERGED``, both ``UNREACHABLE`` routes (`docs/decisions/0008`), the ordering rule between
-``FAILS_AT_BASELINE`` and ``UNREACHABLE`` when both apply to the same fit, and
+"""``Status``/``Censoring`` member coverage for ``threshold()`` that the pooled-counts fixture
+(``tests/unit/test_threshold_pooled_counts.py``) does not reach on its own:
+``CONTROL_INCOMPATIBLE``, ``NOT_CONVERGED``, both ``UNREACHABLE`` routes, the ordering rule
+between ``FAILS_AT_BASELINE`` and ``UNREACHABLE`` when both apply to the same fit, and
 ``OPEN_UPPER``/``OPEN_LOWER``.
 
-Every dataset here is constructed, not drawn from ``zeta_matrix_counts.csv`` -- each is chosen
-because the *real*, already-shipped Phase 4 ``fit_dose_response`` (confirmed empirically, not
-assumed) produces the fit status the corresponding ``threshold()`` case needs, so this file is
-still checking real fit behaviour, only not real-world data.
+Every dataset here is constructed, not drawn from ``pooled_counts.csv`` -- each is chosen
+because the *real* ``fit_dose_response`` (confirmed empirically, not assumed) produces the fit
+status the corresponding ``threshold()`` case needs, so this file is still checking real fit
+behaviour, only not real-world data.
 """
 
 from __future__ import annotations
@@ -24,15 +24,15 @@ _FIXTURE_DIR = Path(__file__).resolve().parents[2] / "tools" / "drc_reference"
 
 
 class TestControlIncompatible:
-    """A fixed ``upper=1.0`` with a failing zero-severity control drives the likelihood to zero
-    on a log axis (plan section 5.1); ``fit_dose_response`` reports
-    ``Status.CONTROL_INCOMPATIBLE`` before ever attempting to fit (confirmed:
-    ``tests/unit/test_models_zeta.py::test_sac_sensor_noise_u_1_is_control_incompatible``, on
-    the same ``sac_sensor_noise`` counts reused here).
+    """A fixed ``upper=1.0`` with a failing zero-severity control drives the likelihood to zero on a
+    log axis; ``fit_dose_response`` reports ``Status.CONTROL_INCOMPATIBLE`` before ever attempting
+    to fit (confirmed:
+    ``tests/unit/test_models_pooled_counts.py::test_system_b_axis_1_u_1_is_control_incompatible``,
+    on the same ``system_b_axis_1`` counts reused here).
     """
 
     def test_threshold_mirrors_control_incompatible_with_no_numbers(self) -> None:
-        axis = Axis(name="sensor_noise", unit="m", scale="log")
+        axis = Axis(name="axis_1", unit="m", scale="log")
         obs = Observations.from_counts(
             axis,
             severity=[0.0, 0.01, 0.05, 0.1],
@@ -56,7 +56,7 @@ class TestControlIncompatible:
 
 
 class TestNotConverged:
-    """A ``NOT_CONVERGED`` fit reached through ``decisions/0005``'s **wrong-sign** check, which
+    """A ``NOT_CONVERGED`` fit reached through the **wrong-sign** check, which
     is a sign test on the fitted slope rather than an optimiser tolerance.
 
     Success *rises* with severity here while ``direction="decreasing"``, so the constrained
@@ -64,13 +64,12 @@ class TestNotConverged:
     robustmargin's own post-fit check on a slope that is unambiguously the wrong sign, so it does
     not depend on how any particular optimiser build happens to terminate.
 
-    **This class previously probed for the other route to the same status -- a shallow
-    decreasing curve chosen to make the optimiser give up -- and that was hardware-dependent.**
-    It returned ``NOT_CONVERGED`` on macOS/arm64 and ``OK`` on Linux/x86_64 with byte-identical
-    dependency versions (numpy 2.4.6, scipy 1.17.1, statsmodels 0.15.0), so CI's three "latest"
-    legs failed while the dependency-floor leg passed. ``docs/REVIEWS.md`` R7 records the same
-    failure mode from Phase 4. Constructing a status out of an optimiser's give-up point is not
-    a reproducible test; constructing it out of a documented boundary check is.
+    **The other route to the same status -- a shallow decreasing curve chosen to make the
+    optimiser give up -- is hardware-dependent, so it is not used.** Such a curve returned
+    ``NOT_CONVERGED`` on macOS/arm64 and ``OK`` on Linux/x86_64 with byte-identical dependency
+    versions (numpy 2.4.6, scipy 1.17.1, statsmodels 0.15.0). Constructing a status out of an
+    optimiser's give-up point is not a reproducible test; constructing it out of a documented
+    boundary check is.
 
     Every other ``NOT_CONVERGED`` test in the suite (``tests/unit/test_models_fit.py``) already
     uses the wrong-sign route, which is why none of them was affected.
@@ -92,7 +91,7 @@ class TestNotConverged:
 
         # No control cell, so `FAILS_AT_BASELINE` cannot fire and the fallback is reached for
         # any target. `absolute` needs no asymptote, which a NOT_CONVERGED fit cannot supply
-        # (`decisions/0008`).
+        # for a fit with no fitted parameters.
         t = threshold(
             fit, definition=Definition.absolute(0.5), interval_method="profile", level=_LEVEL
         )
@@ -101,15 +100,15 @@ class TestNotConverged:
         assert t.value is None
         assert t.interval_method == "exact_bound"
         assert t.censoring in (Censoring.NONE, Censoring.RIGHT, Censoring.LEFT)
-        # decisions/0010: grid is set on every SEPARATION/NOT_CONVERGED exact-bound fallback.
+        # grid is set on every SEPARATION/NOT_CONVERGED exact-bound fallback.
         assert t.grid is not None
 
     def test_shallow_decreasing_probe_is_handled_consistently_whatever_status_it_gets(
         self,
     ) -> None:
-        """The dataset the class used to assert ``NOT_CONVERGED`` on, kept for the code paths it
-        exercises -- the likelihood path with an estimated upper asymptote and a zero-severity
-        control -- but with the platform-dependent assertion removed.
+        """A shallow decreasing dataset, used for the code paths it exercises -- the likelihood
+        path with an estimated upper asymptote and a zero-severity control -- without a
+        platform-dependent assertion on its status.
 
         Whether this fit converges is genuinely build-dependent: it returned ``NOT_CONVERGED``
         on macOS/arm64 and ``OK`` on Linux/x86_64 with identical dependency versions. Both are
@@ -131,8 +130,8 @@ class TestNotConverged:
         fit = fit_dose_response(obs, model="binomial", link="probit", upper="estimate", lower=0.0)
 
         # 0.3 clears the control's own one-sided upper bound (40/100 gives 0.4870 at 0.95), so
-        # FAILS_AT_BASELINE does not short-circuit ahead of the path under test
-        # (`decisions/0008` fixes that order).
+        # FAILS_AT_BASELINE does not short-circuit ahead of the path under test (the baseline
+        # check comes first).
         t = threshold(
             fit, definition=Definition.absolute(0.3), interval_method="profile", level=_LEVEL
         )
@@ -145,7 +144,7 @@ class TestNotConverged:
                 assert t.value is not None
         else:
             # A failed fit never produces a number, mirrors its status, and takes the
-            # exact-bound fallback with the grid statistic attached (`decisions/0010`).
+            # exact-bound fallback with the grid statistic attached.
             assert t.status is fit.status
             assert t.value is None
             assert t.interval_method == "exact_bound"
@@ -153,9 +152,9 @@ class TestNotConverged:
 
 
 class TestUnreachableAboveAFixedCeiling:
-    """``absolute(a)`` with ``a`` at or beyond the fitted ``upper`` asymptote (decisions/0008:
-    reachability requires ``l < P* < u`` for *every* definition, not only ``absolute``). Uses a
-    ``upper=0.9`` **fixed** (rather than estimated) ceiling: decisions/0008's reachability check
+    """``absolute(a)`` with ``a`` at or beyond the fitted ``upper`` asymptote (reachability
+    requires ``l < P* < u`` for *every* definition, not only ``absolute``). Uses a
+    ``upper=0.9`` **fixed** (rather than estimated) ceiling: the reachability check
     reads ``fit.params["upper"].value`` the same way regardless of whether that parameter was
     fixed or estimated, so a fixed ceiling exercises the identical branch far more
     deterministically than coaxing a specific estimated value out of an optimizer, while control
@@ -192,7 +191,7 @@ class TestUnreachableAboveAFixedCeiling:
 
 
 class TestUnreachableBaselineFractionBelowTheFloor:
-    """``baseline_fraction(p)`` is unreachable whenever ``p * u <= l`` (decisions/0008) -- the
+    """``baseline_fraction(p)`` is unreachable whenever ``p * u <= l`` -- the
     target fraction of the control's own performance sits at or below the fitted floor. Uses
     both asymptotes fixed (``upper=0.9, lower=0.2``) for the same determinism reason as
     ``TestUnreachableAboveAFixedCeiling``: ``p=0.1`` gives a target of ``0.1 * 0.9 = 0.09``,
@@ -229,25 +228,24 @@ class TestUnreachableBaselineFractionBelowTheFloor:
 
 
 class TestFailsAtBaselineWinsOverUnreachable:
-    """decisions/0008's ordering regression test: when the control already fails the criterion
-    *and* the (independently, genuinely fitted) asymptote also cannot reach it, decisions/0008
-    says ``FAILS_AT_BASELINE`` wins -- it rests on the sharper, exact test of the raw control
-    cell, not on the fitted asymptote.
+    """Ordering regression test: when the control already fails the criterion *and* the
+    (independently, genuinely fitted) asymptote also cannot reach it, ``FAILS_AT_BASELINE``
+    wins -- it rests on the sharper, exact test of the raw control cell, not on the fitted
+    asymptote.
 
     Uses the committed ``tools/drc_reference/estimated_asymptotes.json`` simulation (true
-    ``upper=0.9``, control 365/400) rather than any zeta-bench series: every zeta ``sensor_noise``
-    series' ``upper="estimate"`` fit is ``Status.SEPARATION`` (confirmed:
-    ``tests/unit/test_models_zeta.py``'s own ``..._upper_estimate_is_separation`` tests, for
-    every one of PID/SAC/PPO), and decisions/0008 says the reachability check *cannot run* on a
-    fit with no fitted parameters at all ("the reachability check needs l and u, so it cannot
-    run on the fallback path") -- so no zeta series can exercise the actual UNREACHABLE-vs-
-    FAILS_AT_BASELINE conflict this test targets. This fixture's simulated data genuinely
-    converges (confirmed empirically: ``fit_dose_response`` on it with
-    ``upper="estimate", lower=0.0`` gives ``Status.OK`` with ``upper`` estimated at about
-    ``0.928``), and its control (365/400 = 0.9125) has an exact one-sided 95% upper bound of
-    about ``0.935`` -- below ``0.95`` -- so ``absolute(0.95)`` is *both* ``FAILS_AT_BASELINE``
-    (the control fails outright) *and* would independently be ``UNREACHABLE`` (the fitted
-    ceiling, ~0.928, also cannot reach 0.95).
+    ``upper=0.9``, control 365/400) rather than any series in ``tests/data/pooled_counts.csv``:
+    every ``axis_1`` series' ``upper="estimate"`` fit there is ``Status.SEPARATION`` (confirmed:
+    ``tests/unit/test_models_pooled_counts.py``'s own ``..._upper_estimate_is_separation`` tests,
+    for every one of ``system_a``/``system_b``/``system_c``), and the reachability check *cannot
+    run* on a fit with no fitted parameters at all (it needs l and u, so it cannot run on the
+    fallback path) -- so no series there can exercise the actual UNREACHABLE-vs- FAILS_AT_BASELINE
+    conflict this test targets. This fixture's simulated data genuinely converges (confirmed
+    empirically: ``fit_dose_response`` on it with ``upper="estimate", lower=0.0`` gives
+    ``Status.OK`` with ``upper`` estimated at about ``0.928``), and its control (365/400 = 0.9125)
+    has an exact one-sided 95% upper bound of about ``0.935`` -- below ``0.95`` -- so
+    ``absolute(0.95)`` is *both* ``FAILS_AT_BASELINE`` (the control fails outright) *and* would
+    independently be ``UNREACHABLE`` (the fitted ceiling, ~0.928, also cannot reach 0.95).
     """
 
     def test_absolute_0_95_is_fails_at_baseline_not_unreachable(self) -> None:
@@ -283,19 +281,16 @@ class TestFailsAtBaselineWinsOverUnreachable:
 
 
 class TestOpenSidedProfileCensoring:
-    """``OPEN_UPPER``/``OPEN_LOWER`` (plan section 5.5): the value lies inside the tested range,
-    but one side of its profile interval does not close within the search limit (plan section
-    5.4: ``log(100)`` beyond the tested range). Tried as a small set of weakly-identified
-    candidate designs (two close, well-sampled nonzero levels anchoring the crossing tightly on
-    one side, plus a third, very-low-sample level placed far out on the other) rather than one
-    specific number, because the exact numeric boundary of "does not close" depends on
-    ``threshold()``'s own root-finding, which did not exist yet to verify a single specific
-    dataset against when this test was written (plan section 6: tests before implementation).
+    """``OPEN_UPPER``/``OPEN_LOWER``: the value lies inside the tested range, but one side of its
+    profile interval does not close within the search limit (``log(100)`` beyond the tested
+    range). Tried as a small set of weakly-identified candidate designs (two close, well-sampled
+    nonzero levels anchoring the crossing tightly on one side, plus a third, very-low-sample
+    level placed far out on the other) rather than one specific number, because the exact
+    numeric boundary of "does not close" depends on ``threshold()``'s own root-finding.
 
-    If none of these candidates trigger ``OPEN_UPPER``/``OPEN_LOWER`` once ``threshold()``
-    exists, that is a finding about *this test's* construction -- report it and replace the
-    candidate list with one searched against the real implementation, rather than deleting the
-    coverage requirement.
+    If none of these candidates trigger ``OPEN_UPPER``/``OPEN_LOWER``, that is a finding about
+    *this test's* construction -- replace the candidate list with one searched against the real
+    implementation, rather than deleting the coverage requirement.
     """
 
     _CANDIDATES: tuple[tuple[list[float], list[int], list[int]], ...] = (
@@ -338,15 +333,14 @@ class TestOpenSidedProfileCensoring:
         assert found is not None, (
             "none of the constructed candidate designs produced OPEN_UPPER/OPEN_LOWER against "
             "the real threshold() implementation; this test's candidate list needs revisiting "
-            "(plan section 5.4's search-limit behaviour was unverified when it was written)"
+            "(the search-limit behaviour was unverified when the candidates were chosen)"
         )
 
 
 class TestNonMonotoneContradictionWarningOnAConvergedFit:
-    """`docs/REVIEWS.md` R10 "Still open" item 4: the ``NON_MONOTONE: `` warning
-    (``decisions/0011``'s second amendment, token frozen) ends with the fixed phrase "no bounds
+    """The ``NON_MONOTONE: `` warning (token frozen) ends with the fixed phrase "no bounds
     are reported". That is true on the ``SEPARATION``/``NOT_CONVERGED`` fallback branch (see
-    ``tests/unit/test_threshold_zeta.py::TestPpoSensorNoiseNonMonotoneContradiction``, where
+    ``tests/unit/test_threshold_pooled_counts.py::TestSystemCAxis1NonMonotoneContradiction``, where
     ``Threshold.value``/``.lo``/``.hi`` really are all ``None``), but the same warning text is
     also used on a **converged** fit (``censoring.py``'s ``_contradiction_or_none``, the
     ``fit.status is Status.OK`` branch): there, the contradiction only suppresses the
@@ -363,7 +357,7 @@ class TestNonMonotoneContradictionWarningOnAConvergedFit:
     falling again, and at ``target=0.5`` the exact one-sided bounds (confirmed below, at
     ``level=0.95``) put severity 300's upper bound (~0.483) below the target while severity
     400's lower bound (~0.528), a *higher* severity, sits above it -- a contradiction of
-    ``decisions/0011``'s monotonicity assumption, on a fit that otherwise converges cleanly.
+    the monotonicity assumption, on a fit that otherwise converges cleanly.
     """
 
     _CONC = [0.0, 100.0, 200.0, 300.0, 400.0, 500.0]

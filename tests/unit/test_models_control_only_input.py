@@ -1,20 +1,18 @@
-"""Owner decision 2026-10-15: ``fit_dose_response`` on a control-only observation (a log axis
-whose only severity level is the ``0.0`` control) must raise a clear ``ValueError``, not the
-unhelpful numpy internal error it raises today.
+"""``fit_dose_response`` on a control-only observation (a log axis whose only severity level is
+the ``0.0`` control) must raise a clear ``ValueError``, not an unhelpful numpy internal error.
 
-Confirmed against the current fitter before writing this test (per ``CLAUDE.md``'s working
-rhythm): an **all-success** control-only observation raises
+Without the guard, an **all-success** control-only observation raises
 ``ValueError: zero-size array to reduction operation maximum which has no identity`` on both
 fitting paths (``GLM``, ``upper=1.0, lower=0.0``; and ``GenericLikelihoodModel``, ``upper=1.0,
 lower="estimate"``), for every link (``probit``, ``logit``, ``cloglog``) -- there is only one
-likelihood-contributing severity level, the control itself contributes none on a log axis (R3),
+likelihood-contributing severity level, the control itself contributes none on a log axis,
 and something downstream (span/centering-and-scale computation over an empty nonzero-severity
 array) calls ``numpy.max``/``numpy.min`` on an array of length 0.
 
 A control-only observation whose control *has failures* does not reach this at all: it is
 ``Status.CONTROL_INCOMPATIBLE`` before any fitting is attempted (``models.py``'s own pre-fit
-check, plan section 5.1), which is why this file's fixture is deliberately all-success -- the
-case this decision actually targets.
+check), which is why this file's fixture is deliberately all-success -- the case this guard
+actually targets.
 """
 
 from __future__ import annotations

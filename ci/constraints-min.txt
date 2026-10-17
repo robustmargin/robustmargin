@@ -1,9 +1,9 @@
-# Dependency floors, pinned exactly, for the minimum-versions CI job (plan R9: floors stay
-# loose and are tested at the floor).
+# Dependency floors, pinned exactly, for the minimum-versions CI job. The floors in
+# pyproject.toml stay loose so the package never forces a numpy or scipy version on a user's
+# environment, and this job proves the package works at them.
 #
-# This file is a SECOND COPY of the floors declared in pyproject.toml's `dependencies`. Per
-# CLAUDE.md, a second copy does not get to be silently wrong: if these three numbers disagree
-# with pyproject.toml, this file is the one that is wrong, and the mismatch is a finding.
+# This file repeats the floors declared in pyproject.toml's `dependencies`. If these three
+# numbers disagree with pyproject.toml, this file is the one that is wrong.
 #
 # PYTHON 3.11 ONLY. This set is not installable on 3.12 or 3.13, and that is a property of the
 # published wheels, not a gap to be fixed:

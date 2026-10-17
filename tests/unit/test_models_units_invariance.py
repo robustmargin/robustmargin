@@ -1,6 +1,6 @@
-"""Units invariance for ``fit_dose_response`` (Phase 4 stats re-check: a regression on the
-linear axis, plus the estimated-asymptote path's version of the log-axis property already
-covered for the fixed-asymptote path in ``tests/property/test_models_properties.py``).
+"""Units invariance for ``fit_dose_response`` (a regression test on the linear axis, plus the
+estimated-asymptote path's version of the log-axis property already covered for the
+fixed-asymptote path in ``tests/property/test_models_properties.py``).
 
 **Linear axis.** Rescaling severity by ``x -> c*x`` is a pure reparametrisation: ``z = (x -
 mu)/s`` is unchanged if ``mu`` and ``s`` both scale by exactly ``c``. This differs from the log
@@ -8,14 +8,13 @@ axis, where the same rescaling only *shifts* ``mu`` by ``log(c)`` and leaves ``s
 (``log(c*x) = log(c) + log(x)``) -- the two axes are genuinely different invariances, not the
 same check with a different label.
 
-``c=1e6`` on the linear axis was, for one round, a genuine regression (``NOT_CONVERGED`` on
-both the fixed and the estimated-asymptote paths) traced to the old ``Covariance``
-positive-definiteness rule being sensitive to a matrix's *raw* eigenvalue scale rather than its
-correlation structure -- fixed by the units-independence rule change covered in
+``c=1e6`` on the linear axis guards against a ``Covariance`` positive-definiteness rule that is
+sensitive to a matrix's *raw* eigenvalue scale rather than its correlation structure, which
+would turn a perfectly good fit into ``NOT_CONVERGED`` on both the fixed and the
+estimated-asymptote paths. The rule is units-independent, as covered in
 ``tests/unit/test_results.py``'s ``TestCovarianceMixedScaleAcceptance`` and
-``TestCovarianceNewRuleAcceptsSupersetOfOldRule``. ``c=1e-6`` on the linear-axis
-estimated-asymptote path is exercised here for the same reason, now that the rule that used to
-require excluding it has changed.
+``TestCovarianceAcceptsEveryMatrixTheRawEigenvalueRuleAccepts``. ``c=1e-6`` on the linear-axis
+estimated-asymptote path is exercised here for the same reason.
 """
 
 from __future__ import annotations
@@ -106,9 +105,8 @@ class TestLinearAxisUnitsInvarianceEstimatedAsymptotes:
     (not merely close) across ``c``, since severity scaling cannot change a rate.
 
     ``c=1e-6`` is included alongside ``1e-4, 1, 1e6``: the ``Covariance`` positive-definiteness
-    rule that made ``c=1e6`` fail (a prior round) has since been fixed for units-independence
-    (``tests/unit/test_results.py``), and this checks whether that fix also covers the small-c
-    end, which was previously excluded outright rather than characterised.
+    rule that would make ``c=1e6`` fail if it were scale-sensitive is units-independent
+    (``tests/unit/test_results.py``), and this checks that this also covers the small-c end.
     """
 
     @pytest.mark.parametrize("c", [1e-6, 1e-4, 1.0, 1e6])

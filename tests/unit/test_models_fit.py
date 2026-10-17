@@ -1,17 +1,15 @@
-"""Unit tests for ``fit_dose_response`` (plan sections 5.1, 5.2; D7 ``decisions/0004``; the
-"no interior maximum" rule, ``decisions/0005``; the exact-overlap separation check,
-``decisions/0006``).
+"""Unit tests for ``fit_dose_response``: the GLM path and the estimated-asymptote path, the
+"no interior maximum" rule, and the exact-overlap separation check.
 
 Each status branch gets its own small, hand-constructed dataset rather than a real-world one,
-so the test is about the *rule*, not about a particular series' numbers (the zeta fixture's
-edge cases are exercised separately in ``tests/unit/test_models_zeta.py``). One behaviour per
-test, named for what it asserts, per ``CLAUDE.md``.
+so the test is about the *rule*, not about a particular series' numbers (the pooled-counts
+fixture's edge cases are exercised separately in ``tests/unit/test_models_pooled_counts.py``).
+One behaviour per test, named for what it asserts.
 
-Per the plan: "With u=1, l=0, the GLM path must agree with the likelihood path, but that path
-isn't separately reachable through the public API, so skip that equivalence unless you can
-express it publicly." It cannot be expressed publicly (there is no keyword to force the
-``GenericLikelihoodModel`` path when both asymptotes are fixed at exactly 1.0/0.0), so that
-equivalence is not tested here.
+With u=1, l=0 the GLM path should agree with the likelihood path, but that path is not
+separately reachable through the public API: there is no keyword to force the
+``GenericLikelihoodModel`` path when both asymptotes are fixed at exactly 1.0/0.0, so that
+equivalence cannot be expressed publicly and is not tested here.
 """
 
 from __future__ import annotations
@@ -44,7 +42,7 @@ def _obs(
 
 
 class TestWrongSignSlope:
-    """Decision 0005, case 1: performance rises with severity overall, with overlap (a success
+    """Wrong-sign slope: performance rises with severity overall, with overlap (a success
     and a failure present at more than one level) and no separation -- the constrained maximum
     (``s > 0``) is the flat curve, so there is no finite ``(mu, s)``.
     """
@@ -82,8 +80,8 @@ class TestWrongSignSlope:
     def _non_exact_wrong_sign_obs() -> Observations:
         # Also rises with severity (12% -> 45% -> 91%), like the 10/50/90 case above, but this
         # one is not an exact probit fit (10/50/90 at these log-symmetric levels happens to be
-        # reproduced exactly by a probit curve, decisions/0006's own example of why an exact
-        # fit is not evidence of separation). This case confirms the wrong-sign check does not
+        # reproduced exactly by a probit curve, which is why an exact fit is not evidence of
+        # separation). This case confirms the wrong-sign check does not
         # depend on the fit being exact.
         return _obs(
             severity=[0.1, 1.0, 10.0],
@@ -110,7 +108,7 @@ class TestWrongSignSlope:
         assert any("sign" in warning.lower() for warning in fit.warnings)
 
     def test_wrong_sign_with_upper_estimate_is_also_not_converged_with_sign_warning(self) -> None:
-        """W5: the wrong-sign check applies on the ``GenericLikelihoodModel`` path too, not
+        """The wrong-sign check applies on the ``GenericLikelihoodModel`` path too, not
         just the GLM special case -- rising data with ``upper="estimate"`` must not be
         misreported as a boundary or separation issue; it is the same wrong-sign problem.
         """
@@ -131,7 +129,7 @@ class TestWrongSignSlope:
 
 
 class TestEstimatedAsymptoteOnBoundary:
-    """Decision 0005, case 2: an estimated asymptote with a 400/400 control and a
+    """Boundary case: an estimated asymptote with a 400/400 control and a
     well-identified decreasing curve -- the control carries zero evidence against ``upper=1``,
     so the MLE for ``upper`` drifts to the boundary and the logit-scale parameter diverges.
     """
@@ -206,13 +204,12 @@ class TestSeparation:
         assert fit.log_likelihood is None
 
     def test_two_overlapping_levels_is_ok_not_separation(self) -> None:
-        """Regression test for ``decisions/0006``: statsmodels' ``PerfectSeparationWarning``
+        """Regression test: statsmodels' ``PerfectSeparationWarning``
         tests ``allclose(fitted, observed)``, which also fires on an *exact* two-level binomial
         fit -- not just on genuine separation. Two overlapping levels (80/100 at severity 1.0,
         30/100 at severity 2.0) have a finite, unique MLE that a two-parameter probit
-        reproduces exactly, and this used to be misreported as ``SEPARATION`` before
-        ``decisions/0006`` moved the separation decision to the exact pre-fit overlap check
-        alone. Reported: ``decisions/0006-separation-from-exact-overlap-check.md``.
+        reproduces exactly, so it must not be misreported as ``SEPARATION``: the separation
+        decision rests on the exact pre-fit overlap check alone.
         """
         obs = _obs(
             severity=[1.0, 2.0],
@@ -253,8 +250,8 @@ class TestClusterIdsPassthrough:
             cluster=cluster,
         )
 
-        # decisions/0023 Amendment 1: fit_dose_response now threads dependence through to its
-        # own clustered-input guard (the monotonicity check).
+        # fit_dose_response threads dependence through to its own clustered-input guard (the
+        # monotonicity check).
         fit = fit_dose_response(
             obs, model="binomial", link="probit", upper=1.0, lower=0.0, dependence="independent"
         )
@@ -277,8 +274,7 @@ class TestClusterIdsPassthrough:
 class TestFixedNonTrivialAsymptotes:
     """``upper=0.95`` (fixed, not estimated) is neither the GLM special case (``u=1, l=0``) nor
     an estimated asymptote -- it takes the ``GenericLikelihoodModel`` path with both asymptotes
-    excluded from the parameter vector (plan section 5.1 point 5: "Fixed asymptotes are left
-    out of the parameter vector").
+    excluded from the parameter vector (fixed asymptotes are left out of the parameter vector).
     """
 
     def test_fixed_u_0_95_l_0_is_ok_with_mu_s_only_covariance(self) -> None:
@@ -301,7 +297,7 @@ class TestFixedNonTrivialAsymptotes:
 
 
 class TestFixedNonCanonicalUpperWithEstimatedLower:
-    """C2: ``upper`` fixed at a non-canonical value (not ``1.0``) with ``lower="estimate"``
+    """``upper`` fixed at a non-canonical value (not ``1.0``) with ``lower="estimate"``
     must never raise, whatever the data looks like -- it either converges properly
     (``lower < upper``) or reports ``NOT_CONVERGED``, never an uncaught exception and never an
     invariant violation.
@@ -341,7 +337,7 @@ class TestFixedNonCanonicalUpperWithEstimatedLower:
 
 
 class TestExactStepWithEstimatedAsymptotes:
-    """W4: an exact step -- three identical high rates, then three identical low rates, plus a
+    """An exact step -- three identical high rates, then three identical low rates, plus a
     control matching the high rate -- gives the estimated-asymptote path almost no information
     about the transition's shape (``s``) or location beyond "somewhere between the third and
     fourth nonzero level". This must report ``NOT_CONVERGED`` and must never raise, for either

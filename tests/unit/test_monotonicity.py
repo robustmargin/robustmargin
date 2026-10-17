@@ -1,17 +1,16 @@
 """Unit tests for the data-only monotonicity check: :class:`~robustmargin.MonotonicityCheck`,
-:class:`~robustmargin.AdjacentPair` and :func:`~robustmargin.check_monotonicity`
-(``docs/decisions/0023-fit-diagnostics-and-schema-v3.md``'s "Amendment 1").
+:class:`~robustmargin.AdjacentPair` and :func:`~robustmargin.check_monotonicity`.
 
-Amendment 1 moves this check off ``Diagnostics`` (which needs a converged fit) and onto
-``Fit.monotonicity`` directly, because the check needs only raw per-level counts -- it must
-still run when the curve fit fails, which is exactly when non-monotone data is most often the
-cause. Every expected number here is computed independently, using the amendment's own exact
-formula (item 4): a one-sided ``scipy.stats.fisher_exact`` test on
+The check lives on ``Fit.monotonicity`` directly, not on ``Diagnostics`` (which needs a
+converged fit), because it needs only raw per-level counts -- it must still run when the curve
+fit fails, which is exactly when non-monotone data is most often the cause. Every expected
+number here is computed independently, using the exact formula: a one-sided
+``scipy.stats.fisher_exact`` test on
 ``[[successes_high, failures_high], [successes_low, failures_low]]`` with
 ``alternative="greater"`` for ``direction="decreasing"`` (``"less"`` for ``"increasing"``), Holm
 across all pairs. A from-scratch Holm step-down is kept alongside ``statsmodels``'s
-``multipletests(method="holm")`` as a second, independent cross-check (still worth keeping per
-the coordinator's note, even though the amendment names ``statsmodels`` as the implementation).
+``multipletests(method="holm")`` as a second, independent cross-check (worth keeping even
+though ``statsmodels`` is the implementation).
 """
 
 from __future__ import annotations
@@ -75,7 +74,7 @@ def _holm_step_down(p_values: list[float]) -> list[float]:
 
 def _expected_raw_p_values(levels: list[tuple[int, int]], *, direction: str) -> list[float]:
     """``levels`` is ``[(successes, trials), ...]`` sorted ascending by severity, matching the
-    amendment's exact table/alternative convention (item 4)."""
+    exact table/alternative convention."""
     alternative = "greater" if direction == "decreasing" else "less"
     raw = []
     for (s_lo, n_lo), (s_hi, n_hi) in zip(levels, levels[1:], strict=False):
@@ -87,7 +86,7 @@ def _expected_raw_p_values(levels: list[tuple[int, int]], *, direction: str) -> 
 
 
 # ------------------------------------------------------------------------------------------
-# Holm adjustment: raw p-values match the amendment's exact Fisher exact formula; the
+# Holm adjustment: raw p-values match the exact Fisher exact formula; the
 # Holm-adjusted p-values match both statsmodels and a from-scratch step-down.
 # ------------------------------------------------------------------------------------------
 
@@ -190,7 +189,7 @@ class TestHolmAdjustment:
 
 # ------------------------------------------------------------------------------------------
 # The control -> first-level pair is in the family even when the fitted likelihood (fixed
-# u=1, l=0) drops the control row entirely (plan section 5.1's own rule) -- monotonicity reads
+# u=1, l=0) drops the control row entirely -- monotonicity reads
 # the raw Observations, never the likelihood-contributing subset.
 # ------------------------------------------------------------------------------------------
 
@@ -261,7 +260,7 @@ class TestDirectionSymmetry:
 
 # ------------------------------------------------------------------------------------------
 # Clustered input: cluster ids without dependence="independent" raise, both for
-# check_monotonicity directly and for fit_dose_response (R2's "the argument threads through").
+# check_monotonicity directly and for fit_dose_response (the argument threads through).
 # ------------------------------------------------------------------------------------------
 
 
@@ -327,7 +326,7 @@ class TestDegenerateSingleLevel:
         assert any("level" in w.lower() for w in check.warnings)
 
     def test_repeated_rows_at_one_severity_still_aggregate_to_a_single_level(self) -> None:
-        """R1: many rows at the *same* severity still pool to one level, not one pair per row."""
+        """Many rows at the *same* severity still pool to one level, not one pair per row."""
         obs = _obs([1.0, 1.0, 1.0], [3, 1, 4], [5, 5, 5])
 
         check = check_monotonicity(obs)
@@ -338,8 +337,8 @@ class TestDegenerateSingleLevel:
 
 # ------------------------------------------------------------------------------------------
 # Threshold invariance: threshold() numbers and statuses are identical whether fit.monotonicity
-# is flagged or not -- only warnings differs (decisions/0023's own item 4 still holds: nothing
-# about the reported threshold changes; Amendment 1 item 7 only adds a warning token).
+# is flagged or not -- only warnings differs (nothing about the reported threshold changes; a
+# flagged check only adds a warning token).
 # ------------------------------------------------------------------------------------------
 
 

@@ -2,8 +2,8 @@
 
 `generate.R` fits the reference models in R's `drc` package (plus a few `glm`/`MASS` checks)
 and writes the results as JSON under this directory. **Tests read only the JSON.** Running the
-test suite never needs R installed (hard constraint 1: R is a local tool only, never an
-importable dependency of robustmargin itself).
+test suite never needs R installed (R is a local tool only, never an importable dependency of
+robustmargin itself).
 
 ## Regenerating the fixtures
 
@@ -12,7 +12,7 @@ There is no host R install for this project. Run `generate.R` inside the pinned
 the image itself, so the image pull stays small and the library persists across runs):
 
 ```sh
-docker run --rm -v "$PWD:/work" -v "$PWD/.claude/scratch/phase-4/rlib:/rlib" -w /work rocker/r-ver:4.6.1 \
+docker run --rm -v "$PWD:/work" -v "$PWD/.claude/scratch/rlib:/rlib" -w /work rocker/r-ver:4.6.1 \
   Rscript -e '.libPaths(c("/rlib", .libPaths())); source("tools/drc_reference/generate.R")'
 ```
 
@@ -35,18 +35,19 @@ Versions used to generate the fixtures currently committed: R 4.6.1 (2026-06-24)
 MASS 7.3.65, jsonlite 2.0.0.
 
 `write_json(..., digits = NA)` is used throughout, so every number is written at full `double`
-precision rather than jsonlite's default rounding -- the plan's `1e-4`/`1e-3` tolerances
-(section 6.1) are relative tolerances a *test* applies when comparing to robustmargin's own
-output; the fixture itself should never be the source of the imprecision.
+precision rather than jsonlite's default rounding -- the `1e-4` (parameters) and `1e-3`
+(interval endpoints) relative tolerances are applied by a *test* when comparing to robustmargin's
+own output; the fixture itself should never be the source of the imprecision.
 
 ## Files this script writes
 
-| File | Section | Consumed by |
+| File | Contents | Consumed by |
 |---|---|---|
-| `finney71.json` | plan 6.1: `LN.2`/`LL.2`, `glm` probit/logit/cloglog, MASS `dose.p`, `ED` delta intervals | `tests/reference/test_models_drc.py` (Phase 4) |
-| `finney71_profile.json` | plan 6.2: the offset-trick profile-likelihood reference at the ED50, independent of drc | Phase 5 (no test reads it yet) |
-| `selenium_edcomp.json` | plan 6.1: `EDcomp` with Fieller and delta intervals | Phase 6 (no test reads it yet) |
-| `estimated_asymptotes.json` | plan 6.1: a seeded simulated binomial dataset (embedded raw data) fit with binomial `LN.3`/`LN.4` | `tests/reference/test_models_drc.py` (Phase 4) |
+| `finney71.json` | `LN.2`/`LL.2`, `glm` probit/logit/cloglog, MASS `dose.p`, `ED` delta intervals | `tests/reference/test_models_drc.py`, `test_diagnostics_drc.py`, `test_threshold_drc_ed.py` |
+| `finney71_profile.json` | the offset-trick profile-likelihood reference at the ED50, independent of drc | `tests/reference/test_threshold_profile.py` |
+| `selenium_edcomp.json` | `EDcomp` with Fieller and delta intervals | `tests/reference/test_ratio_drc_edcomp.py` |
+| `estimated_asymptotes.json` | a seeded simulated binomial dataset (embedded raw data) fit with binomial `LN.3`/`LN.4` | `tests/reference/test_models_drc.py` |
+| `monotonicity_system_c_axis_1.json` | the one-sided Fisher exact p-value for the reversal between the two lowest levels of `tests/data/pooled_counts.csv`'s `system_c_axis_1` series | `tests/reference/test_monotonicity_drc.py` |
 
 ## Definitional notes (written here and in the fixtures themselves, never absorbed into a test tolerance)
 
@@ -54,7 +55,7 @@ output; the fixture itself should never be the source of the imprecision.
 Confirmed in `finney71.json`'s `loglik_parity` block by recomputing the log-likelihood by hand
 from drc's own fitted probabilities (with `lchoose`) and matching drc's `logLik()` value. This
 also means dropping an all-success zero-severity control row from a GLM's likelihood (as
-robustmargin's fixed `upper=1, lower=0` path does, plan section 5.1) is an exact no-op on the
+robustmargin's fixed `upper=1, lower=0` path does) is an exact no-op on the
 log-likelihood: `finney71.json` shows the `glm` probit log-likelihood on the dose>0 subset
 matching drc's `LN.2` log-likelihood on the full 6-row dataset (including the dose=0 control)
 to the precision both optimizers converge to. The reason is a mathematical identity, not a
@@ -73,8 +74,8 @@ fixture's `mapping` block records the sign actually found, confirmed empirically
   happens to produce, and it differs between them.
 - `estimated_asymptotes.json`: fit on `successes/trials` directly (**decreasing** with
   severity, matching robustmargin's own `upper`/`lower` as success-rate asymptotes with no
-  `1 - x` flip needed -- see the "Mapping into robustmargin" note in the Phase 4 plan: `lower = c`,
-  `upper = d`). For both `LN.3` and `LN.4`, `s = -1/b` (`b` comes out negative). The `mapping`
+  `1 - x` flip needed: `lower = c`, `upper = d`). For both `LN.3` and `LN.4`, `s = -1/b` (`b`
+  comes out negative). The `mapping`
   block's `formula_check` note records that `P_success(x) = u - (u-l)*Phi((log(x)-mu)/s)` with
   `u = d`, `l = c` substituted in was checked against `predict()` at five held-out severities
   and matched exactly.
@@ -117,9 +118,9 @@ each with its own `coef`/`vcov`/`logLik` and a `control` string naming exactly w
 to `drm()`; `"default"` is kept only for the record, and **`tests/reference/test_models_drc.py`
 reads only `"tight"`.**
 
-Because even the tight refit has not converged to plan section 6.1's usual 1e-4 relative
-precision (it has converged to roughly 1e-3, judging by how far it moved from the default fit),
-`TestEstimatedAsymptoteParity` does not use section 6.1's ordinary bounds for this one class:
+Because even the tight refit has not converged to the usual 1e-4 relative precision (it has
+converged to roughly 1e-3, judging by how far it moved from the default fit),
+`TestEstimatedAsymptoteParity` does not use the ordinary bounds for this one class:
 log-likelihood is checked as `robustmargin_logLik >= tight_logLik - 1e-6` (an inequality: robustmargin
 is expected to do at least as well, not exactly as well, since it is the more tightly converged
 of the two), `mu` uses an **absolute** tolerance of `1e-4` (its true simulated value is exactly

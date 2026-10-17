@@ -23,16 +23,15 @@ the field, the enclosing card's ``library_version``, and this reader's version; 
 A key that a tagged type's schema ``required`` list requires but the dict omits raises; a key
 the schema does not require, if omitted, is filled from the dataclass's own default. This
 required-key set is read from the packaged schema (:data:`load_schema`), not duplicated as a
-literal list, so it cannot drift from ``schema/scorecard-v4.json``.
+literal list, so it cannot drift from ``schema/scorecard-v1.json``.
 
-``SCHEMA_VERSION`` is ``"4"``, and ``from_dict`` reads ``"4"`` only. Schema ``"4"`` is the
-current format. ``"1"``, ``"2"`` and ``"3"`` were the card format of this package's former name,
-``marginkit``; a ``schema_version`` of any of them, on any typed object, raises a ``ValueError``
-that names the version found and says it is that format. It is never read. A freshly-constructed
-result carries ``"4"``.
+``SCHEMA_VERSION`` is ``"1"``, and ``from_dict`` reads ``"1"`` only. A ``schema_version`` of
+anything else, on any typed object, raises a ``ValueError`` that names the version found and the
+version this reader reads. Only the ``Scorecard`` root requires the tag; a nested or bare result
+that omits it is read as ``"1"``. A freshly-constructed result carries ``"1"``.
 
 ``load_schema`` reads the packaged ``schema/scorecard-v{version}.json`` with
-:mod:`importlib.resources`; only ``scorecard-v4.json`` is packaged. Nothing under ``src/``
+:mod:`importlib.resources`; only ``scorecard-v1.json`` is packaged. Nothing under ``src/``
 imports ``jsonschema``; it stays a dev-only dependency used by consumers' own validators and by
 this package's own tests.
 """
@@ -58,14 +57,10 @@ from robustmargin.validation import AdjacentPair, Diagnostics, MonotonicityCheck
 
 __all__ = ["SCHEMA_VERSION", "Scorecard", "from_dict", "load_schema", "to_dict"]
 
-SCHEMA_VERSION = "4"
+SCHEMA_VERSION = "1"
 
-# `from_dict` reads schema "4" only; earlier schema versions are not read.
-_SUPPORTED_SCHEMA_VERSIONS: frozenset[str] = frozenset({"4"})
-
-# `"1"`, `"2"` and `"3"` were the card format of this package's former name, `marginkit`. They are
-# kept apart from the unknown-version case only so the error can say what the card is.
-_RETIRED_MARGINKIT_SCHEMA_VERSIONS: frozenset[str] = frozenset({"1", "2", "3"})
+# `from_dict` reads schema "1" only.
+_SUPPORTED_SCHEMA_VERSIONS: frozenset[str] = frozenset({"1"})
 
 
 def _default_created_at() -> str:
@@ -102,16 +97,15 @@ class Scorecard:
         The version of robustmargin that produced this scorecard. Defaults to
         :data:`robustmargin.__version__` at construction time.
     schema_version
-        The serialised-result schema version this object belongs to. Defaults to ``"4"``, the
-        only version ``from_dict`` reads; ``"1"``, ``"2"`` and ``"3"`` (the card format of this
-        package's former name, ``marginkit``) are rejected.
+        The serialised-result schema version this object belongs to. Defaults to ``"1"``, the
+        only version ``from_dict`` reads; any other version is rejected.
     """
 
     results: tuple[GridBreakPoint | Fit | Threshold | Ratio, ...]
     provenance: Mapping[str, JSONValue] = field(default_factory=dict)
     created_at: str = field(default_factory=_default_created_at)
     library_version: str = field(default_factory=_default_library_version)
-    schema_version: str = "4"
+    schema_version: str = "1"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "results", tuple(self.results))
@@ -344,9 +338,7 @@ def _validated_fields(
     present.
 
     ``schema_version`` is checked before the unknown-field check, so an unsupported version is
-    reported on its own even when the dict also carries an unknown key. A retired version
-    (:data:`_RETIRED_MARGINKIT_SCHEMA_VERSIONS`) is reported as the former package's card format,
-    which tells the caller what the card is; any other version outside
+    reported on its own even when the dict also carries an unknown key. A version outside
     :data:`_SUPPORTED_SCHEMA_VERSIONS` is reported as unknown. ``card_version`` is the
     ``library_version`` of the enclosing :class:`Scorecard`, threaded down from
     :func:`from_dict` for every object nested inside one; when it is not ``None``, an
@@ -372,11 +364,6 @@ def _validated_fields(
 
     if "schema_version" in field_names:
         schema_version = data.get("schema_version", SCHEMA_VERSION)
-        if schema_version in _RETIRED_MARGINKIT_SCHEMA_VERSIONS:
-            raise ValueError(
-                f"from_dict: {cls.__name__} has schema_version {schema_version!r}, the marginkit "
-                f"card format; robustmargin reads schema_version {SCHEMA_VERSION!r} only"
-            )
         if schema_version not in _SUPPORTED_SCHEMA_VERSIONS:
             raise ValueError(
                 f"from_dict: unknown schema_version {schema_version!r} for {cls.__name__}, "
@@ -610,18 +597,17 @@ def from_dict(data: object) -> object:
     -------
     object
         An instance of the type named by ``data["type"]``. ``from_dict(to_dict(x)) == x`` for
-        every ``x`` of these five types whose ``schema_version`` is ``"4"``, which is every
-        result this package builds. Only ``schema_version`` ``"4"`` is read. Constructors do
-        not check the tag, so an object built with an explicit ``"1"``, ``"2"`` or ``"3"``
-        serialises but does not read back.
+        every ``x`` of these five types whose ``schema_version`` is ``"1"``, which is every
+        result this package builds. Only ``schema_version`` ``"1"`` is read. Constructors do
+        not check the tag, so an object built with any other ``schema_version`` serialises but
+        does not read back.
 
     Raises
     ------
     ValueError
         If ``"type"`` is missing or unrecognised; if ``schema_version`` (at any nesting level)
-        is ``"1"``, ``"2"`` or ``"3"`` -- the card format of this package's former name,
-        ``marginkit``, named as such in the message -- or is not ``"4"`` for any other reason;
-        if a field (at any nesting level) is not recognised; or if a required field is missing.
+        is not ``"1"``; if a field (at any nesting level) is not recognised; or if a required
+        field is missing.
     """
     return _from_dict_impl(data, card_version=None)
 
@@ -642,7 +628,7 @@ def load_schema(version: str = SCHEMA_VERSION) -> dict[str, object]:
     Parameters
     ----------
     version
-        Which packaged schema version to load. Defaults to :data:`SCHEMA_VERSION`, ``"4"``,
+        Which packaged schema version to load. Defaults to :data:`SCHEMA_VERSION`, ``"1"``,
         which is the only version packaged.
 
     Returns
@@ -653,8 +639,7 @@ def load_schema(version: str = SCHEMA_VERSION) -> dict[str, object]:
     Raises
     ------
     FileNotFoundError
-        If ``version`` names a schema that is not packaged. Only ``"4"`` is: the schemas of the
-        former ``marginkit`` card format (``"1"``, ``"2"`` and ``"3"``) are not shipped.
+        If ``version`` names a schema that is not packaged. Only ``"1"`` is.
     """
     text = (
         resources.files("robustmargin")

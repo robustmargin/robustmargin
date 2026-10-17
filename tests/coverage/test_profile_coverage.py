@@ -1,4 +1,4 @@
-"""Coverage simulations for threshold intervals (plan section 6.3).
+"""Coverage simulations for threshold intervals.
 
 These are the only tests in the suite that check the *method* rather than the implementation.
 The reference tests in ``tests/reference/`` prove robustmargin computes the same numbers R does;
@@ -12,10 +12,10 @@ Run locally with::
 
     pytest -m slow --no-cov
 
-**What is asserted and what is only recorded** (plan section 6.3): the rich, marginbench-like
-design asserts profile coverage in ``[0.93, 0.97]``. The coarse, zeta-like 4-level design
-**records without asserting** -- poor coverage on a 4-level grid is a finding for
-``docs/validation.md``, not a bug. Printed results are what ``docs/validation.md`` quotes.
+**What is asserted and what is only recorded**: the rich design (a log-spaced grid with a
+zero-severity control) asserts profile coverage in ``[0.93, 0.97]``. The coarse 4-level design
+**records without asserting** -- poor coverage on a 4-level grid is a finding to report, not a
+bug. The printed results are the numbers to quote.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ from robustmargin import (
 )
 
 # One seed per design, recorded here so a reported number can be reproduced exactly. Changing a
-# seed changes the numbers in docs/validation.md and is a deliberate act, not a tidy-up.
+# seed changes the reported numbers and is a deliberate act, not a tidy-up.
 _SEED_COARSE = 20260921
 _SEED_RICH = 20260922
 
@@ -54,7 +54,7 @@ _AXIS = Axis(name="severity", unit="unit", scale="log")
 
 
 def _true_threshold(target: float) -> float:
-    """The severity at which the true curve crosses ``target`` (plan section 5.3, with u=1, l=0)."""
+    """The severity at which the true curve crosses ``target`` (with u=1, l=0)."""
     return float(math.exp(_TRUE_MU + _TRUE_S * norm.ppf(1.0 - target)))
 
 
@@ -75,14 +75,14 @@ class _Design:
 
 
 _COARSE = _Design(
-    name="zeta-like (4 levels, n=100-500)",
+    name="coarse (4 levels, n=100-500)",
     severity=np.array([0.25, 0.5, 1.0, 2.0]),
     trials=np.array([500, 300, 200, 100]),
     seed=_SEED_COARSE,
     asserted=False,
 )
 _RICH = _Design(
-    name="marginbench-like (10 log-spaced levels + control, n=400)",
+    name="rich (10 log-spaced levels + control, n=400)",
     severity=np.concatenate([[0.0], np.logspace(-1.0, 1.0, 10)]),
     trials=np.full(11, 400),
     seed=_SEED_RICH,
@@ -101,7 +101,7 @@ def _coverage(
     """Fraction of replicates whose interval contains the true threshold.
 
     A replicate whose fit failed, or whose threshold is censored or has no bounds
-    (``decisions/0013``), is **not** counted as covered and **not** silently dropped: it is
+    (no closed interval), is **not** counted as covered and **not** silently dropped: it is
     tallied separately, because "the interval missed" and "there was no interval" are different
     findings and averaging them together would hide both.
     """
@@ -167,13 +167,13 @@ def test_interval_coverage(design: _Design, definition_name: str, method: str) -
         f"  coverage       : {result['coverage']:.4f} of {int(result['usable'])} usable "
         f"replicates (nominal {_LEVEL})\n"
         f"  censored       : {int(result['censored'])}\n"
-        f"  unbounded      : {int(result['unbounded'])}   (decisions/0013)\n"
+        f"  unbounded      : {int(result['unbounded'])}\n"
         f"  failed         : {int(result['failed'])}\n"
         f"  seed           : {design.seed}, replicates {_REPLICATES}"
     )
 
-    # Plan section 6.3 asserts only the rich design's profile coverage. The coarse design and
-    # the delta cross-check are recorded for docs/validation.md.
+    # Only the rich design's profile coverage is asserted. The coarse design and the delta
+    # cross-check are recorded.
     if design.asserted and method == "profile":
         assert 0.93 <= result["coverage"] <= 0.97, (
             f"profile coverage {result['coverage']:.4f} outside [0.93, 0.97] on the rich design "

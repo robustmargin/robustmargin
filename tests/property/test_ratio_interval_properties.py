@@ -1,7 +1,6 @@
-"""Property tests for ``ratio_interval()`` (plan sections 5.6, 6.4; hypothesis).
+"""Property tests for ``ratio_interval()`` (hypothesis).
 
-Six properties (test-author brief, section (e) -- these are the ones that go beyond the phase
-DoD, on top of the shape/guard/censoring/reference tests elsewhere in this phase):
+Six properties, on top of the shape/guard/censoring/reference tests elsewhere:
 
 - **Fieller reduces to the classical Wald/delta-method interval as the denominator's own
   uncertainty vanishes (``g -> 0``).** This is a textbook asymptotic fact about the Fieller
@@ -162,9 +161,9 @@ def _fieller_roots(
     *, theta_a: float, va: float, theta_b: float, vb: float, z: float
 ) -> tuple[float, float, float]:
     """The classic Fieller quadratic's coefficient ``A`` and its two *unclipped* roots
-    (``docs/STATISTICS.md``; mirrors ``tests/unit/test_ratio_interval_shape.py``'s
-    ``_expected_fieller``, without the shape dispatch -- this file's uses of it stay in the
-    ``A > 0`` regime, so only the roots are needed, before ``decisions/0019``'s clipping)."""
+    (mirrors ``tests/unit/test_ratio_interval_shape.py``'s ``_expected_fieller``, without the
+    shape dispatch -- this file's uses of it stay in the ``A > 0`` regime, so only the roots are
+    needed, before the negative-root clipping)."""
     a_coef = theta_b**2 - z**2 * vb
     b_coef = theta_a * theta_b
     k_coef = theta_a**2 - z**2 * va
@@ -175,13 +174,14 @@ def _fieller_roots(
 
 
 class TestReciprocalConsistency:
-    """This property covers the regime **``decisions/0019`` does not clip either direction**:
+    """This property covers the regime **where the negative-root clip does not apply in either
+    direction**:
     both ``K_a = theta_a^2 - z^2*Va`` and ``K_b = theta_b^2 - z^2*Vb`` stay positive, which (given
     ``_SMALL_LOG_SE``'s range, at most ``sigma_log = 0.2``) is guaranteed here since
     ``K = theta^2 * (1 - z^2*sigma_log^2)`` and ``z^2 * 0.2^2 ~= 0.154 < 1`` always. Stated as an
     explicit ``assume`` on the natural-scale ``K`` values, computed independently of
-    ``ratio_interval``'s own output, rather than the old ``assume(forward.lo > 0.0)``, which was
-    checking a *symptom* of the same condition after the fact.
+    ``ratio_interval``'s own output, rather than ``assume(forward.lo > 0.0)``, which would check
+    a *symptom* of the same condition after the fact.
     ``TestReciprocalConsistencyUnderNegativeRootClipping`` below covers the complementary case.
     """
 
@@ -217,13 +217,10 @@ class TestReciprocalConsistency:
 
 
 class TestReciprocalConsistencyUnderNegativeRootClipping:
-    """``decisions/0019``'s own consequence, worked out and pinned to an exact form -- **restated
-    under ``decisions/0022``'s geometry, superseding this class's own pre-0022 form** (the
-    test-author brief's "if the identity changes shape, report what it becomes rather than
-    forcing the old form"; the original derivation below concluded ``backward`` was
-    ``EXCLUSIVE``, which was correct reasoning about the *unclipped* algebra but is no longer
-    what ``ratio_interval()`` reports, now that ``0022`` intersects that same branch with the
-    positive parameter space too).
+    """The consequence of the negative-root clip, worked out and pinned to an exact form. (The
+    *unclipped* algebra would make ``backward`` ``EXCLUSIVE``, but that is not what
+    ``ratio_interval()`` reports: it intersects that same branch with the positive parameter
+    space too.)
 
     When ``K_a <= 0`` clips the *forward* ratio's lower root to ``0``, the *backward*
     (reciprocal) ratio is not ``BOUNDED`` at all -- swapping ``a`` and ``b`` swaps the
@@ -231,21 +228,20 @@ class TestReciprocalConsistencyUnderNegativeRootClipping:
     own ``A' = K_a <= 0``. Given ``theta_b``'s own ``K_b = theta_b^2 - z^2*Vb`` is kept positive
     (a well-determined denominator, ``_SMALL_LOG_SE``), the backward computation's own
     ``K' = A_forward > 0`` (forward is genuinely ``BOUNDED``, so ``A_forward > 0`` by
-    definition) -- ``A' < 0`` with ``K' > 0`` is exactly ``decisions/0022``'s ``HALF_OPEN``
-    branch, not ``EXCLUSIVE``.
+    definition) -- ``A' < 0`` with ``K' > 0`` is exactly the ``HALF_OPEN`` branch, not
+    ``EXCLUSIVE``.
 
     The swapped quadratic's roots are exactly the *reciprocals of the forward computation's own
     unclipped roots* (dividing ``A*rho^2 - 2*B*rho + K = 0`` by ``rho^2`` and substituting
     ``sigma = 1/rho`` gives ``K*sigma^2 - 2*B*sigma + A = 0``, the swapped equation) -- computed
     directly here via ``_fieller_roots``, independently of ``ratio_interval``. The forward
     computation's unclipped roots are ``unclipped_lo < 0 < unclipped_hi``; the swapped roots are
-    therefore ``1/unclipped_lo`` (negative) and ``1/unclipped_hi`` (positive). ``0022``'s
-    ``HALF_OPEN`` keeps only the *positive* root, so **the negative one is simply dropped**, not
-    reported as anything -- ``backward.lo == 1.0 / unclipped_hi == 1.0 / forward.hi`` exactly
-    (``forward.hi`` was never clipped, `decisions/0019`), and ``backward.hi is None``. This is a
-    *simpler* final relationship than the pre-0022 form: there is no longer a second endpoint to
-    reciprocate at all, because ``0022``'s whole point is that the "other ray" was never a
-    meaningful bound on a severity ratio to begin with.
+    therefore ``1/unclipped_lo`` (negative) and ``1/unclipped_hi`` (positive). ``HALF_OPEN``
+    keeps only the *positive* root, so **the negative one is simply dropped**, not reported as
+    anything -- ``backward.lo == 1.0 / unclipped_hi == 1.0 / forward.hi`` exactly
+    (``forward.hi`` was never clipped), and ``backward.hi is None``. There is no second endpoint
+    to reciprocate at all, because the "other ray" is never a meaningful bound on a severity
+    ratio to begin with.
     """
 
     @given(
@@ -269,7 +265,7 @@ class TestReciprocalConsistencyUnderNegativeRootClipping:
             theta_a=theta_a, va=va, theta_b=theta_b, vb=vb, z=_Z
         )
         assume(a_coef > 0.0)  # forward must actually be in the BOUNDED (A > 0) regime
-        assume(unclipped_lo < 0.0)  # the condition decisions/0019 clips
+        assume(unclipped_lo < 0.0)  # the condition the negative-root clip applies to
 
         t_a = _threshold_with_known_log_se(value=theta_a, sigma_log=sigma_log_a)
         t_b = _threshold_with_known_log_se(value=theta_b, sigma_log=sigma_log_b)
@@ -342,11 +338,10 @@ class TestContainmentAcrossShapes:
     this generalises the same check across many random draws, including some that land on
     ``HALF_OPEN``/``UNBOUNDED`` (``sigma_log_b`` is drawn wide enough to cross ``g=1``).
 
-    ``EXCLUSIVE`` is unreachable through ``ratio_interval()`` in v0.1 (`decisions/0022`): what
-    this property swept into that branch before ``0022`` (``A < 0``, ``K > 0``) is ``HALF_OPEN``
-    now, so the ``EXCLUSIVE`` arm below is unreachable dead code, kept only because
-    :class:`~robustmargin.IntervalShape` still has the member and nothing forbids a future
-    ``dependence="paired"`` result from reaching it (`decisions/0022`'s own consequence).
+    ``EXCLUSIVE`` is unreachable through ``ratio_interval()`` in this release: ``A < 0`` with
+    ``K > 0`` is ``HALF_OPEN``, so the ``EXCLUSIVE`` arm below is unreachable dead code, kept
+    only because :class:`~robustmargin.IntervalShape` still has the member and nothing forbids a
+    future ``dependence="paired"`` result from reaching it.
     """
 
     @given(
@@ -371,7 +366,7 @@ class TestContainmentAcrossShapes:
         elif result.shape is IntervalShape.HALF_OPEN:
             assert result.lo is not None and result.hi is None
             assert result.lo <= result.estimate
-        elif result.shape is IntervalShape.EXCLUSIVE:  # pragma: no cover - v0.2 surface only
+        elif result.shape is IntervalShape.EXCLUSIVE:  # pragma: no cover - paired dependence only
             assert result.lo is not None and result.hi is not None
             assert result.estimate <= result.lo or result.estimate >= result.hi
         else:
@@ -442,15 +437,14 @@ class TestMonotonicityInLevel:
 
 
 class TestFiellerLowerAndUpperNeverNegative:
-    """The invariant behind ``decisions/0019`` and ``decisions/0021`` together, stated directly
-    rather than case by case: a severity ratio cannot be negative, so **whenever the ``fieller``
-    path reports a finite ``lo`` or ``hi``, neither is negative** -- regardless of which branch
-    (``BOUNDED``, ``EXCLUSIVE``, or the ``UNBOUNDED`` that ``0017``/``0021`` produce from the
-    other two) produced it. ``_WIDE_LOG_SE`` on both sides sweeps ``A = theta_b^2 - z^2*Vb`` and
+    """The invariant behind the negative-root clip and the both-roots-negative rule together, stated
+    directly rather than case by case: a severity ratio cannot be negative, so **whenever the
+    ``fieller`` path reports a finite ``lo`` or ``hi``, neither is negative** -- regardless of which
+    branch (``BOUNDED``, ``EXCLUSIVE``, or the ``UNBOUNDED`` produced from the other two) produced
+    it. ``_WIDE_LOG_SE`` on both sides sweeps ``A = theta_b^2 - z^2*Vb`` and
     ``K = theta_a^2 - z^2*Va`` through positive and non-positive values on both sides, so this
     single property is meant to reach ``A > 0``, ``A < 0`` with ``K > 0``, and ``A < 0`` with
-    ``K <= 0`` all in one sweep -- "the property that would have caught both 0021 and 0019's W1"
-    (test-author brief), rather than one property per fixed case.
+    ``K <= 0`` all in one sweep, rather than one property per fixed case.
     """
 
     @given(
