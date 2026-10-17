@@ -1,13 +1,13 @@
 """Unit tests for ``robustmargin.report``: ``to_dict`` / ``from_dict`` / ``load_schema`` and the
-packaged score-card JSON schema (``"4"`` as of ``decisions/0027``; the reader reads ``"4"`` only,
-and ``tests/unit/test_schema_v4.py`` owns the old-version rejections and the schema-identity pins).
+packaged score-card JSON schema (``"1"``; the reader reads ``"1"`` only, and
+``tests/unit/test_schema_v1.py`` owns the unknown-version rejections and the schema-identity
+pins).
 
-Round-trips every serialisable result type, ``GridBreakPoint`` included (R5 #3, plan section
-4.2's "JSON envelope"), and checks the error paths that keep a saved score card from silently
-becoming a different one: non-finite floats, non-JSON provenance values, an unknown
-``schema_version``, and an unknown field. The parity test at the end is what stops the schema --
-a second, hand-maintained copy of every field name -- from drifting against the dataclasses it
-describes (design choice 6, Phase 3 plan).
+Round-trips every serialisable result type, ``GridBreakPoint`` included, and checks the error
+paths that keep a saved score card from silently becoming a different one: non-finite floats,
+non-JSON provenance values, an unknown ``schema_version``, and an unknown field. The parity test
+at the end is what stops the schema -- a second, hand-maintained copy of every field name -- from
+drifting against the dataclasses it describes.
 """
 
 from __future__ import annotations
@@ -200,7 +200,7 @@ class TestFromDictErrors:
         assert "not_a_real_field" in str(exc_info.value)
 
     def test_unknown_field_in_scorecard_message_includes_library_version(self) -> None:
-        """Item 3, round 3: for a ``Scorecard`` specifically, an unknown-field error also names
+        """For a ``Scorecard`` specifically, an unknown-field error also names
         the version that produced it -- the detail most useful for telling "a different release
         wrote this" apart from "this file is simply corrupt"."""
         card = Scorecard(results=(_grid_result(),), provenance={}, library_version="9.9.9")
@@ -229,10 +229,11 @@ class TestFromDictErrors:
 
 
 class TestFromDictValidatesNestedTypeTags:
-    """Rule 19: ``from_dict`` must check nested ``"type"`` tags too, not just the top-level
-    one. ``_threshold_from_dict`` currently calls ``_fit_from_dict`` on the nested ``fit`` dict
-    directly, bypassing ``from_dict``'s own top-level dispatch (which is the only place the
-    ``"type"`` key is currently read), so a missing or wrong nested tag is silently ignored.
+    """``from_dict`` must check nested ``"type"`` tags too, not just the top-level one.
+    ``_threshold_from_dict`` calls ``_fit_from_dict`` on the nested ``fit`` dict directly,
+    bypassing ``from_dict``'s own top-level dispatch (which is the only place the ``"type"`` key
+    would otherwise be read), so without the check a missing or wrong nested tag would be
+    silently ignored.
     """
 
     def test_nested_fit_missing_type_tag_raises(self) -> None:
@@ -251,7 +252,7 @@ class TestFromDictValidatesNestedTypeTags:
 
 
 class TestFromDictScorecardRequiresCreatedAtAndVersion:
-    """Rule 20: a ``Scorecard`` payload missing ``created_at`` or ``library_version`` must
+    """A ``Scorecard`` payload missing ``created_at`` or ``library_version`` must
     raise, rather than silently filling in the dataclass's own ``default_factory`` (today's
     time, the currently-installed version) -- that would invent metadata about a record that
     was actually produced somewhere else, at some other time, by some other version.
@@ -275,7 +276,7 @@ class TestFromDictScorecardRequiresCreatedAtAndVersion:
 
 
 class TestToDictTopLevelTypeRestriction:
-    """Rule 21: ``to_dict`` at top level accepts only the five result types -- a helper type
+    """``to_dict`` at top level accepts only the five result types -- a helper type
     such as ``Observations`` or ``Axis`` is a dataclass too, so the existing "is a dataclass
     instance" check in ``to_dict`` alone does not exclude it."""
 
@@ -345,7 +346,7 @@ class TestLoadSchema:
 
 
 class TestSchemaIsStrict:
-    """Item 3, round 3: every object in the schema (root and every ``$defs`` entry) sets
+    """Every object in the schema (root and every ``$defs`` entry) sets
     ``"additionalProperties": false``, and the schema is binomial-only, so ``Fit.model``'s enum is
     exactly ``["binomial"]`` -- not just documented as binomial-only by convention."""
 
@@ -411,7 +412,7 @@ class TestSchemaFieldParity:
         assert schema_properties == field_names | {"type"}
 
     def test_root_schema_requires_created_at_and_library_version(self) -> None:
-        """Rule 20: the schema's own ``required`` list is the second copy of "these two fields
+        """The schema's own ``required`` list is the second copy of "these two fields
         must not be silently invented" -- if it drifts from what ``from_dict`` actually
         enforces, a consumer validating against the schema alone would not catch a payload
         ``from_dict`` would reject."""
@@ -422,7 +423,7 @@ class TestSchemaFieldParity:
 
 
 # ------------------------------------------------------------------------------------------
-# Round 4, section 2: counts accept whole-number floats.
+# Counts accept whole-number floats.
 # ------------------------------------------------------------------------------------------
 
 
@@ -445,7 +446,7 @@ class TestFromDictAcceptsWholeNumberFloatCounts:
 
 
 # ------------------------------------------------------------------------------------------
-# Round 4, section 3: schema and from_dict agree.
+# The schema and from_dict agree.
 # ------------------------------------------------------------------------------------------
 
 
@@ -563,9 +564,9 @@ def _non_required_key_cases() -> list[tuple[str, str]]:
 
 
 class TestFromDictRequiredKeyParityWithSchema:
-    """Section 3: for each tagged type, the keys ``from_dict`` requires are *exactly* that
+    """For each tagged type, the keys ``from_dict`` requires are *exactly* that
     type's schema ``required`` list -- including the Scorecard's root ``schema_version``, which
-    ``from_dict`` must no longer silently fill in from its dataclass default."""
+    ``from_dict`` must not silently fill in from its dataclass default."""
 
     @pytest.mark.parametrize(("type_name", "key"), _required_key_cases())
     def test_deleting_a_required_key_raises(self, type_name: str, key: str) -> None:
@@ -584,7 +585,7 @@ class TestFromDictRequiredKeyParityWithSchema:
 
 
 # ------------------------------------------------------------------------------------------
-# Round 4, section 4: from_dict error ordering and messages.
+# from_dict error ordering and messages.
 # ------------------------------------------------------------------------------------------
 
 
@@ -626,7 +627,7 @@ class TestFromDictNestedUnknownFieldNamesFieldAndBothVersions:
 
 
 # ------------------------------------------------------------------------------------------
-# decisions/0029: ``Fit.cells`` must be strictly ascending in severity, and ``from_dict`` reaches
+# ``Fit.cells`` must be strictly ascending in severity, and ``from_dict`` reaches
 # that check through ``Fit`` construction, so a hand-edited card whose ``cells`` are out of order
 # is rejected on read instead of silently making ``threshold()`` test the wrong levels. Every
 # card ``to_dict`` writes is already sorted (``cells`` is kept in order), so no existing card is
@@ -742,15 +743,14 @@ class TestFromDictRejectsFitCellsNotStrictlyAscending:
 
 
 # ------------------------------------------------------------------------------------------
-# Phase 5, decisions/0010: Threshold.baseline / Threshold.grid, appended fields defaulting to
-# None. ``TestSchemaFieldParity`` above already checks that the schema and the dataclass agree
-# on field *names*; this section checks that the *values* survive a round trip, and that a card
-# written before these two fields existed (no ``baseline``/``grid`` keys at all) still loads.
-# ``BaselineRate`` does not exist yet, so it is imported locally inside each test that needs it,
-# not at module level -- the same reason every not-yet-existing Phase 5 name in
-# ``tests/contract/`` and ``tests/unit/test_censoring.py`` is imported locally: a module-level
-# ``ImportError`` here would abort collection of this entire file, not just these tests, taking
-# every one of this file's already-passing tests down with it.
+# Threshold.baseline / Threshold.grid, optional fields defaulting to None.
+# ``TestSchemaFieldParity`` above already checks that the schema and the dataclass agree on field
+# *names*; this section checks that the *values* survive a round trip, and that a card that
+# omits these two fields (no ``baseline``/``grid`` keys at all) still loads. ``BaselineRate`` is
+# imported locally inside each test that needs it, not at module level -- the same reason names
+# are imported locally in ``tests/contract/`` and ``tests/unit/test_censoring.py``: a
+# module-level ``ImportError`` here would abort collection of this entire file, not just these
+# tests, taking every one of this file's other tests down with it.
 # ------------------------------------------------------------------------------------------
 
 
@@ -758,7 +758,7 @@ class TestThresholdBaselineAndGridRoundTrip:
     def test_fails_at_baseline_threshold_with_baseline_rate_round_trips(self) -> None:
         from robustmargin import BaselineRate
 
-        # FAILS_AT_BASELINE places no constraint on fit.status (plan section 5.5, decisions/0008):
+        # FAILS_AT_BASELINE places no constraint on fit.status:
         # the control's exact test does not depend on the rest of the curve having converged, so
         # the default (OK) fake fit is a legitimate underlying fit here.
         fit = fake_fit()
@@ -839,16 +839,16 @@ class TestThresholdBaselineAndGridRoundTrip:
 
 
 # ------------------------------------------------------------------------------------------
-# Phase 7, decisions/0023: Fit.diagnostics, an appended field defaulting to None. Mirrors
+# Fit.diagnostics, an optional field defaulting to None. Mirrors
 # TestThresholdBaselineAndGridRoundTrip's own two-test shape: a real value round-trips, and a
 # payload that omits the "diagnostics" key outright still loads, filling the dataclass default.
 # ------------------------------------------------------------------------------------------
 
 
 def _sample_diagnostics() -> Diagnostics:
-    """``Diagnostics`` is model-only as of decisions/0023's Amendment 1: no ``monotonicity``
-    entry here at all (that moved onto ``Fit.monotonicity`` directly -- see
-    ``_sample_monotonicity_check`` and ``TestFitMonotonicityRoundTrip`` below)."""
+    """``Diagnostics`` is model-only: no ``monotonicity`` entry here at all (that lives on
+    ``Fit.monotonicity`` directly -- see ``_sample_monotonicity_check`` and
+    ``TestFitMonotonicityRoundTrip`` below)."""
     return Diagnostics(
         deviance=1.23,
         pearson_chi2=1.19,
@@ -911,9 +911,8 @@ class TestFitDiagnosticsRoundTrip:
 
 
 # ------------------------------------------------------------------------------------------
-# Phase 7, decisions/0023 Amendment 1: Fit.monotonicity, the *last* appended field, populated on
-# every fit_dose_response return path (unlike diagnostics, never None for a fresh OK-or-not
-# result).
+# Fit.monotonicity, populated on every fit_dose_response return path (unlike diagnostics, never
+# None for a fresh OK-or-not result).
 # ------------------------------------------------------------------------------------------
 
 

@@ -1,15 +1,15 @@
-"""The failed-fit exact bracket takes each side from a fixed-sequence scan (``decisions/0028``).
+"""The failed-fit exact bracket takes each side from a fixed-sequence scan.
 
 When a fit fails (``SEPARATION`` / ``NOT_CONVERGED``) and neither ``RIGHT`` nor ``LEFT`` applies,
-``censoring.classify`` reports an exact bracket from the tested cells. ``0009`` states its
-coverage: each side at ``(1 + level) / 2`` so the pair covers at least ``level``; a one-sided
-bound at ``level``. That argument needs each side to come from **one cell chosen in advance**.
-The rule that shipped did not: it took the highest confidently-passing nonzero severity and the
-lowest confidently-failing severity over *every* cell, so with ``k`` cells near the target each
-side's error was up to about ``k * (1 - c)`` (the slow simulation in
+``censoring.classify`` reports an exact bracket from the tested cells. Its coverage claim: each
+side at ``(1 + level) / 2`` so the pair covers at least ``level``; a one-sided bound at
+``level``. That argument needs each side to come from **one cell chosen in advance**. A
+max-anywhere rule -- the highest confidently-passing nonzero severity and the lowest
+confidently-failing severity over *every* cell -- does not satisfy it: with ``k`` cells near the
+target each side's error is up to about ``k * (1 - c)`` (the slow simulation in
 ``tests/coverage/test_exact_bracket_coverage.py`` measures it).
 
-``0028`` replaces that with fixed-sequence scans:
+The fixed-sequence scans:
 
 * ``lo`` is the last severity in the run of confidently-passing **nonzero** severities ascending
   from the bottom;
@@ -35,11 +35,11 @@ f     84 / 100     confidently fails at 0.95 only; undetermined at 0.975
 F     0 / 100      confidently fails at 0.975 and at 0.95
 ====  ===========  ==============================================================
 
-Each test that changes behaviour also asserts what the rule being replaced gave on the same
-cells (``_max_anywhere_rule``, written out from the description in ``0028``), so none of them can
-pass on a grid where the old and new rules happen to agree.
+Each test where the two rules differ also asserts what the max-anywhere rule gives on the same
+cells (``_max_anywhere_rule``), so none of them can pass on a grid where the two rules happen to
+agree.
 
-Unchanged by ``0028`` and pinned at the end: the monotonicity-contradiction check, which still
+Pinned at the end and independent of the scans: the monotonicity-contradiction check, which
 looks at *every* cell at ``level`` -- a fixed-sequence scan would hide exactly the contradictions
 that check exists to find -- and ``RIGHT`` / ``LEFT``.
 """
@@ -127,7 +127,7 @@ def _classify(roles: str, status: Status) -> Classification:
 
 
 def _max_anywhere_rule(roles: str) -> tuple[float | None, float | None]:
-    """The rule ``0028`` replaces, written out from its description: ``lo`` the highest nonzero
+    """The max-anywhere rule, as the contrast to the scans: ``lo`` the highest nonzero
     severity whose lower bound clears the target, ``hi`` the lowest severity whose upper bound is
     below it, both over every cell, each side at the bracket confidence; when exactly one side
     is determined, that side is rescanned the same way at ``level`` and the other forced to
@@ -178,14 +178,14 @@ def failed_status(request: pytest.FixtureRequest) -> Status:
 
 
 class TestEachSideStopsAtTheFirstSeverityThatDoesNotQualify:
-    """``0028`` decisions 1 and 2: the run, not the extreme."""
+    """The run, not the extreme."""
 
     def test_lower_bound_is_the_end_of_the_bottom_run_not_a_later_confident_pass(
         self, failed_status: Status
     ) -> None:
         """``P P P G P F F``: severities 1 and 2 pass, 3 is undetermined, 4 passes again.
 
-        The shipped rule took the highest passing severity anywhere, ``lo = 4``. The run from
+        The max-anywhere rule takes the highest passing severity anywhere, ``lo = 4``. The run from
         the bottom ends at 2. (Not a monotonicity contradiction: the highest passing severity,
         4, is below the lowest failing one, 5.)
         """
@@ -203,8 +203,8 @@ class TestEachSideStopsAtTheFirstSeverityThatDoesNotQualify:
     ) -> None:
         """``P P P P F G F F``: 7 and 6 fail, 5 is undetermined, 4 fails again.
 
-        The shipped rule took the lowest failing severity anywhere, ``hi = 4``. The run from the
-        top ends at 6. The lower side is the ordinary run 1..3 (4 fails, so it stops there).
+        The max-anywhere rule takes the lowest failing severity anywhere, ``hi = 4``. The run from
+        the top ends at 6. The lower side is the ordinary run 1..3 (4 fails, so it stops there).
         """
         assert _max_anywhere_rule("P P P P F G F F") == (3.0, 4.0)
 
@@ -239,7 +239,7 @@ class TestAGapAtTheStartLeavesThatSideUndetermined:
         self, failed_status: Status
     ) -> None:
         """``P G P P F F``: the lowest nonzero level (1) is undetermined while 2 and 3 pass.
-        The shipped rule reported the bracket ``(3, 4)``; there is now no ``lo``, and ``hi`` is
+        The max-anywhere rule reports the bracket ``(3, 4)``; there is now no ``lo``, and ``hi`` is
         the upper-side run ``5, 4`` (3 passes, so it stops), reported one-sided at ``level``."""
         assert _max_anywhere_rule("P G P P F F") == (3.0, 4.0)
 
@@ -254,8 +254,9 @@ class TestAGapAtTheStartLeavesThatSideUndetermined:
     def test_gap_at_the_highest_level_leaves_the_upper_side_undetermined(
         self, failed_status: Status
     ) -> None:
-        """``P P P F G``: the highest level (4) is undetermined while 3 fails. The shipped rule
-        reported ``(2, 3)``; the descending scan cannot start, so only the lower side is bound."""
+        """``P P P F G``: the highest level (4) is undetermined while 3 fails. The max-anywhere
+        rule reports ``(2, 3)``; the descending scan cannot start, so only the lower side is
+        bound."""
         assert _max_anywhere_rule("P P P F G") == (2.0, 3.0)
 
         result = _classify("P P P F G", failed_status)
@@ -270,7 +271,7 @@ class TestAGapAtTheStartLeavesThatSideUndetermined:
         self, failed_status: Status
     ) -> None:
         """``P G P F G``: level 2 passes and level 3 fails, but both scans are stopped by an
-        undetermined level at their own end. The shipped rule reported ``(2, 3)``. The cells are
+        undetermined level at their own end. The max-anywhere rule reports ``(2, 3)``. The cells are
         monotone (2 passes below 3 failing), so this is *not* a contradiction -- it is simply no
         bound, with the existing no-bounds warning."""
         assert _max_anywhere_rule("P G P F G") == (2.0, 3.0)
@@ -284,7 +285,7 @@ class TestAGapAtTheStartLeavesThatSideUndetermined:
 
 
 class TestTheOneSidedRescanAtLevelAlsoStopsAtTheFirstGap:
-    """``0028`` decision 3: when only one side is determined at the bracket confidence, that
+    """When only one side is determined at the bracket confidence, that
     side is rescanned at ``level`` -- with the same fixed-sequence rule, not the max-anywhere
     one. Each grid here is built so that the rescan result differs from the max-anywhere answer
     at ``level``."""
@@ -355,8 +356,8 @@ _CLEAN_CASES = [
 
 
 class TestCleanDataIsUnchanged:
-    """``0028``'s consequences: 'When the confidently passing and failing cells are each
-    contiguous from their end, the result is identical.'"""
+    """When the confidently passing and failing cells are each contiguous from their end, the
+    result is identical to the max-anywhere rule's."""
 
     @pytest.mark.parametrize("case", _CLEAN_CASES, ids=lambda c: c.roles.replace(" ", ""))
     def test_contiguous_passes_and_fails_give_the_same_bounds_as_the_max_anywhere_rule(
@@ -380,8 +381,8 @@ class TestCleanDataIsUnchanged:
         assert bracket.warnings == ()
         assert len(one_sided.warnings) == 1
         # Names the bracket confidence the side was *not* determined at (0.975), and the
-        # confidence the reported one-sided bound was rescanned at (0.95). The earlier wording
-        # said "at confidence 0.95" for the first, which named the wrong confidence.
+        # confidence the reported one-sided bound was rescanned at (0.95); the first must not be
+        # confused with the second.
         assert (
             "determined only the lower side at the bracket confidence 0.975"
             in one_sided.warnings[0]
@@ -390,7 +391,7 @@ class TestCleanDataIsUnchanged:
 
 
 class TestTheContradictionCheckIsUnchanged:
-    """``0028`` decision 5: ``_contradiction_or_none`` still compares the highest confidently
+    """``_contradiction_or_none`` compares the highest confidently
     passing nonzero severity with the lowest confidently failing one, over every cell, at
     ``level``. The grids below are ones where the contradicting cells sit *behind* an
     undetermined or failing level that would stop a fixed-sequence scan, so a contradiction
@@ -445,9 +446,9 @@ class TestTheContradictionCheckIsUnchanged:
 
 
 class TestRightAndLeftAreUnchanged:
-    """``0028`` decision 5: ``RIGHT`` and ``LEFT`` each test one cell chosen in advance and are
-    untouched. Pinned on grids that also contain gaps, where a fixed-sequence rule applied to
-    them would change the answer."""
+    """``RIGHT`` and ``LEFT`` each test one cell chosen in advance and are not scans. Pinned on
+    grids that also contain gaps, where a fixed-sequence rule applied to them would change the
+    answer."""
 
     def test_right_still_fires_on_the_highest_level_alone(self, failed_status: Status) -> None:
         """Level 2 is undetermined, but the highest level (3) confidently passes: ``RIGHT`` at
@@ -473,34 +474,34 @@ class TestRightAndLeftAreUnchanged:
 
 
 class TestUnsortedCellsCannotReachTheExactTestRules:
-    """Regression, ``decisions/0029`` (the unsorted-cells gap raised by the stats review of
-    ``0028``). Every exact-test rule reads ``fit.cells`` in order -- ``RIGHT`` the last cell,
-    ``LEFT`` the first nonzero cell, the scans from each end -- and ``Fit`` did not check that
-    order, so a hand-built (or hand-edited) fit with its cells out of order made ``classify``
-    test the wrong levels with no error. Out-of-order cells now fail at ``Fit`` construction.
+    """Regression: every exact-test rule reads ``fit.cells`` in order -- ``RIGHT`` the last
+    cell, ``LEFT`` the first nonzero cell, the scans from each end -- so if ``Fit`` did not check
+    that order, a hand-built (or hand-edited) fit with its cells out of order would make
+    ``classify`` test the wrong levels with no error. Out-of-order cells fail at ``Fit``
+    construction.
 
-    Each case below is a pair: the unsorted cells (which used to give the wrong answer, quoted
-    in the docstring) must not build, and the same cells in ascending order give the right one.
+    Each case below is a pair: the unsorted cells (which would give the wrong answer, quoted in
+    the docstring) must not build, and the same cells in ascending order give the right one.
     """
 
-    def test_cells_that_used_to_give_left_at_the_wrong_severity_cannot_be_built(
+    def test_cells_that_would_give_left_at_the_wrong_severity_cannot_be_built(
         self, failed_status: Status
     ) -> None:
         """``P F F F`` with the severity-3 cell listed first among the nonzero ones. In list
-        order the "first nonzero cell" was severity 3, so ``classify`` returned ``LEFT`` with
-        ``hi = 3.0``; the lowest failing level is 1.0."""
+        order the "first nonzero cell" would be severity 3, so ``classify`` would return ``LEFT``
+        with ``hi = 3.0``; the lowest failing level is 1.0."""
         control, one, two, three = _grid("P F F F")
 
         with pytest.raises(ValueError):
             _failed_fit((control, three, one, two), failed_status)
 
-    def test_cells_that_used_to_give_right_at_a_passing_level_below_a_failing_one_cannot_be_built(
+    def test_cells_that_would_give_right_at_a_passing_level_below_a_failing_one_cannot_be_built(
         self, failed_status: Status
     ) -> None:
         """``P P F`` with the failing severity-2 cell listed before the passing severity-1 one.
-        In list order the "last cell" was severity 1, which passes, so ``classify`` returned
-        ``RIGHT`` with ``lo = 1.0`` -- a claim that no tested level fails, with a confidently
-        failing level at 2.0."""
+        In list order the "last cell" would be severity 1, which passes, so ``classify`` would
+        return ``RIGHT`` with ``lo = 1.0`` -- a claim that no tested level fails, with a
+        confidently failing level at 2.0."""
         control, one, two = _grid("P P F")
 
         with pytest.raises(ValueError):

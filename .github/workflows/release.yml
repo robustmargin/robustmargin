@@ -1,15 +1,16 @@
 # Publishes a tagged release to TestPyPI, verifies it installs, then publishes to PyPI.
-# A pre-release tag (PEP 440 a/b/rc, e.g. v0.1.1rc1) stops after the TestPyPI install check:
-# it is a dry run of the whole pipeline and never reaches PyPI (decisions/0024).
-# decisions/0024: PyPI Trusted Publishing (OIDC), no API token stored anywhere. The `pypi`
-# environment requires the owner's approval, so nothing reaches PyPI without it.
+# A pre-release tag (PEP 440 a/b/rc, e.g. v1.2.0rc1) stops after the TestPyPI install check:
+# it is a dry run of the whole pipeline and never reaches PyPI.
+# Uploads use PyPI Trusted Publishing (OIDC), so no API token is stored anywhere. The `pypi`
+# environment requires a maintainer's approval, so nothing reaches PyPI without it.
 #
-# One-time setup, done by the owner:
-#   - pypi.org and test.pypi.org: add a pending publisher for project `robustmargin`,
+# One-time setup, done by a maintainer:
+#   - pypi.org and test.pypi.org: add a trusted publisher for project `robustmargin` (a
+#     "pending publisher" until the project's first upload),
 #     owner `robustmargin` (the GitHub organization), repository `robustmargin`,
 #     workflow `release.yml`, environment `pypi` (pypi.org) or `testpypi` (test.pypi.org).
-#   - GitHub: create environments `testpypi` and `pypi`, the latter with the owner as a
-#     required reviewer and deployment restricted to `v*` tags.
+#   - GitHub: create environments `testpypi` and `pypi`, the latter with a required
+#     reviewer, and restrict deployment to `v*` tags.
 name: release
 
 on:

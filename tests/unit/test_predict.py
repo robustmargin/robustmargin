@@ -1,13 +1,12 @@
-"""Unit tests for ``Fit.predict()`` (plan section 5.1's item 6, the ``predict`` bands).
+"""Unit tests for ``Fit.predict()`` (the ``predict`` bands).
 
 Covers band containment, the log-axis zero-severity control, raising on a non-``OK`` fit,
-``level`` validation, a hand-computed curve check, and two of the four property-test invariants
-from the test-author brief that apply at the ``Fit``/``Prediction`` level already in Phase 4
-(interval containment and "a wider confidence level never produces a narrower interval") --
-monotonicity is included too, since it is cheap to check directly on a real fit. The other two
-brief-level invariants (scale invariance of ``value``/``lo``/``hi``, and "censoring never
-yields a finite point estimate") are about ``Threshold``, which does not exist until Phase 5;
-they are not applicable to ``Prediction`` here.
+``level`` validation, a hand-computed curve check, and the invariants that apply at the
+``Fit``/``Prediction`` level (interval containment and "a wider confidence level never produces
+a narrower interval") -- monotonicity is included too, since it is cheap to check directly on a
+real fit. The other two invariants (scale invariance of ``value``/``lo``/``hi``, and "censoring
+never yields a finite point estimate") are about ``Threshold``, so they are not applicable to
+``Prediction`` and live in ``tests/property/test_threshold_properties.py``.
 """
 
 from __future__ import annotations
@@ -19,10 +18,10 @@ from scipy.stats import norm
 from robustmargin import Axis, Fit, Observations, Prediction, Status, fit_dose_response
 from robustmargin.testing import fake_fit
 
-_LOG_AXIS = Axis(name="sensor_noise", unit="m", scale="log")
+_LOG_AXIS = Axis(name="axis_1", unit="m", scale="log")
 
-# A well-identified decreasing series (the PID x sensor_noise shape from the zeta fixture),
-# reused across most of this file.
+# A well-identified decreasing series (the ``system_a_axis_1`` shape from the pooled-counts
+# fixture), reused across most of this file.
 _SEVERITY = [0.0, 0.01, 0.05, 0.1]
 _SUCCESSES = [200, 299, 122, 0]
 _TRIALS = [200, 300, 300, 300]
@@ -54,7 +53,7 @@ def _fixed_nontrivial_fit() -> Fit:
 
 def _estimated_asymptote_fit() -> Fit:
     """An identified design (a control plus 7 log-spaced nonzero levels, both asymptotes
-    estimated) for C1: the band at ``predict(0.0)`` and ``predict(1e-12)`` must agree, since
+    estimated): the band at ``predict(0.0)`` and ``predict(1e-12)`` must agree, since
     both are, to floating-point purposes, the zero-severity control on a log axis.
     """
     obs = Observations.from_counts(
@@ -178,7 +177,7 @@ class TestPredictIsMonotone:
 
 
 class TestZeroVsNearZeroSeverityOnLogAxis:
-    """C1: on a log axis with ``upper="estimate"`` (so ``P(0) = upper`` is itself an estimated
+    """On a log axis with ``upper="estimate"`` (so ``P(0) = upper`` is itself an estimated
     quantity, not a fixed one), ``predict(0.0)`` and ``predict(1e-12)`` must agree to within
     about ``1e-6`` -- ``1e-12`` is indistinguishable from the exact zero-severity control at
     floating-point precision (``log(1e-12)`` is a large but finite negative number, and the
@@ -209,7 +208,7 @@ class TestZeroVsNearZeroSeverityOnLogAxis:
 
 
 class TestPredictionArraysAreReadOnly:
-    """Item 6: ``Prediction``'s numpy arrays must be read-only, so a caller cannot mutate a
+    """``Prediction``'s numpy arrays must be read-only, so a caller cannot mutate a
     result in place and mistake it for a fresh prediction.
     """
 

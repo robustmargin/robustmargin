@@ -1,12 +1,10 @@
-"""Real-data regression: ``threshold()`` on ``tests/data/zeta_matrix_counts.csv`` (plan
-section 6.5, `docs/decisions/0008`, `0010`, `0011`).
+"""Real-data regression: ``threshold()`` on ``tests/data/pooled_counts.csv``.
 
-Every series here is a genuine edge case from zeta-bench's committed matrix (plan section 3.1),
-not a synthetic construction -- a status or censoring change on this file is either a real
-statistical finding or a real bug, never something to paper over by adjusting the assertion
-(``CLAUDE.md``). Status and censoring are asserted for every series; numeric ``value``/``lo``/
-``hi`` are asserted only for the identifiable ``pid_sensor_noise`` series (plan section 6.5's own
-restriction).
+Every series here is a recorded edge case, not a synthetic construction -- a status or censoring
+change on this file is either a real statistical finding or a real bug, never something to paper
+over by adjusting the assertion. Status and censoring are asserted for every series; numeric
+``value``/``lo``/``hi`` are asserted only for the identifiable ``system_a_axis_1`` series, because
+the other series are separated, censored or non-monotone and have no interior estimate to pin.
 
 Status/Censoring member coverage *not* reachable from this CSV (``CONTROL_INCOMPATIBLE``,
 ``NOT_CONVERGED``, ``OPEN_UPPER``/``OPEN_LOWER``, and the ``UNREACHABLE`` routes) lives in
@@ -35,7 +33,7 @@ from robustmargin import (
 from robustmargin.censoring import classify
 from robustmargin.testing import fake_fit
 
-_CSV_PATH = Path(__file__).resolve().parents[1] / "data" / "zeta_matrix_counts.csv"
+_CSV_PATH = Path(__file__).resolve().parents[1] / "data" / "pooled_counts.csv"
 _LEVEL = 0.95
 
 
@@ -69,16 +67,16 @@ def _observations_for(
     )
 
 
-class TestPidSensorNoiseIdentifiableTransition:
-    """The one series plan section 6.5 permits numeric assertions for: 0: 200/200, 0.01:
-    299/300, 0.05: 122/300, 0.1: 0/300 -- a clean, monotone, identifiable transition.
+class TestSystemAAxis1IdentifiableTransition:
+    """The one series with numeric assertions: 0: 200/200, 0.01: 299/300, 0.05: 122/300,
+    0.1: 0/300 -- a clean, monotone, identifiable transition.
     """
 
     def test_absolute_0_95_gives_ok_status_none_censoring_and_a_finite_bracketed_interval(
         self,
     ) -> None:
         obs = _observations_for(
-            "pid_sensor_noise", axis_name="sensor_noise", axis_unit="m", axis_scale="log"
+            "system_a_axis_1", axis_name="axis_1", axis_unit="m", axis_scale="log"
         )
         fit = fit_dose_response(obs, model="binomial", link="probit", upper=1.0, lower=0.0)
         assert fit.status is Status.OK
@@ -97,18 +95,20 @@ class TestPidSensorNoiseIdentifiableTransition:
         assert t.grid is None
 
 
-class TestPidWindRightCensoredCompleteSeparation:
+class TestSystemAAxis2RightCensoredCompleteSeparation:
     """500/500 at every tested wind level (2, 5, 10 m/s), 100/100 at the zero control: complete
     separation (no failure anywhere), so ``fit_dose_response`` itself reports
-    ``Status.SEPARATION`` (confirmed directly: ``tests/unit/test_models_zeta.py::
-    test_pid_wind_u_1_l_0_is_separation``). Plan section 5.5's worked case: the exact one-sided
-    95% lower bound on the success rate at 10 m/s is ``0.05**(1/500) ~= 0.994``, well above
-    0.95, so the result is ``RIGHT`` with the bound reported at ``lo=10.0`` -- independent of
-    the fit having converged to an interior estimate at all.
+    ``Status.SEPARATION`` (confirmed directly: ``tests/unit/test_models_pooled_counts.py::
+    test_system_a_axis_2_u_1_l_0_is_separation``). The exact one-sided 95% lower bound on the
+    success rate at 10 m/s is ``0.05**(1/500) ~= 0.994``, well above 0.95, so the result is
+    ``RIGHT`` with the bound reported at ``lo=10.0`` -- independent of the fit having converged to
+    an interior estimate at all.
     """
 
     def test_absolute_0_95_is_right_censored_at_10_with_grid_attached(self) -> None:
-        obs = _observations_for("pid_wind", axis_name="wind", axis_unit="m/s", axis_scale="linear")
+        obs = _observations_for(
+            "system_a_axis_2", axis_name="axis_2", axis_unit="m/s", axis_scale="linear"
+        )
         fit = fit_dose_response(obs, model="binomial", link="probit", upper=1.0, lower=0.0)
         assert fit.status is Status.SEPARATION
 
@@ -121,29 +121,29 @@ class TestPidWindRightCensoredCompleteSeparation:
         assert t.lo == 10.0
         assert t.hi is None
         assert t.interval_method == "exact_bound"
-        # STATISTICS.md: "RIGHT/LEFT take the fit's status" -- the fit never reached an interior
-        # estimate, and the threshold says so by carrying the same status forward.
+        # RIGHT/LEFT take the fit's status -- the fit never reached an interior estimate, and the
+        # threshold says so by carrying the same status forward.
         assert t.status is fit.status is Status.SEPARATION
-        # decisions/0010: `grid` is set on every SEPARATION/NOT_CONVERGED exact-bound fallback.
+        # `grid` is set on every SEPARATION/NOT_CONVERGED exact-bound fallback.
         assert t.grid is not None
         assert t.grid.max_tested == 10.0
         assert t.baseline is None
 
 
-class TestSacSensorNoiseFailsAtBaseline:
-    """The control is already at 98/200 (rate 0.49); every nonzero level is 0/300. Plan section
-    5.5's worked case for ``absolute(0.95)``. The underlying fit is ``Status.SEPARATION`` here
-    (confirmed: ``tests/unit/test_models_zeta.py::test_sac_sensor_noise_upper_estimate_is_
+class TestSystemBAxis1FailsAtBaseline:
+    """The control is already at 98/200 (rate 0.49); every nonzero level is 0/300, for
+    ``absolute(0.95)``. The underlying fit is ``Status.SEPARATION`` here
+    (confirmed: ``tests/unit/test_models_pooled_counts.py::test_system_b_axis_1_upper_estimate_is_
     separation`` -- no success at all is observed at any nonzero level, so
     ``fit_dose_response``'s pre-fit separation check fires unconditionally, for *any* ``upper``
-    argument), but decisions/0008 is explicit that ``FAILS_AT_BASELINE`` places no constraint on
-    ``fit.status``: it is decided from an exact one-sided test of the raw control cell alone,
-    before -- and regardless of -- whatever the rest of the curve does.
+    argument), but ``FAILS_AT_BASELINE`` places no constraint on ``fit.status``: it is decided
+    from an exact one-sided test of the raw control cell alone, before -- and regardless of --
+    whatever the rest of the curve does.
     """
 
     def test_absolute_0_95_fails_at_baseline_with_the_control_rate_attached(self) -> None:
         obs = _observations_for(
-            "sac_sensor_noise", axis_name="sensor_noise", axis_unit="m", axis_scale="log"
+            "system_b_axis_1", axis_name="axis_1", axis_unit="m", axis_scale="log"
         )
         fit = fit_dose_response(obs, model="binomial", link="probit", upper="estimate", lower=0.0)
 
@@ -156,9 +156,8 @@ class TestSacSensorNoiseFailsAtBaseline:
         assert t.value is None and t.lo is None and t.hi is None
         assert t.interval_method == "exact_bound"
 
-        # decisions/0010: the control rate travels on Threshold.baseline, with its own exact CI,
-        # never smuggled into .lo/.hi (plan section 5.4 forbids attaching a per-cell exact rate
-        # to a threshold).
+        # The control rate travels on Threshold.baseline, with its own exact CI, never smuggled
+        # into .lo/.hi: a per-cell exact rate is not an interval for the threshold itself.
         assert t.baseline is not None
         assert t.baseline.severity == 0.0
         assert t.baseline.successes == 98
@@ -168,10 +167,10 @@ class TestSacSensorNoiseFailsAtBaseline:
         assert t.baseline.lo <= t.baseline.rate <= t.baseline.hi
 
 
-class TestSacSensorNoiseLeftCensored:
-    """Plan section 5.5's second SAC worked case: ``baseline_fraction(0.5)`` gives a target
-    ``P* ~= 0.245`` (half the control's own 98/200 rate, decisions/0008: the fallback path has
-    no fitted ``u``, so the control's *observed* rate is used). At severity 0.01 the result is
+class TestSystemBAxis1LeftCensored:
+    """``baseline_fraction(0.5)`` gives a target ``P* ~= 0.245`` (half the control's own 98/200
+    rate: the fallback path has no fitted ``u``, so the control's *observed* rate is used). At
+    severity 0.01 the result is
     0/300, whose exact one-sided 95% upper bound is ``1 - 0.05**(1/300) ~= 0.0099`` -- far below
     0.245 -- while the control (98/200) clears 0.245 easily, so the result is ``LEFT`` with the
     bound reported at ``hi=0.01``.
@@ -179,7 +178,7 @@ class TestSacSensorNoiseLeftCensored:
 
     def test_baseline_fraction_0_5_is_left_censored_at_0_01(self) -> None:
         obs = _observations_for(
-            "sac_sensor_noise", axis_name="sensor_noise", axis_unit="m", axis_scale="log"
+            "system_b_axis_1", axis_name="axis_1", axis_unit="m", axis_scale="log"
         )
         fit = fit_dose_response(obs, model="binomial", link="probit", upper="estimate", lower=0.0)
         assert fit.status is Status.SEPARATION
@@ -201,12 +200,12 @@ class TestSacSensorNoiseLeftCensored:
         assert t.grid is not None
 
 
-class TestPpoSensorNoiseNonMonotoneContradiction:
+class TestSystemCAxis1NonMonotoneContradiction:
     """The rate *rises* from severity 0 (57/200) to 0.01 (143/300) before collapsing to 0/300 at
-    0.05 and 0.1 -- plan section 3.1's non-monotone edge case. The fit is ``Status.SEPARATION``
-    (confirmed: ``tests/unit/test_models_zeta.py::
-    test_ppo_sensor_noise_upper_estimate_is_separation_quasi_complete_at_0_01``), which is what
-    makes decisions/0011's encoding reachable at all -- ``Threshold`` only ever reports a
+    0.05 and 0.1 -- the non-monotone edge case. The fit is ``Status.SEPARATION``
+    (confirmed: ``tests/unit/test_models_pooled_counts.py::
+    test_system_c_axis_1_upper_estimate_is_separation_quasi_complete_at_0_01``), which is what
+    makes the contradiction encoding reachable at all -- ``Threshold`` only ever reports a
     contradiction on the ``SEPARATION``/``NOT_CONVERGED`` fallback path.
 
     At ``level=0.95``, the exact one-sided bounds on the two lowest severities are
@@ -217,15 +216,15 @@ class TestPpoSensorNoiseNonMonotoneContradiction:
     x=0.01 (the *higher* severity) is confidently classified as passing (its lower bound sits
     above the target) -- backwards from what a monotone decreasing curve allows, so the ordinary
     bracket construction would need ``lo=0.01 > hi=0.0``, which ``Threshold.__post_init__``
-    already refuses to build. decisions/0011: report no bounds at all, name both levels in
-    ``warnings``, keep ``status``/``grid``.
+    already refuses to build. The rule is to report no bounds at all, name both levels in
+    ``warnings``, and keep ``status``/``grid``.
     """
 
     _TARGET = 0.4  # inside (0.3422, 0.4279): see the exact bounds derivation above.
 
     def test_absolute_0_4_reports_no_bounds_with_both_contradicting_levels_named(self) -> None:
         obs = _observations_for(
-            "ppo_sensor_noise", axis_name="sensor_noise", axis_unit="m", axis_scale="log"
+            "system_c_axis_1", axis_name="axis_1", axis_unit="m", axis_scale="log"
         )
         fit = fit_dose_response(obs, model="binomial", link="probit", upper="estimate", lower=0.0)
         assert fit.status is Status.SEPARATION
@@ -244,32 +243,30 @@ class TestPpoSensorNoiseNonMonotoneContradiction:
         assert t.hi is None
         assert t.interval_method == "exact_bound"
 
-        # decisions/0011: the contradiction is named in warnings, not silently resolved by
-        # keeping one bound. "0.01" is a severity value unique to the higher of the two
-        # contradicting levels; the lower (0.0) is matched with a regex that requires it not be
-        # immediately followed by a "1" digit, so a warning that only mentions "0.01" cannot
-        # accidentally satisfy the "0.0" check too (Python's own `"0.0" in "0.01"` is True,
-        # which would make that check vacuous).
+        # The contradiction is named in warnings, not silently resolved by keeping one bound.
+        # "0.01" is a severity value unique to the higher of the two contradicting levels; the
+        # lower (0.0) is matched with a regex that requires it not be immediately followed by a
+        # "1" digit, so a warning that only mentions "0.01" cannot accidentally satisfy the "0.0"
+        # check too (Python's own `"0.0" in "0.01"` is True, which would make that check
+        # vacuous).
         combined = " ".join(t.warnings)
-        assert combined, "decisions/0011 requires a warning naming the contradiction"
+        assert combined, "a contradiction must be named in a warning"
         assert "0.01" in combined
         assert re.search(r"0\.0(?!1)", combined) is not None
 
-        # decisions/0011: the grid fallback is still attached, exactly as on any other
-        # SEPARATION/NOT_CONVERGED fallback -- it makes no monotonicity assumption, so it stays
-        # meaningful precisely where the exact bounds have stopped being so.
+        # The grid fallback is still attached, exactly as on any other SEPARATION/NOT_CONVERGED
+        # fallback -- it makes no monotonicity assumption, so it stays meaningful precisely where
+        # the exact bounds have stopped being so.
         assert t.grid is not None
 
     def test_warning_starts_with_the_non_monotone_token(self) -> None:
-        """The ``NON_MONOTONE: `` token (``decisions/0011``'s second amendment) is the supported
-        way a consumer detects this condition. Plan section 5.7 / ``decisions/0023`` adds a
-        *separate*, adjacent-pair monotonicity check on ``Fit`` (``diagnose()``), but explicitly
-        leaves this token unchanged (``decisions/0023``'s consequence 5: "changing that token is
-        breaking") -- pinned here directly, since no test previously asserted the literal token
-        despite ``censoring.py``'s own comment claiming it was load-bearing.
+        """The ``NON_MONOTONE: `` token is the supported way a consumer detects this condition. A
+        *separate*, adjacent-pair monotonicity check on ``Fit`` (``diagnose()``) leaves this
+        token unchanged (changing that token is breaking) -- pinned here directly, since
+        ``censoring.py`` relies on it as load-bearing.
         """
         obs = _observations_for(
-            "ppo_sensor_noise", axis_name="sensor_noise", axis_unit="m", axis_scale="log"
+            "system_c_axis_1", axis_name="axis_1", axis_unit="m", axis_scale="log"
         )
         fit = fit_dose_response(obs, model="binomial", link="probit", upper="estimate", lower=0.0)
         assert fit.status is Status.SEPARATION
@@ -295,7 +292,7 @@ class TestPpoSensorNoiseNonMonotoneContradiction:
         no bounds at all.
         """
         obs = _observations_for(
-            "ppo_sensor_noise", axis_name="sensor_noise", axis_unit="m", axis_scale="log"
+            "system_c_axis_1", axis_name="axis_1", axis_unit="m", axis_scale="log"
         )
         fit = fit_dose_response(obs, model="binomial", link="probit", upper="estimate", lower=0.0)
         assert fit.status is Status.SEPARATION
@@ -321,46 +318,45 @@ class TestPpoSensorNoiseNonMonotoneContradiction:
         )
 
 
-class TestPpoMassSignedAxis:
-    """``ppo_mass`` is signed (``-0.2`` .. ``+0.2``); ``Observations`` rejects negative
-    severity outright (R6: a signed axis is handled by the caller splitting it into two
+class TestSystemCAxis3SignedAxis:
+    """``system_c_axis_3`` is signed (``-0.2`` .. ``+0.2``); ``Observations`` rejects negative
+    severity outright (a signed axis is handled by the caller splitting it into two
     magnitude-based ``Observations``, one per side -- the schema does not model a signed scalar
     axis at all). **What this skips:** there is no way to call the public API with the raw
-    signed ``ppo_mass`` series directly (``Observations.from_counts`` raises on the negative
+    signed ``system_c_axis_3`` series directly (``Observations.from_counts`` raises on the negative
     ``-0.2``/``-0.1`` rows), so this only covers the magnitude-split form, matching
-    ``tests/unit/test_models_zeta.py::_ppo_mass_by_magnitude``'s own split.
+    ``tests/unit/test_models_pooled_counts.py::_system_c_axis_3_by_magnitude``'s own split.
 
     Both magnitude series converge to ``Status.OK`` with fixed ``upper=1.0, lower=0.0``
-    (confirmed: ``test_ppo_mass_positive_magnitude_u_1_l_0_is_ok`` /
+    (confirmed: ``test_system_c_axis_3_positive_magnitude_u_1_l_0_is_ok`` /
     ``..._negative_magnitude_..._is_ok``), and each fitted ``mu`` (~0.084 positive side, ~0.13
     negative side) lies strictly inside its own tested range ``[0.0, 0.2]``. **This does not
-    give ``NONE`` censoring with a profile interval** -- `docs/decisions/0012` settles that
-    §5.5's ``RIGHT``/``LEFT`` conditions are evaluated on the data and outrank a converged fit.
+    give ``NONE`` censoring with a profile interval** -- the ``RIGHT``/``LEFT`` conditions are
+    evaluated on the data and outrank a converged fit.
     On both magnitude sides, the control passes ``absolute(0.95)`` (exact one-sided lower bound
     ``0.9534 > 0.95`` on the shared ``99/100`` control) while **no nonzero level passes**:
     positive ``0.1: 33/100`` has exact upper bound ``0.4155``; negative ``0.1: 77/100`` has exact
     upper bound ``0.8374``; both well below ``0.95``, and ``0.2`` fails even more clearly on
-    either side. decisions/0012 distinguishes this from ``pid_sensor_noise`` (§5.5's plain
-    interior case), where ``0.01 -> 299/300`` genuinely passes and ``0.05 -> 122/300`` fails --
+    either side. This differs from ``system_a_axis_1`` (the plain interior case), where
+    ``0.01 -> 299/300`` genuinely passes and ``0.05 -> 122/300`` fails --
     *some* nonzero level passes there, so the crossing interpolates between two measured points
     and keeps its number. Here, with no nonzero level passing on either side, the crossing is
     only bracketed by the unmeasured control-to-``0.1`` gap, so it is ``LEFT`` with the bound at
     the lowest nonzero severity (``0.1``), on both sides, despite the fit itself being ``OK``
     with an interior ``mu``.
 
-    ``(Status.OK, Censoring.LEFT)`` is one of the fourteen ``(status, censoring)`` pairs the
-    frozen Phase 3 contract (``robustmargin.testing.fake_threshold``'s
-    ``_ALLOWED_THRESHOLD_COMBINATIONS``) already allows -- this is what makes it reachable at
-    all, not a new invariant.
+    ``(Status.OK, Censoring.LEFT)`` is one of the fourteen ``(status, censoring)`` pairs that
+    ``robustmargin.testing.fake_threshold``'s ``_ALLOWED_THRESHOLD_COMBINATIONS`` allows -- this
+    is what makes it reachable at all, not a new invariant.
     """
 
     @staticmethod
     def _magnitude_split() -> tuple[Observations, Observations]:
-        severity, successes, trials = _SERIES["ppo_mass"]
+        severity, successes, trials = _SERIES["system_c_axis_3"]
         by_severity = dict(zip(severity, zip(successes, trials, strict=True), strict=True))
         control_successes, control_trials = by_severity[0.0]
 
-        positive_axis = Axis(name="mass_positive", unit="kg", scale="linear")
+        positive_axis = Axis(name="axis_3_positive", unit="kg", scale="linear")
         positive = Observations.from_counts(
             positive_axis,
             severity=[0.0, 0.1, 0.2],
@@ -369,7 +365,7 @@ class TestPpoMassSignedAxis:
             outcome="success",
             direction="decreasing",
         )
-        negative_axis = Axis(name="mass_negative", unit="kg", scale="linear")
+        negative_axis = Axis(name="axis_3_negative", unit="kg", scale="linear")
         negative = Observations.from_counts(
             negative_axis,
             severity=[0.0, 0.1, 0.2],
@@ -381,7 +377,7 @@ class TestPpoMassSignedAxis:
         return positive, negative
 
     def test_negative_severity_is_rejected_by_the_public_api(self) -> None:
-        axis = Axis(name="mass", unit="kg", scale="linear")
+        axis = Axis(name="axis_3", unit="kg", scale="linear")
         with pytest.raises(ValueError):
             Observations.from_counts(
                 axis,
@@ -393,9 +389,9 @@ class TestPpoMassSignedAxis:
             )
 
     def test_positive_magnitude_split_absolute_0_95_is_left_censored_at_0_1(self) -> None:
-        """decisions/0012: the control passes but no nonzero level does, so the converged
-        ``OK`` fit's own interior ``mu`` is not reported -- see the class docstring for the
-        exact-bound arithmetic.
+        """The control passes but no nonzero level does, so the converged ``OK`` fit's own
+        interior ``mu`` is not reported -- see the class docstring for the exact-bound
+        arithmetic.
         """
         positive, _negative = self._magnitude_split()
         fit = fit_dose_response(positive, model="binomial", link="probit", upper=1.0, lower=0.0)
@@ -413,7 +409,7 @@ class TestPpoMassSignedAxis:
         assert t.interval_method == "exact_bound"
 
     def test_negative_magnitude_split_absolute_0_95_is_left_censored_at_0_1(self) -> None:
-        """decisions/0012: mirrors the positive side -- the control passes but no nonzero level
+        """Mirrors the positive side -- the control passes but no nonzero level
         does (``0.1: 77/100``'s exact upper bound is ``0.8374``, still below ``0.95``), so this
         is also ``LEFT`` despite the fit converging to an interior ``mu`` (~0.13).
         """
@@ -434,27 +430,27 @@ class TestPpoMassSignedAxis:
 
 
 class TestRealSeriesReachingTheExactBoundFallbackAreUnchangedByFixedSequenceScans:
-    """``decisions/0028`` replaced the max-anywhere rule for the failed-fit exact bracket with
-    fixed-sequence scans. Where the confidently passing and failing levels are each contiguous
-    from their end, the two rules agree, and every real series here is such data -- so the
-    bounds below are the same under both, and a change to any of them is a behavioural change
-    to the exact bracket, not noise.
+    """The failed-fit exact bracket is built by fixed-sequence scans from each end of the
+    curve, not by a max-anywhere rule. Where the confidently passing and failing levels are each
+    contiguous from their end, the two rules agree, and every real series here is such data --
+    so the bounds below are the same under both, and a change to any of them is a behavioural
+    change to the exact bracket, not noise.
 
     Only series whose fit is a *deterministic* failed fit are run through ``fit_dose_response``:
-    ``sac_sensor_noise`` and ``ppo_sensor_noise`` at ``upper="estimate"`` are ``SEPARATION`` by
-    the pre-fit separation check (asserted in ``test_models_zeta.py``). ``pid_sensor_noise``
+    ``system_b_axis_1`` and ``system_c_axis_1`` at ``upper="estimate"`` are ``SEPARATION`` by
+    the pre-fit separation check (asserted in ``test_models_pooled_counts.py``). ``system_a_axis_1``
     converges at ``upper=1.0`` and at ``upper="estimate"`` its status is optimiser-dependent, so
     its real cells are classified against a constructed failed fit instead.
     """
 
-    def test_ppo_sensor_noise_absolute_0_3_is_a_bracket_between_0_01_and_0_05(self) -> None:
+    def test_system_c_axis_1_absolute_0_3_is_a_bracket_between_0_01_and_0_05(self) -> None:
         """The non-monotone-looking series (57/200 at the control, 143/300 at 0.01, then 0/300
         twice). At a target of 0.3 the control is undetermined (exact bounds 0.2327 / 0.3422),
         0.01 confidently passes (lower bound above 0.3) and 0.05 and 0.1 confidently fail: a
         clean bracket, with no ``NON_MONOTONE: `` contradiction (contrast the 0.4 target in
-        ``TestPpoSensorNoiseNonMonotoneContradiction``, which does contradict)."""
+        ``TestSystemCAxis1NonMonotoneContradiction``, which does contradict)."""
         obs = _observations_for(
-            "ppo_sensor_noise", axis_name="sensor_noise", axis_unit="m", axis_scale="log"
+            "system_c_axis_1", axis_name="axis_1", axis_unit="m", axis_scale="log"
         )
         fit = fit_dose_response(obs, model="binomial", link="probit", upper="estimate", lower=0.0)
         assert fit.status is Status.SEPARATION
@@ -472,12 +468,12 @@ class TestRealSeriesReachingTheExactBoundFallbackAreUnchangedByFixedSequenceScan
         assert t.grid is not None
         assert not any(w.startswith("NON_MONOTONE: ") for w in t.warnings)
 
-    def test_sac_sensor_noise_absolute_0_5_is_a_one_sided_upper_bound_at_0_01(self) -> None:
+    def test_system_b_axis_1_absolute_0_5_is_a_one_sided_upper_bound_at_0_01(self) -> None:
         """Control 98/200 is undetermined against 0.5 (exact bounds 0.4298 / 0.5505) so it ends
         the run from the top, and 0/300 at 0.01, 0.05 and 0.1 all confidently fail: the run is
         0.1, 0.05, 0.01. No nonzero level passes, so only the upper side is determined."""
         obs = _observations_for(
-            "sac_sensor_noise", axis_name="sensor_noise", axis_unit="m", axis_scale="log"
+            "system_b_axis_1", axis_name="axis_1", axis_unit="m", axis_scale="log"
         )
         fit = fit_dose_response(obs, model="binomial", link="probit", upper="estimate", lower=0.0)
         assert fit.status is Status.SEPARATION
@@ -501,7 +497,7 @@ class TestRealSeriesReachingTheExactBoundFallbackAreUnchangedByFixedSequenceScan
         ids=["absolute_0.95", "absolute_0.5", "absolute_0.3"],
     )
     @pytest.mark.parametrize("status", [Status.SEPARATION, Status.NOT_CONVERGED])
-    def test_pid_sensor_noise_cells_on_a_failed_fit_give_the_same_bracket(
+    def test_system_a_axis_1_cells_on_a_failed_fit_give_the_same_bracket(
         self, status: Status, target: float, lo: float, hi: float
     ) -> None:
         """The cleanest real series (200/200, 299/300, 122/300, 0/300): passes then fails with
@@ -509,7 +505,7 @@ class TestRealSeriesReachingTheExactBoundFallbackAreUnchangedByFixedSequenceScan
         and only 0.1 failing at 0.3. Classified against a failed fit carrying exactly these
         cells (``classify`` reads only ``status`` and ``cells``)."""
         obs = _observations_for(
-            "pid_sensor_noise", axis_name="sensor_noise", axis_unit="m", axis_scale="log"
+            "system_a_axis_1", axis_name="axis_1", axis_unit="m", axis_scale="log"
         )
         failed = dataclasses.replace(fake_fit(status=status, monotonicity=None), cells=obs.cells())
 

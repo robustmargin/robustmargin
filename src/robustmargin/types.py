@@ -201,7 +201,7 @@ class Axis:
     Attributes
     ----------
     name
-        A short, non-empty, domain-neutral name for the axis (for example ``"sensor_noise"``).
+        A short, non-empty, domain-neutral name for the axis (for example ``"noise"``).
     unit
         The unit severity is expressed in (for example ``"m"``). Non-empty. A ratio between two
         thresholds is allowed only when both axes match on ``name`` and ``unit``.

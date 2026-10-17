@@ -2,7 +2,7 @@
 
 Run after ``python -m build``: ``python tools/check_dist.py [--expect-version X.Y.Z]``. Both the
 ``packaging shape`` CI job and the release workflow call this file, so there is one copy of the
-check (CLAUDE.md, on second copies of a rule).
+check.
 
 A missing ``py.typed`` fails silently and disables type checking for every consumer, and
 ``load_schema(version)`` reads the packaged schemas at runtime, so both are asserted inside the
@@ -10,8 +10,8 @@ built wheel rather than merely on disk.
 
 Both artifacts are also checked against an allowlist of what may ship: the package's modules,
 ``py.typed``, the score-card schema, ``LICENSE``, ``pyproject.toml``, the build's own metadata,
-and ``README.md`` as the only documentation, since it is the PyPI project page. The planning
-documents, ``CHANGELOG.md``, tests and tools never ship. The check is an allowlist rather than
+and ``README.md`` as the only documentation, since it is the PyPI project page. Tests, tools and
+every other repository file never ship. The check is an allowlist rather than
 a list of known-private paths, so a new file in an artifact fails it until someone decides it
 belongs there.
 """

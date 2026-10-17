@@ -31,13 +31,13 @@
     "drc_LN2_full_dataset": -10.4796827596195,
     "glm_probit_dose_gt_0_subset": -10.4796826974705,
     "manual_full_binomial_loglik_on_drc_LN2_fitted_values": -10.4796827595705,
-    "note": "drc's logLik() is the FULL binomial log-likelihood, including the binomial coefficient (confirmed by matching a manual lchoose-based computation on drc's own fitted values). Dropping the all-success dose=0 control row from the GLM likelihood (robustmargin section 5.1's rule for the fixed u=1,l=0 path) changes the log-likelihood by exactly 0, because an n_successes=0-failure row's binomial log-likelihood term (lchoose(n,0) + n*log(1)) is identically 0 -- this is a mathematical identity, not a coincidence of this dataset."
+    "note": "drc's logLik() is the FULL binomial log-likelihood, including the binomial coefficient (confirmed by matching a manual lchoose-based computation on drc's own fitted values). Dropping the all-success dose=0 control row from the GLM likelihood (robustmargin's rule for the fixed u=1,l=0 path) changes the log-likelihood by exactly 0, because an n_successes=0-failure row's binomial log-likelihood term (lchoose(n,0) + n*log(1)) is identically 0 -- this is a mathematical identity, not a coincidence of this dataset."
   },
   "df_comparison_note": {
     "drc_df_residual": 4,
     "glm_df_residual": 3,
     "robustmargin_diagnose_df": 3,
-    "note": "decisions/0023 Amendment 2's factual correction: drc's drm() fits the FULL 6-row finney71 (LN.2/LL.2 handle dose=0 directly on the log scale), so drc's own residual df is 4 (6 rows - 2 parameters). glm() here and robustmargin's diagnose() both report df=3 (5 rows - 2 parameters), but for two DIFFERENT reasons that happen to agree on this dataset: this script subsets the dose=0 row out of fdat before ever calling glm(), because log(0) is undefined and would make the glm() call itself fail -- glm() does not 'drop' the row on its own. robustmargin's diagnose(), by contrast, fits all 6 rows and then excludes the dose=0 cell from its own deviance/Pearson/df computation STRUCTURALLY (a log-axis severity-0 cell under a fixed upper=1.0), never because a computed probability happens to round to exactly 1.0 (the pre-Amendment-2 bug, C1). drc's df=4 is not directly comparable to either: it is neither subsetting nor structural exclusion, just an ordinary fit on all 6 rows."
+    "note": "A note on residual degrees of freedom: drc's drm() fits the FULL 6-row finney71 (LN.2/LL.2 handle dose=0 directly on the log scale), so drc's own residual df is 4 (6 rows - 2 parameters). glm() here and robustmargin's diagnose() both report df=3 (5 rows - 2 parameters), but for two DIFFERENT reasons that happen to agree on this dataset: this script subsets the dose=0 row out of fdat before ever calling glm(), because log(0) is undefined and would make the glm() call itself fail -- glm() does not 'drop' the row on its own. robustmargin's diagnose(), by contrast, fits all 6 rows and then excludes the dose=0 cell from its own deviance/Pearson/df computation STRUCTURALLY (a log-axis severity-0 cell under a fixed upper=1.0), never because a computed probability happens to round to exactly 1.0. drc's df=4 is not directly comparable to either: it is neither subsetting nor structural exclusion, just an ordinary fit on all 6 rows."
   },
   "drc": {
     "LN2": {
@@ -65,7 +65,7 @@
           ]
         },
         "max_abs_relative_difference_from_drc_vcov": 3.76568496139925e-06,
-        "note": "An independent numerical Hessian of the full binomial negative log-likelihood (base R's optimHess(), not drc's internal optimizer), evaluated at drc's own coefficients and inverted. Confirms drc's vcov is the OBSERVED information (matches this independent computation to within 1e-5 relative on finney71), not merely close to it by coincidence -- decisions/0007's basis for using drc's vcov, not glm's expected-information cov_params(), as the covariance parity reference."
+        "note": "An independent numerical Hessian of the full binomial negative log-likelihood (base R's optimHess(), not drc's internal optimizer), evaluated at drc's own coefficients and inverted. Confirms drc's vcov is the OBSERVED information (matches this independent computation to within 1e-5 relative on finney71), not merely close to it by coincidence -- which is why drc's vcov, not glm's expected-information cov_params(), is the covariance parity reference."
       },
       "logLik": -10.4796827596195,
       "ED_delta": {
@@ -106,7 +106,7 @@
           ]
         },
         "max_abs_relative_difference_from_drc_vcov": 3.82341326958736e-06,
-        "note": "An independent numerical Hessian of the full binomial negative log-likelihood (base R's optimHess(), not drc's internal optimizer), evaluated at drc's own coefficients and inverted. Confirms drc's vcov is the OBSERVED information (matches this independent computation to within 1e-5 relative on finney71), not merely close to it by coincidence -- decisions/0007's basis for using drc's vcov, not glm's expected-information cov_params(), as the covariance parity reference."
+        "note": "An independent numerical Hessian of the full binomial negative log-likelihood (base R's optimHess(), not drc's internal optimizer), evaluated at drc's own coefficients and inverted. Confirms drc's vcov is the OBSERVED information (matches this independent computation to within 1e-5 relative on finney71), not merely close to it by coincidence -- which is why drc's vcov, not glm's expected-information cov_params(), is the covariance parity reference."
       },
       "logLik": -10.3222267225292,
       "ED_delta": {

@@ -1,18 +1,14 @@
-"""``robustmargin.censoring``: the exact one-sided bound arithmetic (decisions/0009) and per-cell
-exact rates (plan section 5.4, ROADMAP section 3.1).
+"""``robustmargin.censoring``: the exact one-sided bound arithmetic and per-cell exact rates.
 
 ``exact_one_sided_bound`` is the module's one piece of numeric machinery: everything in
-``censoring.py``'s classification rules (plan section 5.5) is built from it, so pinning its
-arithmetic against the plan's own closed forms is what keeps every downstream RIGHT/LEFT/bracket
-test meaningful.
+``censoring.py``'s classification rules is built from it, so pinning its arithmetic against the
+closed forms is what keeps every downstream RIGHT/LEFT/bracket test meaningful.
 
-``robustmargin.censoring`` and ``ExactRates``/``per_cell_clopper_pearson``
-(``robustmargin.empirical``) do not exist yet (this file is written before Phase 5's
-implementation, per plan section 6). Each name is imported **inside** the test that needs it,
-not at module level, matching the convention ``tests/contract/`` already uses for
-not-yet-existing Phase 5 names: a module-level ``ModuleNotFoundError``/``ImportError`` would
-abort collection of this *entire file* (and, by default, the whole ``pytest`` run), whereas a
-local import only fails the one test that uses it.
+Each name from ``robustmargin.censoring`` and ``ExactRates``/``per_cell_clopper_pearson``
+(``robustmargin.empirical``) is imported **inside** the test that needs it, not at module level,
+matching the convention ``tests/contract/`` uses: a module-level
+``ModuleNotFoundError``/``ImportError`` would abort collection of this *entire file* (and, by
+default, the whole ``pytest`` run), whereas a local import only fails the one test that uses it.
 """
 
 from __future__ import annotations
@@ -39,7 +35,7 @@ from robustmargin.testing import fake_fit
 
 
 class TestExactOneSidedBound:
-    """decisions/0009's closed forms: ``exact_one_sided_bound(k, n, level=c, side=...)`` is
+    """The closed forms: ``exact_one_sided_bound(k, n, level=c, side=...)`` is
     ``binomtest(k, n).proportion_ci(confidence_level=2*c-1, method="exact")``, read on the
     requested side.
     """
@@ -61,7 +57,7 @@ class TestExactOneSidedBound:
         assert result == pytest.approx(0.00993608194445772, rel=1e-12)
 
     def test_passing_confidence_level_equal_to_level_does_not_match(self) -> None:
-        """decisions/0009 names this the 'obvious wrong version': passing
+        """This is the 'obvious wrong version': passing
         ``confidence_level=level`` (rather than ``2*level-1``) and reading one side silently
         yields a 97.5% bound where 95% was asked for. Pinned so a regression to it is caught,
         not merely a correct-by-luck coincidence.
@@ -87,7 +83,7 @@ class TestExactOneSidedBound:
         assert result <= 0.5
 
     def test_a_wider_level_gives_a_wider_bound(self) -> None:
-        """Interval containment/monotonicity (plan section 6.4): a higher confidence level's
+        """Interval containment/monotonicity: a higher confidence level's
         one-sided bound must be at least as conservative (further from the observed rate).
         """
         from robustmargin.censoring import exact_one_sided_bound
@@ -104,7 +100,7 @@ class TestExactOneSidedBound:
 
 
 class TestPerCellClopperPearson:
-    """``per_cell_clopper_pearson(cells, level=...) -> ExactRates`` (plan section 5.4): takes
+    """``per_cell_clopper_pearson(cells, level=...) -> ExactRates``: takes
     ``Fit.cells`` directly (a ``Sequence[Cell]``), not a ``Fit`` -- ``Fit.cells`` already carries
     severity/successes/trials, so a per-cell result type would only duplicate them.
     """
@@ -143,11 +139,11 @@ class TestPerCellClopperPearson:
 
     def test_all_success_cell_matches_the_two_sided_closed_form(self) -> None:
         """``per_cell_clopper_pearson`` is the **two-sided** exact interval at ``level``, which
-        is what plan section 5.4 specifies for a reported per-cell rate. For an all-success cell
+        is what a reported per-cell rate is. For an all-success cell
         the closed form is ``(alpha/2) ** (1/n)`` with ``alpha = 1 - level``, so at ``level=0.95``
         the lower end is ``0.025 ** (1/500)``, not the one-sided ``0.05 ** (1/500)``.
 
-        The one-sided closed forms from plan section 5.5 are asserted against
+        The one-sided closed forms are asserted against
         :func:`~robustmargin.censoring.exact_one_sided_bound`, above -- that function answers the
         one-sided question a censoring classification asks, and this one reports an interval.
         Keeping the two conventions apart is the whole point of having both.
@@ -202,8 +198,8 @@ class TestPerCellClopperPearson:
 
 
 def test_exact_rates_is_not_serialisable_through_report_to_dict() -> None:
-    """Plan section 5.4: 'Label these ``per_cell_clopper_pearson`` and never attach them to a
-    threshold.' ``ExactRates`` is deliberately excluded from ``report.py``'s tagged classes and
+    """Per-cell rates are labelled ``per_cell_clopper_pearson`` and never attached to a
+    threshold. ``ExactRates`` is deliberately excluded from ``report.py``'s tagged classes and
     has no schema entry, so this is what structurally enforces that rule -- pinned here so a
     future change that makes ``ExactRates`` serialisable (and so makes it possible to smuggle a
     per-cell interval into a stored card next to a ``Threshold``) is caught.
@@ -219,13 +215,13 @@ def test_exact_rates_is_not_serialisable_through_report_to_dict() -> None:
 
 class TestOneSidedExactBoundFallback:
     """The exact-bound fallback's one-sided branch: reached when the bracket-level scan
-    determines exactly one side (`decisions/0009`'s amendment).
+    determines exactly one side.
 
-    **This branch shipped once with no test and was wrong.** The rescan at `level` reassigned
-    *both* sides, so a cell undetermined at `(1 + level) / 2` but failing at `level` silently
-    manufactured a second bound -- a two-sided bracket with each side at `level`, joint coverage
-    about `2 * level - 1`, carried out to a `Threshold` still reporting `level`. That is the
-    exact mislabelling `decisions/0009` exists to prevent (`REVIEWS.md` R8 #18).
+    **A rescan at `level` must not reassign *both* sides.** If it did, a cell undetermined at
+    `(1 + level) / 2` but failing at `level` would silently manufacture a second bound -- a
+    two-sided bracket with each side at `level`, joint coverage about `2 * level - 1`, carried
+    out to a `Threshold` still reporting `level`. That is exactly the mislabelling the
+    bracket-level scan exists to prevent.
 
     The `(k, n)` pairs that expose it are those where `upper(level) < target <= upper((1+level)/2)`.
     `0/5` against a target of `0.5` at `level=0.95` is the smallest: `0.4507` at 0.95, `0.5218`

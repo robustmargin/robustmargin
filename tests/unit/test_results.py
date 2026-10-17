@@ -1,19 +1,16 @@
-"""Unit tests for ``Fit``, ``Threshold`` and ``Ratio``: the invariants in plan section 5.5,
-enforced by each dataclass's ``__post_init__``.
+"""Unit tests for ``Fit``, ``Threshold`` and ``Ratio``: the invariants each dataclass enforces in
+its ``__post_init__``.
 
-One rejection per rule, per ``CLAUDE.md``'s "one behaviour per test", so a loosened validator
-shows up as one specific failing test rather than a generic one. Also covers ``Parameter`` and
-``Covariance`` (``models.py``, plan section 4's file table), which have no rules of their own
-beyond ``Covariance``'s shape checks.
+One rejection per rule ("one behaviour per test"), so a loosened validator shows up as one
+specific failing test rather than a generic one. Also covers ``Parameter`` and ``Covariance``
+(``models.py``), which have no rules of their own beyond ``Covariance``'s shape checks.
 
-``Fit`` carries ``outcome`` and ``direction`` per the approved Phase 3 plan's "Fields" ->
-``Fit`` list (``axis, outcome, direction, model, link, params, covariance, log_likelihood,
-cells, status, warnings, schema_version, provenance``), which is authoritative over plan
-section 4.2's shorter sketch where the two differ (design choice 3 records this against 4.2).
+``Fit`` carries ``outcome`` and ``direction`` (``axis, outcome, direction, model, link, params,
+covariance, log_likelihood, cells, status, warnings, schema_version, provenance``).
 
 Threshold and Ratio's censoring/status combinations are deliberately only tested against the
-rules plan section 5.5 and the Phase 3 plan actually state. Phase 6 owns ratio censoring
-propagation (plan section 5.6); this file does not invent rules for it ahead of that phase.
+rules the dataclasses actually state; ratio censoring propagation is ``ratio_interval``'s
+concern, and this file does not invent rules for it.
 """
 
 from __future__ import annotations
@@ -41,20 +38,20 @@ from robustmargin import (
 )
 
 _AXIS = Axis(name="noise", unit="m", scale="log")
-_OTHER_NAME_AXIS = Axis(name="wind", unit="m", scale="linear")
+_OTHER_NAME_AXIS = Axis(name="axis_2", unit="m", scale="linear")
 _OTHER_UNIT_AXIS = Axis(name="noise", unit="dB", scale="log")
 _CELLS = (
     Cell(severity=0.0, successes=100, trials=100),
     Cell(severity=1.0, successes=40, trials=100),
 )
-# A second set of cells. Round 4 briefly rejected value-equal fits under dependence="independent";
-# that check was removed, but distinct default fits remain the clearer fixture. This set lets
-# _ratio()'s own default threshold_a/threshold_b -- and every helper below that builds a t_a/t_b
-# pair from otherwise-identical arguments -- produce two genuinely distinct Fit objects instead
-# of two that merely happen to compare equal. The zero-severity control stays an all-success
-# 100/100, matching _CELLS's: _params()'s default fixes upper=1.0, and a *failing* control
-# combined with a fixed upper=1.0 on a log axis is CONTROL_INCOMPATIBLE territory (rule 10),
-# which would raise here for an unrelated reason.
+# A second set of cells. Two disjoint samples can produce identical counts and so identical fits
+# (a ratio between them is valid, and is not rejected), but distinct default fits are the clearer
+# fixture. This set lets _ratio()'s own default threshold_a/threshold_b -- and every helper below
+# that builds a t_a/t_b pair from otherwise-identical arguments -- produce two genuinely distinct
+# Fit objects instead of two that merely happen to compare equal. The zero-severity control stays
+# an all-success 100/100, matching _CELLS's: _params()'s default fixes upper=1.0, and a *failing*
+# control combined with a fixed upper=1.0 on a log axis is CONTROL_INCOMPATIBLE territory, which
+# would raise here for an unrelated reason.
 _CELLS_B = (
     Cell(severity=0.0, successes=100, trials=100),
     Cell(severity=1.0, successes=35, trials=100),
@@ -116,11 +113,11 @@ def _ok_fit() -> Fit:
     return _fit_with_axis(_AXIS)
 
 
-# Round 2: which Fit.status a Threshold's own default fit should carry, mirroring
+# Which Fit.status a Threshold's own default fit should carry, mirroring
 # robustmargin.testing._FIT_STATUS_FOR_THRESHOLD_STATUS. UNREACHABLE and FAILS_AT_BASELINE are
-# properties of a perfectly good fit (rule 1/3), so they map to OK; SEPARATION, NOT_CONVERGED
+# properties of a perfectly good fit, so they map to OK; SEPARATION, NOT_CONVERGED
 # and CONTROL_INCOMPATIBLE are properties of the fit itself, so a threshold with one of those
-# statuses is built by default on a fit carrying the same status (rule 2). A test that wants to
+# statuses is built by default on a fit carrying the same status. A test that wants to
 # exercise a *mismatched* fit status passes ``fit=`` explicitly, overriding this default.
 _FIT_STATUS_FOR_THRESHOLD_STATUS: dict[Status, Status] = {
     Status.OK: Status.OK,
@@ -147,8 +144,8 @@ def _threshold(
     dependence: str = "independent",
     fit: Fit | None = None,
 ) -> Threshold:
-    # Item 6, round 3: Threshold no longer has n_per_level -- per-level n is read from
-    # threshold.fit.cells instead, so nothing is passed for it here.
+    # Threshold has no n_per_level -- per-level n is read from threshold.fit.cells instead, so
+    # nothing is passed for it here.
     default_fit_status = _FIT_STATUS_FOR_THRESHOLD_STATUS[status]
     return Threshold(
         axis=axis,
@@ -182,12 +179,11 @@ def _ratio(
     threshold_a: Threshold | None = None,
     threshold_b: Threshold | None = None,
 ) -> Ratio:
-    # Round 2: both default thresholds carry the same value (0.05), so the default ratio is
-    # exactly 1.0 -- satisfying rule 12 (estimate must equal threshold_a.value /
-    # threshold_b.value) for every existing call site that passes estimate=1.0 without
-    # overriding threshold_a/threshold_b. Rule 16 (disjoint data between a ratio's two
-    # thresholds) is robustmargin.testing.fake_ratio's concern, not this dataclass-level helper's;
-    # nothing here tests independence.
+    # Both default thresholds carry the same value (0.05), so the default ratio is exactly 1.0 --
+    # satisfying the rule that the estimate must equal threshold_a.value / threshold_b.value for
+    # every call site that passes estimate=1.0 without overriding threshold_a/threshold_b. Disjoint
+    # data between a ratio's two thresholds is robustmargin.testing.fake_ratio's concern, not this
+    # dataclass-level helper's; nothing here tests independence.
     #
     # The two default fits are built from different cells (_CELLS vs _CELLS_B), modelling
     # disjoint data, even though the *threshold* values (0.05 / 0.05) match.
@@ -236,14 +232,14 @@ class TestParameter:
             cast(Any, parameter).value = 1.0
 
     def test_bool_value_raises_value_error(self) -> None:
-        """Rule 18: a bool is not a float, even though ``isinstance(True, float)`` is False but
+        """A bool is not a float, even though ``isinstance(True, float)`` is False but
         ``math.isfinite(True)`` is True -- the existing finiteness check alone does not catch
         this."""
         with pytest.raises(ValueError):
             Parameter(value=True, fixed=False)
 
     def test_non_bool_fixed_raises_value_error(self) -> None:
-        """Rule 18: ``fixed`` must be a real ``bool``, not merely truthy."""
+        """``fixed`` must be a real ``bool``, not merely truthy."""
         with pytest.raises(ValueError):
             Parameter(value=0.5, fixed=1)
 
@@ -272,13 +268,12 @@ class TestCovariance:
             Covariance(names=("mu", "s"), matrix=((1.0, 0.5), (0.2, 1.0)))
 
     def test_non_positive_semi_definite_matrix_raises_value_error(self) -> None:
-        """Rule 8 (current rule, post units-independence fix -- see the
-        "units-independence fix" section below, in particular
-        ``TestCovarianceStillRejects``, for the rule's own dedicated coverage): every diagonal
-        entry must be positive, and the correlation matrix ``D^-1/2 . matrix . D^-1/2`` must
-        have minimum eigenvalue ``> 1e-12``. This matrix's first diagonal entry is ``-1.0``,
-        which alone fails the rule (its eigenvalues, exactly -1 and 1, would fail under the
-        old raw-eigenvalue rule too, but the diagonal check now rejects it first)."""
+        """Every diagonal entry must be positive, and the correlation matrix
+        ``D^-1/2 . matrix . D^-1/2`` must have minimum eigenvalue ``> 1e-12`` (see the
+        units-independence section below, in particular ``TestCovarianceStillRejects``, for the
+        rule's own dedicated coverage). This matrix's first diagonal entry is ``-1.0``, which
+        alone fails the rule (its eigenvalues, exactly -1 and 1, would fail a raw-eigenvalue
+        rule too, but the diagonal check rejects it first)."""
         with pytest.raises(ValueError):
             Covariance(names=("mu", "s"), matrix=((-1.0, 0.0), (0.0, 1.0)))
 
@@ -290,22 +285,21 @@ class TestCovariance:
 
 
 # ------------------------------------------------------------------------------------------
-# The units-independence fix to Covariance's positive-definiteness rule (Phase 4 stats
-# re-check): the old rule (min eig(matrix) > 1e-12 * max(1, max|entry|)) made an
-# estimated-asymptote fit's status depend on the caller's severity units, because it mixes
-# severity-scale parameters (mu, s) with probabilities (upper, lower) on the *raw* eigenvalue
-# scale. The new rule (`models._is_positive_definite`) tests the correlation matrix
-# ``D^-1/2 . matrix . D^-1/2`` instead: every diagonal entry positive, and the correlation
-# matrix's minimum eigenvalue > 1e-12. This section is that rule's own dedicated coverage,
-# independent of any particular Fit or fitting path.
+# Covariance's positive-definiteness rule is units-independent. A raw-eigenvalue rule (min
+# eig(matrix) > 1e-12 * max(1, max|entry|)) would make an estimated-asymptote fit's status depend on
+# the caller's severity units, because it mixes severity-scale parameters (mu, s) with probabilities
+# (upper, lower) on the *raw* eigenvalue scale. The rule (`models._is_positive_definite`) tests the
+# correlation matrix ``D^-1/2 . matrix . D^-1/2`` instead: every diagonal entry positive, and the
+# correlation matrix's minimum eigenvalue > 1e-12. This section is that rule's own dedicated
+# coverage, independent of any particular Fit or fitting path.
 # ------------------------------------------------------------------------------------------
 
 
-def _old_rule_accepts(matrix: np.ndarray) -> bool:
-    """The ``0.1.0a2`` positive-definiteness rule, before the units-independence fix,
-    reimplemented here independently (not imported from ``robustmargin.models``) as the oracle
-    for ``TestCovarianceNewRuleAcceptsSupersetOfOldRule`` below: ``min eig(matrix) > 1e-12 *
-    max(1, max|entry|)``, on the raw (non-correlation) matrix.
+def _raw_eigenvalue_rule_accepts(matrix: np.ndarray) -> bool:
+    """The scale-sensitive raw-eigenvalue positive-definiteness rule, implemented here
+    independently (not imported from ``robustmargin.models``) as the oracle for
+    ``TestCovarianceAcceptsEveryMatrixTheRawEigenvalueRuleAccepts`` below: ``min eig(matrix) >
+    1e-12 * max(1, max|entry|)``, on the raw (non-correlation) matrix.
     """
     max_abs = float(np.max(np.abs(matrix)))
     tolerance = 1e-12 * max(1.0, max_abs)
@@ -313,8 +307,8 @@ def _old_rule_accepts(matrix: np.ndarray) -> bool:
     return min_eigenvalue > tolerance
 
 
-def _new_rule_accepts(matrix: np.ndarray) -> bool:
-    """Whether the *current*, public rule accepts ``matrix``, decided the only way a test is
+def _covariance_accepts(matrix: np.ndarray) -> bool:
+    """Whether the public rule accepts ``matrix``, decided the only way a test is
     allowed to decide it: by actually constructing a :class:`~robustmargin.Covariance` and seeing
     whether it raises. This never reimplements or imports ``models._is_positive_definite``
     itself, so the property test below exercises the real public behaviour, not a second copy
@@ -333,7 +327,7 @@ class TestCovarianceMixedScaleAcceptance:
     """A well-conditioned matrix that mixes very large and very small variances -- exactly the
     shape a natural-scale ``(mu, s, upper, lower)`` covariance has when severity is measured in
     very large or very small units -- is accepted, and so is a uniformly tiny-scale one that
-    the old raw-eigenvalue rule would have rejected outright.
+    a raw-eigenvalue rule would reject outright.
     """
 
     def test_mixed_scale_with_modest_correlation_is_accepted(self) -> None:
@@ -354,11 +348,11 @@ class TestCovarianceMixedScaleAcceptance:
         assert covariance.matrix[2][2] == pytest.approx(1e-5)
 
     def test_uniformly_tiny_scale_identity_is_accepted(self) -> None:
-        # 1e-14 * I: the old rule's tolerance was 1e-12 * max(1, max|entry|) = 1e-12 here
-        # (since max|entry| = 1e-14 < 1), and the matrix's own eigenvalue is 1e-14 < 1e-12 --
-        # the old rule would have rejected this outright. The new rule normalises to the
-        # correlation matrix first, which is exactly the identity regardless of the common
-        # scale factor, so it is accepted.
+        # 1e-14 * I: a raw-eigenvalue rule's tolerance would be 1e-12 * max(1, max|entry|) = 1e-12
+        # here (since max|entry| = 1e-14 < 1), and the matrix's own eigenvalue is 1e-14 < 1e-12 --
+        # that rule would reject this outright. The rule normalises to the correlation matrix
+        # first, which is exactly the identity regardless of the common scale factor, so it is
+        # accepted.
         matrix = 1e-14 * np.eye(3)
 
         covariance = Covariance(
@@ -368,8 +362,9 @@ class TestCovarianceMixedScaleAcceptance:
         assert covariance.matrix[0][0] == pytest.approx(1e-14)
 
 
-class TestCovarianceNewRuleAcceptsSupersetOfOldRule:
-    """Property: any finite matrix the *old* rule accepted, the *new* rule still accepts.
+class TestCovarianceAcceptsEveryMatrixTheRawEigenvalueRuleAccepts:
+    """Property: any finite matrix the raw-eigenvalue rule accepts, the units-independent rule
+    also accepts.
 
     Matrices are built as ``A . A^T + eps*I`` (guaranteed positive semi-definite, nudged
     strictly positive-definite by ``eps*I``) and then rescaled per-parameter by a random
@@ -379,15 +374,13 @@ class TestCovarianceNewRuleAcceptsSupersetOfOldRule:
 
     The congruence transform is exactly symmetric, but a real ``Fit``'s covariance essentially
     never is, bit-for-bit, once floating-point round-off enters -- and ``Covariance`` itself
-    tolerates that (``math.isclose``, ``rel_tol=1e-9``). Regression (``api-compat``, found
-    against an intermediate version of the units-independence fix that symmetrised the matrix
-    -- averaged the two off-diagonal entries -- before computing eigenvalues): both
-    :func:`numpy.linalg.eigvalsh` and ``models._is_positive_definite`` read only one triangle
-    by default and ignore the other, so *averaging* the two triangles is not a no-op and can
-    turn a matrix the old rule accepted (reading its lower triangle) into one the new rule
-    rejects. Each example therefore perturbs only the **upper** triangle by a small relative
+    tolerates that (``math.isclose``, ``rel_tol=1e-9``). Both :func:`numpy.linalg.eigvalsh` and
+    ``models._is_positive_definite`` read only one triangle by default and ignore the other, so
+    *averaging* the two triangles before computing eigenvalues is not a no-op and can turn a
+    matrix the raw-eigenvalue rule accepts (reading its lower triangle) into one that is
+    rejected. Each example therefore perturbs only the **upper** triangle by a small relative
     amount, safely inside ``Covariance``'s own symmetry tolerance, so the generated matrices
-    are never bit-exactly symmetric and would have caught that regression.
+    are never bit-exactly symmetric and would catch that mistake.
     """
 
     @staticmethod
@@ -416,8 +409,8 @@ class TestCovarianceNewRuleAcceptsSupersetOfOldRule:
 
         # Perturb only the upper triangle (row < col), leaving the lower triangle at its
         # exact, congruence-transform-symmetric value -- within Covariance's rel_tol=1e-9
-        # symmetry tolerance, but not bit-exactly symmetric, matching the shape of
-        # api-compat's regression example (`b` in the lower triangle, `b + 1e-10` in the upper).
+        # symmetry tolerance, but not bit-exactly symmetric, matching the shape of the
+        # regression example below (`b` in the lower triangle, `b + 1e-10` in the upper).
         for i in range(n):
             for j in range(i + 1, n):
                 relative_noise = draw(
@@ -430,21 +423,22 @@ class TestCovarianceNewRuleAcceptsSupersetOfOldRule:
 
     @given(_matrices())
     @settings(max_examples=200, deadline=None)
-    def test_new_rule_accepts_every_matrix_the_old_rule_accepted(self, matrix: np.ndarray) -> None:
+    def test_covariance_accepts_every_matrix_the_raw_eigenvalue_rule_accepts(
+        self, matrix: np.ndarray
+    ) -> None:
         assume(bool(np.all(np.isfinite(matrix))))
-        assume(_old_rule_accepts(matrix))
+        assume(_raw_eigenvalue_rule_accepts(matrix))
 
-        assert _new_rule_accepts(matrix)
+        assert _covariance_accepts(matrix)
 
-    def test_regression_asymmetric_noise_within_tolerance_that_0_1_0a2_accepted_is_accepted(
+    def test_asymmetric_noise_within_tolerance_that_the_raw_eigenvalue_rule_accepts_is_accepted(
         self,
     ) -> None:
-        """api-compat's exact regression example: ``0.1.0a2`` (the old rule) accepted this
-        matrix (its lower triangle, ``b``, gives eigenvalues ``1 +- b`` = ``2 - 2e-12`` and
-        ``2e-12``, both above the old tolerance ``1e-12 * max(1, max|entry|) = 1e-12``); an
-        intermediate version of the units-independence fix that averaged the two off-diagonal
-        entries before computing eigenvalues rejected it instead (the averaged entry pushes
-        the smaller eigenvalue negative). The fixed rule must accept it.
+        """A regression example: the raw-eigenvalue rule accepts this matrix (its lower triangle,
+        ``b``, gives eigenvalues ``1 +- b`` = ``2 - 2e-12`` and ``2e-12``, both above the
+        tolerance ``1e-12 * max(1, max|entry|) = 1e-12``), while a rule that averaged the two
+        off-diagonal entries before computing eigenvalues would reject it (the averaged entry
+        pushes the smaller eigenvalue negative). The rule must accept it.
         """
         b = 1.0 - 2e-12
         matrix = ((1.0, b + 1e-10), (b, 1.0))
@@ -455,7 +449,7 @@ class TestCovarianceNewRuleAcceptsSupersetOfOldRule:
 
 
 class TestCovarianceStillRejects:
-    """The units-independence fix did not turn ``Covariance`` into a rubber stamp: every
+    """The units-independent rule is not a rubber stamp: every
     matrix that was never a legitimate covariance -- singular, a non-positive variance, a
     perfectly (colinear) correlated pair, or a non-finite entry -- is still rejected.
     """
@@ -482,10 +476,9 @@ class TestFitDefaults:
         fit = _ok_fit()
 
         assert fit.warnings == ()
-        # decisions/0027: one package-wide SCHEMA_VERSION, currently "4" -- Fit's own default
-        # tracks the same constant, since report.py versions the whole card format, not each type
-        # independently.
-        assert fit.schema_version == "4"
+        # One package-wide SCHEMA_VERSION, currently "1" -- Fit's own default tracks the same
+        # constant, since report.py versions the whole card format, not each type independently.
+        assert fit.schema_version == "1"
         assert fit.provenance == {}
 
 
@@ -575,7 +568,7 @@ class TestFitOutcomeAndDirection:
             )
 
     def test_increasing_direction_on_a_binomial_model_raises_value_error(self) -> None:
-        """Item 1, round 3: binomial curves are decreasing only. ``Observations`` still accepts
+        """Binomial curves are decreasing only. ``Observations`` still accepts
         both directions (``tests/unit/test_types.py::TestDirectionAndOutcome``); this
         restriction is specific to ``Fit`` (and, transitively, ``Threshold``)."""
         with pytest.raises(ValueError):
@@ -741,7 +734,7 @@ class TestFitCells:
 
 
 # ------------------------------------------------------------------------------------------
-# decisions/0029: ``Fit.cells`` must be strictly ascending in severity. Every exact-test rule in
+# ``Fit.cells`` must be strictly ascending in severity. Every exact-test rule in
 # ``censoring.py`` reads ``cells`` in order -- RIGHT the last cell, LEFT the first nonzero cell,
 # the fixed-sequence scans from each end -- so an unsorted or duplicated table made
 # ``threshold()`` silently test the wrong levels. Nothing is sorted or pooled for the caller:
@@ -750,7 +743,8 @@ class TestFitCells:
 # ------------------------------------------------------------------------------------------
 
 # Every status a ``Fit`` may carry. UNREACHABLE and FAILS_AT_BASELINE describe a threshold and
-# ``Fit`` rejects them for an unrelated reason (rule 9), so they cannot isolate the cells check.
+# ``Fit`` rejects them for an unrelated reason (a ``Fit`` never carries a threshold-level status),
+# so they cannot isolate the cells check.
 _FIT_STATUSES: tuple[Status, ...] = (
     Status.OK,
     Status.SEPARATION,
@@ -759,8 +753,8 @@ _FIT_STATUSES: tuple[Status, ...] = (
 )
 
 # The zero-severity cell is always an all-success 100/100. A *failing* control under the fixed
-# upper=1.0 of ``_params()`` on this log axis is rejected by a different rule (rule 10), which
-# would make an ordering test pass for the wrong reason.
+# upper=1.0 of ``_params()`` on this log axis is rejected by a different rule, which would make an
+# ordering test pass for the wrong reason.
 _SEV_0 = Cell(severity=0.0, successes=100, trials=100)
 _SEV_1 = Cell(severity=1.0, successes=90, trials=100)
 _SEV_1_AGAIN = Cell(severity=1.0, successes=80, trials=100)
@@ -849,7 +843,7 @@ def _ordering_error(cells: tuple[Cell, ...], status: Status = Status.OK) -> str:
 
 
 class TestFitCellsOrderingMessage:
-    """The message names the first out-of-order pair (decisions/0029). Substrings only: the
+    """The message names the first out-of-order pair. Substrings only: the
     exact wording is not API. Severities are chosen so that their text is unambiguous (no one
     severity's text is a substring of another's), and that it cites no private document is
     checked with the other user-visible messages in
@@ -915,9 +909,9 @@ class TestFitIsFrozen:
 
 
 class TestFitRequiresCovarianceWhenOk:
-    """Rule 7: ``status is OK`` requires ``covariance`` to be present. Unlike the existing
-    "covariance.names must equal the non-fixed parameter names" check (which only fires when
-    ``covariance`` is not ``None``), nothing currently requires it be present at all."""
+    """``status is OK`` requires ``covariance`` to be present. Unlike the "covariance.names must
+    equal the non-fixed parameter names" check (which only fires when ``covariance`` is not
+    ``None``), this one fires when it is absent."""
 
     def test_ok_status_without_covariance_raises(self) -> None:
         with pytest.raises(ValueError):
@@ -936,7 +930,7 @@ class TestFitRequiresCovarianceWhenOk:
 
 
 class TestFitStatusExcludesThresholdLevelStatuses:
-    """Rule 9: ``UNREACHABLE`` and ``FAILS_AT_BASELINE`` describe whether a *threshold* can be
+    """``UNREACHABLE`` and ``FAILS_AT_BASELINE`` describe whether a *threshold* can be
     solved for given a successful fit, not whether the fit itself succeeded, so ``Fit.status``
     may never be either."""
 
@@ -958,7 +952,7 @@ class TestFitStatusExcludesThresholdLevelStatuses:
 
 
 class TestFitControlIncompatibleLikelihood:
-    """Rule 10 / plan section 5.1: on a log axis, fixing ``upper=1.0`` while the zero-severity
+    """On a log axis, fixing ``upper=1.0`` while the zero-severity
     control has any failures drives that cell's likelihood to zero -- ``CONTROL_INCOMPATIBLE``
     territory, not a fittable ``OK`` result. A linear axis has no ``log(0)`` special case, so
     the same counts are unproblematic there.
@@ -985,7 +979,7 @@ class TestFitControlIncompatibleLikelihood:
             )
 
     def test_the_same_counts_on_a_linear_axis_are_accepted(self) -> None:
-        linear_axis = Axis(name="wind", unit="m/s", scale="linear")
+        linear_axis = Axis(name="axis_2", unit="m/s", scale="linear")
         fit = Fit(
             axis=linear_axis,
             outcome="success",
@@ -1003,8 +997,8 @@ class TestFitControlIncompatibleLikelihood:
 
 
 class TestFitClusterIds:
-    """Item 4, round 3: ``Fit.cluster_ids`` records which cluster each fitted cell's data came
-    from (plan section 5.6), so a method assuming independence can check for overlap. ``None``
+    """``Fit.cluster_ids`` records which cluster each fitted cell's data came
+    from, so a method assuming independence can check for overlap. ``None``
     (the default) means no cluster information was recorded, not "no clustering" -- unlike
     ``Observations.cluster``, which stores one id per row, this is coarser: one id set for the
     whole fit."""
@@ -1464,13 +1458,13 @@ class TestThresholdDirectionMatchesFitDirection:
         assert threshold.direction == threshold.fit.direction
 
     def test_increasing_direction_on_the_underlying_fit_is_rejected(self) -> None:
-        """Item 1, round 3: a binomial ``Fit`` can never have ``direction="increasing"``, which
-        makes the old "``Threshold.direction`` != ``Fit.direction``" mismatch this test used to
-        exercise (via a ``"decreasing"`` threshold on an ``"increasing"`` fit) impossible to
-        construct for v1's binomial-only model: there is no longer a second valid direction
-        value to mismatch against, since neither side may legitimately be ``"increasing"``.
-        Both ``direction`` fields are set to ``"increasing"`` here (matching each other, so the
-        pre-existing mismatch check alone would not fire) to isolate the new rejection.
+        """A binomial ``Fit`` can never have ``direction="increasing"``, so a
+        ``Threshold.direction`` != ``Fit.direction`` mismatch (a ``"decreasing"`` threshold on an
+        ``"increasing"`` fit) cannot even be constructed for the binomial-only model: there is
+        no second valid direction value to mismatch against, since neither side may
+        legitimately be ``"increasing"``. Both ``direction`` fields are set to ``"increasing"``
+        here (matching each other, so the mismatch check alone would not fire) to isolate the
+        direction rejection.
         """
         with pytest.raises(ValueError):
             _threshold(
@@ -1502,9 +1496,8 @@ class TestThresholdDefaultsAndFrozen:
         threshold = _threshold(value=0.05, lo=0.03, hi=0.08, interval_method="profile")
 
         assert threshold.warnings == ()
-        # decisions/0027: see TestFitDefaults's own comment -- one package-wide SCHEMA_VERSION,
-        # currently "4".
-        assert threshold.schema_version == "4"
+        # See TestFitDefaults's own comment -- one package-wide SCHEMA_VERSION, currently "1".
+        assert threshold.schema_version == "1"
         assert threshold.provenance == {}
 
     def test_is_frozen(self) -> None:
@@ -1515,17 +1508,17 @@ class TestThresholdDefaultsAndFrozen:
 
 
 class TestThresholdFitStatusConsistency:
-    """Rules 1-3: a threshold's own ``status``/``censoring`` constrain what ``fit.status`` may
-    be. Rule 1 (a ``value``, or ``status`` OK/UNREACHABLE, or censoring OPEN_UPPER/OPEN_LOWER,
-    requires ``fit.status is OK``) and rule 2 (``status`` SEPARATION/NOT_CONVERGED/
-    CONTROL_INCOMPATIBLE requires ``fit.status`` to match) are exercised as rejections, each
-    against a deliberately mismatched ``fit=``. Rule 3's exemption for RIGHT/LEFT/
-    FAILS_AT_BASELINE is exercised as the one accept test rules 1-3 ask for: of the fourteen
-    allowed (status, censoring) combinations, FAILS_AT_BASELINE+NONE is the only one rules 1
-    and 2 place no constraint on at all (every other combination pairs a status already
-    covered by rule 1 (OK, UNREACHABLE) or rule 2 (SEPARATION, NOT_CONVERGED,
-    CONTROL_INCOMPATIBLE) with RIGHT/LEFT/NONE censoring), so it is the only combination where
-    "any fit status" is actually distinct from what rules 1/2 already require.
+    """A threshold's own ``status``/``censoring`` constrain what ``fit.status`` may be. First, a
+    ``value``, or ``status`` OK/UNREACHABLE, or censoring OPEN_UPPER/OPEN_LOWER, requires
+    ``fit.status is OK``; second, ``status`` SEPARATION/NOT_CONVERGED/CONTROL_INCOMPATIBLE
+    requires ``fit.status`` to match. Both are exercised as rejections, each against a
+    deliberately mismatched ``fit=``. The exemption for RIGHT/LEFT/FAILS_AT_BASELINE is
+    exercised as the one accept test: of the fourteen allowed (status, censoring) combinations,
+    FAILS_AT_BASELINE+NONE is the only one that places no constraint on the fit status at all
+    (every other combination pairs a status already covered by the first rule (OK, UNREACHABLE)
+    or the second (SEPARATION, NOT_CONVERGED, CONTROL_INCOMPATIBLE) with RIGHT/LEFT/NONE
+    censoring), so it is the only combination where "any fit status" is actually distinct from
+    what those two rules already require.
     """
 
     def test_a_value_with_a_mismatched_fit_status_raises(self) -> None:
@@ -1607,7 +1600,7 @@ class TestThresholdFitStatusConsistency:
 
 
 class TestThresholdLoHiOrdering:
-    """Rule 4: when both ``lo`` and ``hi`` are set, ``SEPARATION``/``NOT_CONVERGED`` exact-bound
+    """When both ``lo`` and ``hi`` are set, ``SEPARATION``/``NOT_CONVERGED`` exact-bound
     brackets require ``lo < hi`` strictly; every other case (the ``OK``+``NONE`` closed
     interval) only requires ``lo <= hi``."""
 
@@ -1647,7 +1640,7 @@ class TestThresholdLoHiOrdering:
 
 
 class TestThresholdLogAxisPositivity:
-    """Rule 5: on a log axis, ``value``/``lo``/``hi`` must each be strictly positive when
+    """On a log axis, ``value``/``lo``/``hi`` must each be strictly positive when
     present -- ``0.0`` is not a reachable severity on a log scale. A linear axis keeps the
     existing ``>= 0`` rule."""
 
@@ -1675,9 +1668,9 @@ class TestThresholdLogAxisPositivity:
 
     def test_zero_hi_on_log_axis_raises(self) -> None:
         """Uses LEFT censoring (only ``hi`` set, no ``lo``/``value`` to order against it) so
-        this isolates rule 5 alone: with ``value``/``lo`` also present, ``hi=0.0`` would
-        already violate the pre-existing ``lo <= value <= hi`` ordering rule, which would mask
-        whether the new positivity rule is implemented at all."""
+        this isolates the log-axis positivity rule alone: with ``value``/``lo`` also present,
+        ``hi=0.0`` would already violate the ``lo <= value <= hi`` ordering rule, which would
+        mask whether the positivity rule is implemented at all."""
         with pytest.raises(ValueError):
             _threshold(
                 value=None,
@@ -1689,7 +1682,7 @@ class TestThresholdLogAxisPositivity:
             )
 
     def test_zero_value_on_linear_axis_is_accepted(self) -> None:
-        linear_axis = Axis(name="wind", unit="m/s", scale="linear")
+        linear_axis = Axis(name="axis_2", unit="m/s", scale="linear")
 
         threshold = _threshold(
             value=0.0,
@@ -1705,7 +1698,7 @@ class TestThresholdLogAxisPositivity:
 
 
 class TestThresholdIntervalMethodByStatusAndCensoring:
-    """Rule 6: ``OPEN_UPPER``/``OPEN_LOWER`` require ``"profile"`` specifically (not just any
+    """``OPEN_UPPER``/``OPEN_LOWER`` require ``"profile"`` specifically (not just any
     valid ``interval_method``), and ``status`` OK with censoring ``NONE`` requires ``"profile"``
     or ``"delta"`` -- ``"exact_bound"`` is for the censored/non-convergent fallback paths only.
     """
@@ -1745,10 +1738,9 @@ class TestThresholdIntervalMethodByStatusAndCensoring:
 
 
 class TestThresholdDependence:
-    """Item 4, round 3: ``Threshold.dependence`` is required, with no default -- a wrong
-    default (like a wrong default ``definition``, D5) would silently mislabel a clustered
-    result as independent. Only ``"independent"`` is valid in v1; ``"paired"`` arrives in v0.2
-    (plan section 5.6)."""
+    """``Threshold.dependence`` is required, with no default -- a wrong default (like a wrong
+    default ``definition``) would silently mislabel a clustered result as independent. Only
+    ``"independent"`` is valid in v1; ``"paired"`` is not implemented."""
 
     def test_dependence_other_than_independent_raises(self) -> None:
         with pytest.raises(ValueError):
@@ -1784,9 +1776,9 @@ class TestThresholdDependence:
 
 
 class TestThresholdHasNoNPerLevelField:
-    """Item 6, round 3: ``n_per_level`` is removed. Per-level n is read from
+    """``n_per_level`` is not a field. Per-level n is read from
     ``threshold.fit.cells`` instead (each :class:`~robustmargin.Cell` already carries its own
-    ``trials``), so a second, separately-populated copy is no longer part of the contract."""
+    ``trials``), so a second, separately-populated copy is not part of the contract."""
 
     def test_n_per_level_is_not_a_field(self) -> None:
         field_names = {f.name for f in dataclasses.fields(Threshold)}
@@ -1855,10 +1847,9 @@ class TestRatioEstimateNoneWhenNotOkOrCensored:
             )
 
     def test_status_not_ok_with_no_estimate_or_shape_is_valid(self) -> None:
-        """Item 2, round 3: a failed or censored ratio carries no numbers at all -- ``shape``
-        included, not just ``estimate``. ``shape=None`` is now the valid encoding here; the
-        previous ``shape=IntervalShape.UNBOUNDED`` version of this test is
-        ``test_status_not_ok_with_a_shape_set_raises`` below."""
+        """A failed or censored ratio carries no numbers at all -- ``shape`` included, not just
+        ``estimate``. ``shape=None`` is the valid encoding here; a shape set on such a ratio is
+        rejected by ``test_status_not_ok_with_a_shape_set_raises`` below."""
         ratio = _ratio(
             estimate=None,
             lo=None,
@@ -1911,7 +1902,7 @@ class TestRatioEstimateNoneWhenNotOkOrCensored:
 class TestRatioShapeBounded:
     def test_valid_construction(self) -> None:
         # estimate=1.0 matches _ratio()'s default threshold_a/threshold_b ratio (0.05 / 0.05),
-        # per rule 12 (estimate must equal threshold_a.value / threshold_b.value).
+        # as the estimate must equal threshold_a.value / threshold_b.value.
         ratio = _ratio(estimate=1.0, lo=1.0, hi=2.0, shape=IntervalShape.BOUNDED)
 
         assert ratio.lo is not None
@@ -1934,7 +1925,7 @@ class TestRatioShapeBounded:
 
 class TestRatioShapeUnbounded:
     def test_valid_construction_has_no_lo_or_hi(self) -> None:
-        # Rule 13: UNBOUNDED still accepts (in fact requires, per rule 12) an estimate.
+        # UNBOUNDED still accepts (in fact requires, as for every OK ratio) an estimate.
         # estimate=1.0 matches _ratio()'s default threshold_a/threshold_b ratio.
         ratio = _ratio(estimate=1.0, lo=None, hi=None, shape=IntervalShape.UNBOUNDED)
 
@@ -1954,10 +1945,10 @@ class TestRatioShapeExclusive:
     """``(-inf, lo] union [hi, inf)``: the two rays never meet, so ``lo < hi`` strictly."""
 
     def test_valid_construction(self) -> None:
-        # Rule 12 requires a non-None estimate even for EXCLUSIVE; rule 13 requires it lie
-        # outside (lo, hi). estimate=1.0 matches _ratio()'s default threshold ratio and sits at
-        # the closed lo edge (1.0 <= lo is false here; instead hi=1.0 <= estimate), which is the
-        # ">= hi" branch of rule 13's "estimate <= lo or estimate >= hi".
+        # An OK ratio requires a non-None estimate even for EXCLUSIVE, and an EXCLUSIVE one
+        # requires it to lie outside (lo, hi). estimate=1.0 matches _ratio()'s default threshold
+        # ratio and sits at the closed lo edge (1.0 <= lo is false here; instead hi=1.0 <=
+        # estimate), which is the ">= hi" branch of "estimate <= lo or estimate >= hi".
         ratio = _ratio(estimate=1.0, lo=0.2, hi=1.0, shape=IntervalShape.EXCLUSIVE)
 
         assert ratio.lo is not None
@@ -1974,9 +1965,8 @@ class TestRatioShapeExclusive:
 
 
 class TestRatioShapeRulesOnlyApplyWhenCensoringIsNone:
-    """Plan section 5.6/design choice: censoring propagation is Phase 6 work. Item 2, round 3,
-    sharpens this from "the shape rules above are skipped" to "a censored or failed ratio
-    carries no numbers at all": ``shape`` (like ``estimate``/``lo``/``hi``) must be exactly
+    """The shape rules above apply only to a ratio with censoring ``NONE``. A censored or failed
+    ratio carries no numbers at all: ``shape`` (like ``estimate``/``lo``/``hi``) must be exactly
     ``None``, not merely unchecked.
     """
 
@@ -1996,7 +1986,7 @@ class TestRatioShapeRulesOnlyApplyWhenCensoringIsNone:
 
 
 class TestRatioOkNoneRequiresBothThresholdsOk:
-    """Rule 11: for the ``status`` OK + ``censoring`` NONE ratio path, both thresholds must
+    """For the ``status`` OK + ``censoring`` NONE ratio path, both thresholds must
     themselves have ``status`` OK and a ``value`` set."""
 
     def test_threshold_a_not_ok_raises(self) -> None:
@@ -2039,7 +2029,7 @@ class TestRatioOkNoneRequiresBothThresholdsOk:
 
 
 class TestRatioOkNoneEstimateRequiredAndMatchesThresholdRatio:
-    """Rule 12: ``estimate`` is required (not ``None``) and must equal ``threshold_a.value /
+    """``estimate`` is required (not ``None``) and must equal ``threshold_a.value /
     threshold_b.value`` within ``math.isclose(rel_tol=1e-9)``."""
 
     @staticmethod
@@ -2103,11 +2093,11 @@ class TestRatioOkNoneEstimateRequiredAndMatchesThresholdRatio:
 
 
 class TestRatioOkNoneExclusiveEstimateOutsideInterval:
-    """Rule 13: ``EXCLUSIVE`` requires ``estimate <= lo or estimate >= hi``."""
+    """``EXCLUSIVE`` requires ``estimate <= lo or estimate >= hi``."""
 
     def test_estimate_inside_the_excluded_gap_raises(self) -> None:
-        # Round 4, section 5.1: distinct fits, so the ValueError below is unambiguously about
-        # the excluded gap, not an incidental shared-fit rejection.
+        # Distinct fits, so the ValueError below is unambiguously about the excluded gap, not an
+        # incidental shared-fit rejection.
         t_a = _threshold(
             value=1.0,
             lo=0.5,
@@ -2134,7 +2124,7 @@ class TestRatioOkNoneExclusiveEstimateOutsideInterval:
             )
 
     def test_estimate_at_or_below_lo_is_accepted(self) -> None:
-        # Round 4, section 5.1: distinct fits, or this accept test would now itself raise.
+        # Distinct fits, or this accept test would itself raise on a shared fit.
         t_a = _threshold(
             value=0.5,
             lo=0.3,
@@ -2165,10 +2155,10 @@ class TestRatioOkNoneExclusiveEstimateOutsideInterval:
 
 
 class TestRatioOkNoneUnboundedAcceptsAnEstimate:
-    """Rule 13: ``UNBOUNDED`` accepts an estimate (and, per rule 12, requires one)."""
+    """``UNBOUNDED`` accepts an estimate (and, as for every OK ratio, requires one)."""
 
     def test_unbounded_with_an_estimate_is_accepted(self) -> None:
-        # Round 4, section 5.1: distinct fits, or this accept test would now itself raise.
+        # Distinct fits, or this accept test would itself raise on a shared fit.
         t_a = _threshold(
             value=1.0,
             lo=0.5,
@@ -2197,18 +2187,18 @@ class TestRatioOkNoneUnboundedAcceptsAnEstimate:
 
 
 class TestRatioOkNoneLogDeltaRequiresBoundedWithPositiveInterval:
-    """Rule 14: ``method="log_delta"`` requires shape ``BOUNDED`` (with ``0 < lo <= estimate <=
-    hi``) **or, as of `decisions/0022`, ``HALF_OPEN`` (with ``0 < lo <= estimate``, ``hi is
-    None``)** -- the same positivity requirement extended to the new shape, tested at the end of
-    this class. Neither shape is generated by ``ratio_interval(method="log_delta")`` itself in
-    v0.1 (it is always a finite, exponentiated two-sided interval, so ``BOUNDED`` in practice),
-    but ``Ratio``'s own type accepts either, and the positivity requirement -- the reason
+    """``method="log_delta"`` requires shape ``BOUNDED`` (with ``0 < lo <= estimate <= hi``)
+    **or** ``HALF_OPEN`` (with ``0 < lo <= estimate``, ``hi is None``) -- the same positivity
+    requirement extended to the half-open shape, tested at the end of this class. Neither shape
+    is generated by ``ratio_interval(method="log_delta")`` itself in this release (it is always
+    a finite, exponentiated two-sided interval, so ``BOUNDED`` in practice), but ``Ratio``'s own
+    type accepts either, and the positivity requirement -- the reason
     ``log_delta`` needs ``lo > 0`` at all, since a log-scale interval is positive by
     construction -- must hold regardless of which shape carries it."""
 
     @staticmethod
     def _matched_thresholds() -> tuple[Threshold, Threshold]:
-        # Round 4, section 5.1: distinct fits (_CELLS vs _CELLS_B).
+        # Distinct fits (_CELLS vs _CELLS_B).
         t_a = _threshold(
             value=1.0,
             lo=0.5,
@@ -2301,13 +2291,13 @@ class TestRatioOkNoneLogDeltaRequiresBoundedWithPositiveInterval:
 
 
 class TestRatioDefinitionsMustMatch:
-    """Rule 15 (plan D5): any ratio (not only the OK/NONE path) requires the two thresholds'
+    """Any ratio (not only the OK/NONE path) requires the two thresholds'
     ``Definition``s to be equal -- a ratio between an ``absolute`` threshold and a
     ``baseline_fraction`` threshold is not a meaningful number."""
 
     def test_mismatched_definitions_raise(self) -> None:
-        # Round 4, section 5.1: distinct fits, so the ValueError below is unambiguously about
-        # the mismatched definitions, not an incidental shared-fit rejection.
+        # Distinct fits, so the ValueError below is unambiguously about the mismatched
+        # definitions, not an incidental shared-fit rejection.
         t_a = _threshold(
             value=0.1,
             lo=0.05,
@@ -2336,7 +2326,7 @@ class TestRatioDefinitionsMustMatch:
             )
 
     def test_matching_definitions_is_accepted(self) -> None:
-        # Round 4, section 5.1: distinct fits, or this accept test would now itself raise.
+        # Distinct fits, or this accept test would itself raise on a shared fit.
         t_a = _threshold(
             value=0.1,
             lo=0.05,
@@ -2381,7 +2371,7 @@ def _fit_with_cluster_ids(cluster_ids: tuple[str, ...]) -> Fit:
 
 
 class TestRatioIndependentDependenceForbidsOverlappingClusterIds:
-    """Item 4, round 3 / plan section 5.6: ``dependence="independent"`` is valid only when the
+    """``dependence="independent"`` is valid only when the
     two thresholds come from disjoint data. ``Fit.cluster_ids`` is what lets that be checked
     directly, rather than only by convention."""
 
@@ -2475,8 +2465,7 @@ class TestRatioMethodDependenceLevel:
         assert ratio.method == method
 
     def test_dependence_other_than_independent_raises(self) -> None:
-        """``dependence="paired"`` is v0.2 (plan section 5.6); Phase 3 only allows
-        ``"independent"``."""
+        """``dependence="paired"`` is not implemented; only ``"independent"`` is allowed."""
         with pytest.raises(ValueError):
             _ratio(
                 estimate=1.0,
@@ -2497,8 +2486,8 @@ class TestRatioDefaultsAndFrozen:
         ratio = _ratio(estimate=1.0, lo=0.5, hi=2.0, shape=IntervalShape.BOUNDED)
 
         assert ratio.warnings == ()
-        # decisions/0027: the package-wide SCHEMA_VERSION, currently "4".
-        assert ratio.schema_version == "4"
+        # The package-wide SCHEMA_VERSION, currently "1".
+        assert ratio.schema_version == "1"
         assert ratio.provenance == {}
 
     def test_is_frozen(self) -> None:
@@ -2509,7 +2498,7 @@ class TestRatioDefaultsAndFrozen:
 
 
 # ------------------------------------------------------------------------------------------
-# Round 4, section 1: number fields reject bool and non-finite values at construction.
+# Number fields reject bool and non-finite values at construction.
 # ------------------------------------------------------------------------------------------
 
 
@@ -2602,7 +2591,7 @@ class TestCovarianceMatrixRejectsBoolEntry:
 
 
 # ------------------------------------------------------------------------------------------
-# Round 4, section 5: Ratio invariants.
+# Ratio invariants.
 # ------------------------------------------------------------------------------------------
 
 
@@ -2610,10 +2599,9 @@ class TestRatioIndependentDependenceAcceptsEqualFits:
     """With ``dependence="independent"``, value-equal fits are **accepted**.
 
     Two disjoint samples can produce identical counts and so identical fits, and a ratio between
-    them is valid (section 5.6). An equality check was tried in round 4 and removed after the
-    stats re-check: it rejected that valid case and was bypassed by editing ``provenance``. The
-    object-level guard is overlapping ``cluster_ids`` only; the full shared-data check belongs to
-    ``ratio_interval`` (Phase 6)."""
+    them is valid. An equality check on the two fits would reject that valid case, and could be
+    bypassed by editing ``provenance``. The object-level guard is overlapping ``cluster_ids``
+    only; the full shared-data check belongs to ``ratio_interval``."""
 
     def test_value_equal_fits_from_disjoint_samples_are_accepted(self) -> None:
         fit_a = _fit_with_axis(_AXIS)
@@ -2665,10 +2653,9 @@ class TestRatioIndependentDependenceAcceptsEqualFits:
 
 
 class TestRatioOkNoneBothThresholdsMustHaveNoneCensoring:
-    """Section 5.2: on the ratio's own status OK + censoring NONE path, both input thresholds
-    must themselves have censoring NONE -- an OPEN_UPPER or OPEN_LOWER input threshold raises,
-    even though it independently satisfies the pre-existing "status OK with value set" check
-    (rule 11)."""
+    """On the ratio's own status OK + censoring NONE path, both input thresholds must
+    themselves have censoring NONE -- an OPEN_UPPER or OPEN_LOWER input threshold raises,
+    even though it independently satisfies the "status OK with value set" check."""
 
     def test_threshold_a_open_upper_raises(self) -> None:
         t_a = _threshold(
@@ -2714,14 +2701,14 @@ class TestRatioOkNoneBothThresholdsMustHaveNoneCensoring:
 
 
 class TestRatioOkNoneZeroDenominatorRaisesValueErrorNotZeroDivisionError:
-    """Section 5.3: ``threshold_b.value > 0`` is checked before ever dividing, so a ``0.0``
+    """``threshold_b.value > 0`` is checked before ever dividing, so a ``0.0``
     denominator on a linear axis raises ``ValueError`` -- never Python's own
     ``ZeroDivisionError``."""
 
     def test_zero_denominator_on_linear_axis_raises_value_error_not_zero_division_error(
         self,
     ) -> None:
-        linear_axis = Axis(name="wind", unit="m/s", scale="linear")
+        linear_axis = Axis(name="axis_2", unit="m/s", scale="linear")
         t_a = _threshold(
             value=0.5,
             lo=0.3,
@@ -2757,12 +2744,12 @@ class TestRatioOkNoneZeroDenominatorRaisesValueErrorNotZeroDivisionError:
 
 
 class TestRatioLogDeltaRequiresALogAxis:
-    """Section 5.4: ``method="log_delta"`` requires both thresholds on a log axis, in addition
-    to the pre-existing BOUNDED-shape and ``0 < lo <= estimate <= hi`` rules -- a linear axis
+    """``method="log_delta"`` requires both thresholds on a log axis, in addition
+    to the BOUNDED-shape and ``0 < lo <= estimate <= hi`` rules -- a linear axis
     with an otherwise perfectly valid positive bounded interval still raises."""
 
     def test_log_delta_on_a_linear_axis_raises(self) -> None:
-        linear_axis = Axis(name="wind", unit="m/s", scale="linear")
+        linear_axis = Axis(name="axis_2", unit="m/s", scale="linear")
         t_a = _threshold(
             value=1.0,
             lo=0.5,
@@ -2821,7 +2808,7 @@ class TestRatioLogDeltaRequiresALogAxis:
 
 
 # ------------------------------------------------------------------------------------------
-# Round 4, section 6: Threshold.
+# Threshold.
 # ------------------------------------------------------------------------------------------
 
 
@@ -2847,7 +2834,7 @@ class TestThresholdTerminalStatusRequiresExactBoundIntervalMethod:
 
 
 # ------------------------------------------------------------------------------------------
-# Round 4, section 7: Fit and Covariance.
+# Fit and Covariance.
 # ------------------------------------------------------------------------------------------
 
 
@@ -2920,7 +2907,7 @@ class TestFitRequiresMuAndSNotFixedWhenOk:
 
 
 class TestFitLinkTypeAnnotationIsStrNotOptional:
-    """Section 3: ``Fit.link``'s schema enum has no ``null`` (exercised against the packaged
+    """``Fit.link``'s schema enum has no ``null`` (exercised against the packaged
     schema in ``tests/unit/test_report.py``), and its Python type annotation must match: ``str``,
     not ``str | None`` -- ``Fit.__post_init__`` already rejects ``link=None`` at runtime (it is
     not one of the three recognised link names), so the optional annotation was never accurate.

@@ -1,31 +1,20 @@
-"""Contract test: the aggregated, independent call shape zeta-bench uses.
+"""Contract test: the aggregated, independent call shape.
 
-Mirrors how zeta-bench's ``robustness/cards.py`` calls the ported grid rule: a degradation
-curve as a list of ``(severity, success_rate)`` pairs, unzipped into two lists, run through
-the public API with ``criterion=0.95, signed=True``, then read back via ``.value`` and
-``.max_tested`` (see ``build_card_summary`` / ``_format_break`` in
-``../zeta-bench/robustness/cards.py``). Only the public API surface is used here — no internal
-robustmargin module is imported.
+Mirrors how a consumer that holds only aggregated per-level rates calls the grid rule: a
+degradation curve as a list of ``(severity, success_rate)`` pairs, unzipped into two lists, run
+through the public API with ``criterion=0.95, signed=True``, then read back via ``.value`` and
+``.max_tested``. The same consumer shape drives the exact-bound and Fieller paths on per-level
+counts further down. Only the public API surface is used here -- no internal robustmargin module
+is imported.
 
-A failing test in this file means a breaking change to the public API that zeta-bench depends
-on (plan section 3.3, ``docs/CONSUMERS.md``). **Do not edit this test to make it pass.** Stop
-and ask; that failure is the signal a breaking change needs owner sign-off.
+A failing test in this file means a breaking change to the public API that a consumer depends
+on. **Do not edit this test to make it pass.** Stop and ask; that failure is the signal that a
+breaking change needs an explicit decision.
 
-**Edit recorded (decisions/0023, item 2):** ``schema_version`` is now ``"3"`` on every result
-type, including ``GridBreakPoint``. The two literal ``"2"`` assertions this file made against a
-freshly-built ``GridBreakPoint``'s serialised ``schema_version`` were updated to ``"3"`` --
-zeta-bench itself is unaffected (it unpacks ``grid_break_point``'s return to a plain
-``(value, max_tested)`` tuple and never serialises the dataclass at all), but the two assertions
-here are the contract for anyone who does.
-
-**Edit recorded (decisions/0027):** the package is renamed ``robustmargin`` and
-``schema_version`` is now ``"4"`` on every result type, including ``GridBreakPoint``. The two
-literal ``"3"`` assertions this file made against a freshly-built ``GridBreakPoint``'s serialised
-``schema_version`` were updated to ``"4"``, and the imports moved to ``robustmargin``. This is a
-breaking change signed off in ``decisions/0027`` (Appendix B item 2) -- every import breaks and
-every stored ``"3"`` card is rejected by the ``"4"``-only reader -- not an edit made to turn a
-failing contract test green. zeta-bench is unaffected beyond its import (``from robustmargin
-import grid_break_point``): it never serialises ``GridBreakPoint``, so no card it holds changes.
+``schema_version`` is package-wide: every result type, ``GridBreakPoint`` included, carries the
+version of the one score-card schema, so the two serialisation tests below pin it. A consumer
+that unpacks ``grid_break_point`` to a plain ``(value, max_tested)`` tuple never sees it, but
+those assertions are the contract for anyone who serialises the dataclass.
 """
 
 from __future__ import annotations
@@ -39,18 +28,18 @@ from robustmargin import Censoring, grid_break_point
 
 
 def _load_matrix_counts() -> dict[str, tuple[list[float], list[int], list[int]]]:
-    """Read ``tests/data/zeta_matrix_counts.csv`` into per-series ``(severity, successes,
+    """Read ``tests/data/pooled_counts.csv`` into per-series ``(severity, successes,
     trials)`` arrays, as ``Observations.from_counts`` needs them (unlike the module-level
     ``_load_matrix_series`` below, which collapses each row to a rate for the grid rule).
 
-    Imports locally rather than at module level, matching the Phase 3 additions further down:
-    this file's original imports (above) stay untouched, so the diff against the pre-Phase-3
-    file is additions only.
+    Names beyond the grid rule's are imported inside each test, here and below, rather than at
+    module level: removing or renaming one public name then fails only the tests that use it,
+    instead of the collection of the whole module.
     """
     import csv
     from pathlib import Path
 
-    matrix_csv = Path(__file__).resolve().parents[1] / "data" / "zeta_matrix_counts.csv"
+    matrix_csv = Path(__file__).resolve().parents[1] / "data" / "pooled_counts.csv"
     series: dict[str, tuple[list[float], list[int], list[int]]] = {}
     with matrix_csv.open(newline="") as fh:
         for row in csv.DictReader(fh):
@@ -62,7 +51,7 @@ def _load_matrix_counts() -> dict[str, tuple[list[float], list[int], list[int]]]
     return series
 
 
-def test_zeta_bench_shaped_call_reads_value_and_max_tested() -> None:
+def test_aggregated_call_reads_value_and_max_tested() -> None:
     """Unzip a ``(severity, rate)`` curve, call with keyword ``criterion``, read the result."""
     curve: list[tuple[float, float]] = [
         (-0.2, 0.05),
@@ -79,10 +68,10 @@ def test_zeta_bench_shaped_call_reads_value_and_max_tested() -> None:
     assert result.max_tested == 0.2
 
 
-def test_zeta_bench_shaped_call_reports_right_censoring_as_none_value() -> None:
+def test_aggregated_call_reports_right_censoring_as_none_value() -> None:
     """When the gate holds everywhere, ``.value`` is ``None`` and ``.max_tested`` is the bound.
 
-    This is the shape zeta-bench's ``_format_break`` relies on: ``bp is None`` selects the
+    This is the shape a consumer's formatter relies on: ``value is None`` selects the
     "holds <= max tested" wording rather than a numeric break-point.
     """
     curve: list[tuple[float, float]] = [(0.0, 1.0), (2.0, 1.0), (5.0, 1.0), (10.0, 1.0)]
@@ -95,7 +84,8 @@ def test_zeta_bench_shaped_call_reports_right_censoring_as_none_value() -> None:
 
 
 def test_censoring_has_exactly_the_five_documented_members() -> None:
-    """The tag freezes at ``v0.1.0a1``: no member added, removed, or renamed after that."""
+    """The members are frozen: none is added, removed, or renamed without a deliberate API
+    change."""
     members = {member.name: member.value for member in Censoring}
 
     assert members == {
@@ -107,7 +97,7 @@ def test_censoring_has_exactly_the_five_documented_members() -> None:
     }
 
 
-def test_zeta_bench_shaped_call_reports_censoring_none_when_curve_fails() -> None:
+def test_aggregated_call_reports_censoring_none_when_curve_fails() -> None:
     curve: list[tuple[float, float]] = [
         (-0.2, 0.05),
         (-0.1, 0.77),
@@ -122,7 +112,7 @@ def test_zeta_bench_shaped_call_reports_censoring_none_when_curve_fails() -> Non
     assert result.censoring is Censoring.NONE
 
 
-def test_zeta_bench_shaped_call_reports_censoring_right_with_none_value_when_curve_holds() -> None:
+def test_aggregated_call_reports_censoring_right_with_none_value_when_curve_holds() -> None:
     curve: list[tuple[float, float]] = [(0.0, 1.0), (2.0, 1.0), (5.0, 1.0), (10.0, 1.0)]
     severity, rate = zip(*curve)
 
@@ -148,12 +138,10 @@ def test_result_round_trips_through_json_with_string_censoring_and_schema_versio
 
     assert reloaded["censoring"] in ("NONE", "RIGHT")
     assert reloaded["censoring"] == "NONE"
-    # decisions/0022 bumped schema_version to "2" on every result type, GridBreakPoint
-    # included: one schema document means one version. decisions/0023 bumped it again, to "3"
-    # (Fit.diagnostics), and decisions/0027 to "4" (the rename), still package-wide. zeta-bench is
-    # unaffected -- it unpacks grid_break_point to a plain (value, max_tested) tuple and never
-    # serialises this dataclass -- but this assertion is the contract for anyone who does.
-    assert reloaded["schema_version"] == "4"
+    # schema_version is package-wide, GridBreakPoint included: one schema document means one
+    # version. A consumer that unpacks grid_break_point to a plain (value, max_tested) tuple never
+    # serialises this dataclass, but this assertion is the contract for anyone who does.
+    assert reloaded["schema_version"] == "1"
 
 
 def test_right_censored_result_round_trips_through_json_too() -> None:
@@ -165,7 +153,7 @@ def test_right_censored_result_round_trips_through_json_too() -> None:
     reloaded = json.loads(dumped)
 
     assert reloaded["censoring"] == "RIGHT"
-    assert reloaded["schema_version"] == "4"  # decisions/0022, 0023, 0027, as above
+    assert reloaded["schema_version"] == "1"  # package-wide, as above
 
 
 def test_criterion_is_keyword_only_and_signed_defaults_to_false() -> None:
@@ -176,19 +164,17 @@ def test_criterion_is_keyword_only_and_signed_defaults_to_false() -> None:
 
 
 # ---------------------------------------------------------------------------------------------
-# Phase 3 additions (plan section 7 Phase 3 DoD): the contract types, the JSON report module,
-# and the fakes. Everything below is new; nothing above this line was touched (`git diff` shows
-# additions only). Each new test imports the Phase 3 names it needs locally rather than at
-# module level, for the same reason.
+# The contract types, the JSON report module, and the fakes. Each test imports the names it needs
+# locally rather than at module level, for the reason given on `_load_matrix_counts`.
 # ---------------------------------------------------------------------------------------------
 
 
-def test_axis_and_from_counts_construction_on_pid_sensor_noise_counts() -> None:
-    """The plan section 4.1 API sketch's own worked example: ``Axis`` plus
-    ``Observations.from_counts`` on the PID x sensor_noise counts."""
+def test_axis_and_from_counts_construction_on_system_a_axis_1_counts() -> None:
+    """The API sketch's own worked example: ``Axis`` plus ``Observations.from_counts`` on the
+    ``system_a_axis_1`` counts."""
     from robustmargin import Axis, Cell, Observations
 
-    axis = Axis(name="sensor_noise", unit="m", scale="log")
+    axis = Axis(name="axis_1", unit="m", scale="log")
     obs = Observations.from_counts(
         axis,
         severity=[0.0, 0.01, 0.05, 0.1],
@@ -238,12 +224,12 @@ def test_scorecard_of_fakes_round_trips_through_json_text() -> None:
     assert reloaded == card
 
 
-def test_pid_sensor_noise_absolute_0_95_gives_a_finite_bracketed_interval() -> None:
-    """Worked case from plan section 5.5: the identifiable PID x sensor_noise transition."""
+def test_system_a_axis_1_absolute_0_95_gives_a_finite_bracketed_interval() -> None:
+    """Worked case: the identifiable ``system_a_axis_1`` transition."""
     from robustmargin import Axis, Definition, Observations, fit_dose_response, threshold
 
-    severity, successes, trials = _load_matrix_counts()["pid_sensor_noise"]
-    axis = Axis(name="sensor_noise", unit="m", scale="log")
+    severity, successes, trials = _load_matrix_counts()["system_a_axis_1"]
+    axis = Axis(name="axis_1", unit="m", scale="log")
     obs = Observations.from_counts(
         axis,
         severity=severity,
@@ -263,12 +249,12 @@ def test_pid_sensor_noise_absolute_0_95_gives_a_finite_bracketed_interval() -> N
     assert 0.01 < t.value < 0.1
 
 
-def test_pid_wind_absolute_0_95_is_right_censored_at_10() -> None:
-    """Worked case from plan section 5.5: 500/500 at every tested wind level."""
+def test_system_a_axis_2_absolute_0_95_is_right_censored_at_10() -> None:
+    """Worked case: 500/500 at every tested ``system_a_axis_2`` level."""
     from robustmargin import Axis, Definition, Observations, fit_dose_response, threshold
 
-    severity, successes, trials = _load_matrix_counts()["pid_wind"]
-    axis = Axis(name="wind", unit="m/s", scale="linear")
+    severity, successes, trials = _load_matrix_counts()["system_a_axis_2"]
+    axis = Axis(name="axis_2", unit="m/s", scale="linear")
     obs = Observations.from_counts(
         axis,
         severity=severity,
@@ -285,12 +271,12 @@ def test_pid_wind_absolute_0_95_is_right_censored_at_10() -> None:
     assert t.lo == 10.0
 
 
-def test_sac_sensor_noise_absolute_0_95_fails_at_baseline() -> None:
-    """Worked case from plan section 5.5: the SAC control is already at 98/200."""
+def test_system_b_axis_1_absolute_0_95_fails_at_baseline() -> None:
+    """Worked case: the ``system_b_axis_1`` control is already at 98/200."""
     from robustmargin import Axis, Definition, Observations, Status, fit_dose_response, threshold
 
-    severity, successes, trials = _load_matrix_counts()["sac_sensor_noise"]
-    axis = Axis(name="sensor_noise", unit="m", scale="log")
+    severity, successes, trials = _load_matrix_counts()["system_b_axis_1"]
+    axis = Axis(name="axis_1", unit="m", scale="log")
     obs = Observations.from_counts(
         axis,
         severity=severity,
@@ -305,12 +291,12 @@ def test_sac_sensor_noise_absolute_0_95_fails_at_baseline() -> None:
     assert t.status is Status.FAILS_AT_BASELINE
 
 
-def test_sac_sensor_noise_baseline_fraction_0_5_is_left_censored_at_0_01() -> None:
-    """Worked case from plan section 5.5: the lowest nonzero level already fails."""
+def test_system_b_axis_1_baseline_fraction_0_5_is_left_censored_at_0_01() -> None:
+    """Worked case: the lowest nonzero level already fails."""
     from robustmargin import Axis, Definition, Observations, fit_dose_response, threshold
 
-    severity, successes, trials = _load_matrix_counts()["sac_sensor_noise"]
-    axis = Axis(name="sensor_noise", unit="m", scale="log")
+    severity, successes, trials = _load_matrix_counts()["system_b_axis_1"]
+    axis = Axis(name="axis_1", unit="m", scale="log")
     obs = Observations.from_counts(
         axis,
         severity=severity,
@@ -328,32 +314,30 @@ def test_sac_sensor_noise_baseline_fraction_0_5_is_left_censored_at_0_01() -> No
     assert t.hi == 0.01
 
 
-def test_fieller_ratio_on_pid_sensor_noise_halves_propagates_separation() -> None:
-    """Two thresholds fit on *disjoint* halves of the PID x sensor_noise counts, on the same
+def test_fieller_ratio_on_system_a_axis_1_halves_propagates_separation() -> None:
+    """Two thresholds fit on *disjoint* halves of the ``system_a_axis_1`` counts, on the same
     axis and the same ``absolute(0.95)`` definition, combined with a Fieller interval.
 
-    **This fixture does not give two clean ``OK`` fits, and an earlier version of this docstring
-    was wrong to say it did.** The two halves are constructed so that, summed cell by cell, they
-    reproduce the fixture's own ``pid_sensor_noise`` counts (successes ``[200, 299, 122, 0]``
-    over trials ``[200, 300, 300, 300]``): half A is ``[100, 150, 61, 0]`` over
-    ``[100, 150, 150, 150]`` and half B is the complementary ``[100, 149, 61, 0]`` over
+    **This fixture does not give two clean ``OK`` fits.** The two halves are constructed so that,
+    summed cell by cell, they reproduce the fixture's own ``system_a_axis_1`` counts (successes
+    ``[200, 299, 122, 0]`` over trials ``[200, 300, 300, 300]``): half A is ``[100, 150, 61, 0]``
+    over ``[100, 150, 150, 150]`` and half B is the complementary ``[100, 149, 61, 0]`` over
     ``[100, 150, 150, 150]``, so the two fits genuinely share no observations -- but half A is
     genuinely quasi-completely separated (confirmed: its likelihood is flat at its supremum from
-    ``s = 0.06`` down to ``s = 1e-8``, so no finite MLE exists there, and
-    ``decisions/0006``'s pre-fit separation rule is correct to say so). This is not repairable by
-    re-splitting: ``pid_sensor_noise`` has exactly one failure below its mixed level
-    (``299/300`` at ``0.01``), so *any* disjoint split leaves one half separated, and the only
-    other candidate series in the fixture, ``ppo_sensor_noise``, is separated as a whole series.
+    ``s = 0.06`` down to ``s = 1e-8``, so no finite MLE exists there, and the pre-fit separation
+    rule is correct to say so). This is not repairable by re-splitting: ``system_a_axis_1`` has
+    exactly one failure below its mixed level (``299/300`` at ``0.01``), so *any* disjoint split
+    leaves one half separated, and the only other candidate series in the fixture,
+    ``system_c_axis_1``, is separated as a whole series.
 
     What this fixture is actually worth testing, then, is not "the OK/OK Fieller path" (see
     ``test_fieller_ratio_on_two_constructed_ok_thresholds_reports_an_interval_shape`` below for
-    that) but that ``Status.SEPARATION`` on real, consumer-shaped zeta-bench data propagates
-    through ``ratio_interval`` exactly as ``decisions/0015`` requires: a flag, never a number
-    that merely happens to look plausible.
+    that) but that ``Status.SEPARATION`` on real, consumer-shaped data propagates through
+    ``ratio_interval`` as it must: a flag, never a number that merely happens to look plausible.
 
-    ``dependence="independent"`` (plan section 5.6) is valid only when the two thresholds come
-    from disjoint data, and must raise otherwise -- so this must not be two thresholds off one
-    fit, which would share every observation.
+    ``dependence="independent"`` is valid only when the two thresholds come from disjoint data,
+    and must raise otherwise -- so this must not be two thresholds off one fit, which would share
+    every observation.
     """
     from robustmargin import (
         Axis,
@@ -365,8 +349,8 @@ def test_fieller_ratio_on_pid_sensor_noise_halves_propagates_separation() -> Non
         threshold,
     )
 
-    severity, _successes, _trials = _load_matrix_counts()["pid_sensor_noise"]
-    axis = Axis(name="sensor_noise", unit="m", scale="log")
+    severity, _successes, _trials = _load_matrix_counts()["system_a_axis_1"]
+    axis = Axis(name="axis_1", unit="m", scale="log")
 
     half_a = Observations.from_counts(
         axis,
@@ -407,7 +391,7 @@ def test_fieller_ratio_on_pid_sensor_noise_halves_propagates_separation() -> Non
 
 
 def test_fieller_ratio_on_two_constructed_ok_thresholds_reports_an_interval_shape() -> None:
-    """The OK/OK Fieller contract path: since ``pid_sensor_noise`` cannot supply two clean
+    """The OK/OK Fieller contract path: since ``system_a_axis_1`` cannot supply two clean
     ``OK`` fits from disjoint halves (see the test above), this covers the same shape-reporting
     contract -- ``ratio_interval`` on two independent, converged ``Status.OK`` thresholds returns
     some :class:`~robustmargin.IntervalShape` -- from two small but genuinely non-separated,
@@ -424,7 +408,7 @@ def test_fieller_ratio_on_two_constructed_ok_thresholds_reports_an_interval_shap
         threshold,
     )
 
-    axis = Axis(name="sensor_noise", unit="m", scale="log")
+    axis = Axis(name="axis_1", unit="m", scale="log")
     obs_a = Observations.from_counts(
         axis,
         severity=[0.0, 0.01, 0.05, 0.1],

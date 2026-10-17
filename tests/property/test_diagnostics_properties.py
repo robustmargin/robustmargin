@@ -1,5 +1,4 @@
-"""Property tests for :func:`~robustmargin.diagnose` (plan section 6.4; hypothesis;
-``docs/decisions/0023-fit-diagnostics-and-schema-v3.md``).
+"""Property tests for :func:`~robustmargin.diagnose` (hypothesis).
 
 Three properties, mirroring ``tests/property/test_models_properties.py``'s own conventions and
 strategies rather than introducing new ones:
@@ -8,20 +7,18 @@ strategies rather than introducing new ones:
   ``Observations.cells()`` already pools and sorts regardless of row order).
 - Aggregated and disaggregated inputs give identical diagnostics, for the same reason.
 - With ``u`` fixed at 1, adding an all-success control row leaves ``deviance``,
-  ``pearson_chi2``, ``df`` and ``dispersion`` unchanged (plan section 6.4's own control-row
-  property, extended here per the test-author brief). This is the property that pins down this
-  phase's own design decision: a cell whose fitted success probability is exactly ``1.0`` (the
-  control, under ``upper=1.0`` fixed) is excluded from those four statistics, the same way R's
-  own ``glm`` drops that row entirely (see ``tests/unit/test_validation.py``'s module docstring
-  and ``tests/reference/test_diagnostics_drc.py``). ``link_aic``/``link_status`` are **not**
-  asserted equal here: adding a row can change which alternative links converge, so the brief
-  scopes this property to the four GOF/dispersion fields only. (``Fit.monotonicity`` is a
-  separate field entirely as of decisions/0023's Amendment 1 -- never touched by ``Diagnostics``
-  or by this file; its own aggregation/permutation properties live in
-  ``tests/property/test_monotonicity_properties.py``.)
+  ``pearson_chi2``, ``df`` and ``dispersion`` unchanged (the control-row property, extended to
+  diagnostics). This is the property that pins down a design decision: the control (a cell whose
+  fitted success probability is exactly ``1.0``, under ``upper=1.0`` fixed) is excluded from
+  those four statistics, the same way the R fixture's ``glm`` is fit without that row (see
+  ``tests/unit/test_validation.py``'s module docstring and
+  ``tests/reference/test_diagnostics_drc.py``). ``link_aic``/``link_status`` are **not**
+  asserted equal here: adding a row can change which alternative links converge, so this
+  property is scoped to the four GOF/dispersion fields only. (``Fit.monotonicity`` is a
+  separate field entirely -- never touched by ``Diagnostics`` or by this file; its own
+  aggregation/permutation properties live in ``tests/property/test_monotonicity_properties.py``.)
 
-Examples are kept small, per the existing file's own convention, so real optimizer calls stay
-fast.
+Examples are kept small so real optimizer calls stay fast.
 """
 
 from __future__ import annotations
@@ -43,15 +40,15 @@ def _counts_with_optional_control(
     separation-avoiding shape as ``_non_separated_counts`` below (and
     ``tests/property/test_models_properties.py``'s identical strategy) -- with an optional
     all-success control row at severity 0.0 prepended. The control is excluded from the
-    separation check entirely regardless of its own counts (R3: a log-axis zero-severity control
+    separation check entirely regardless of its own counts (a log-axis zero-severity control
     carries no covariate information), so prepending it here can never introduce separation on
     its own.
 
-    Originally drew ``successes`` freely in ``[0, trials]`` at every level, including the
-    nonzero ones, which routinely produced separated (and occasionally non-converged) fits and
-    tripped Hypothesis's ``filter_too_much`` health check on the ``assume(status is OK)`` calls
-    below roughly one run in three. Narrowing the *generator* here (rather than suppressing the
-    health check) is the fix: a fit built from this strategy converges to ``Status.OK`` in the
+    Drawing ``successes`` freely in ``[0, trials]`` at every level, including the nonzero ones,
+    would routinely produce separated (and occasionally non-converged) fits and trip
+    Hypothesis's ``filter_too_much`` health check on the ``assume(status is OK)`` calls below.
+    Narrowing the *generator* here (rather than suppressing the health check) avoids that: a fit
+    built from this strategy converges to ``Status.OK`` in the
     overwhelming majority of draws, so ``assume`` only ever discards the rare, genuine
     non-convergence (for example a wrong-sign pilot slope), not a systematic fraction of them.
     """
@@ -87,7 +84,7 @@ def _counts_with_optional_control(
 @st.composite
 def _non_separated_counts(draw: st.DrawFn) -> tuple[list[float], list[int], list[int]]:
     """Every level carries at least one success and one failure, which provably rules out
-    plan section 5.2's pre-fit separation check (see the identical strategy and reasoning in
+    the pre-fit separation check (see the identical strategy and reasoning in
     ``tests/property/test_models_properties.py``)."""
     n = draw(st.integers(min_value=3, max_value=5))
     severities = draw(
@@ -199,7 +196,7 @@ def test_adding_an_all_success_control_leaves_gof_and_dispersion_unchanged(
     diag_without = diagnose(fit_without)
     diag_with = diagnose(fit_with)
 
-    # Scope per the test-author brief: only the four GOF/dispersion fields, since an added
+    # Scope: only the four GOF/dispersion fields, since an added
     # control row adds one more adjacent monotonicity pair and can change which alternative
     # links converge.
     assert diag_with.deviance == diag_without.deviance

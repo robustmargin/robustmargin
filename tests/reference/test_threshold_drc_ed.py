@@ -1,4 +1,4 @@
-"""drc ``ED(..., interval="delta")`` parity for ``threshold()`` (plan sections 5.3, 5.4, 6.1).
+"""drc ``ED(..., interval="delta")`` parity for ``threshold()``.
 
 **Reads only the committed ``tools/drc_reference/finney71.json``. Never runs R.**
 
@@ -8,13 +8,13 @@ Two things this file pins down.
    block records that finney71 is fit on ``affected/total`` (failure, increasing with dose), so
    robustmargin fits the success orientation ``(total-affected)/total`` with ``upper=1.0,
    lower=0.0``, ``direction="decreasing"``. drc's ``ED(m, p)`` on the *affected* scale is
-   therefore robustmargin's ``Definition.relative(p/100)`` (plan section 5.3): with ``q = p/100``,
+   therefore robustmargin's ``Definition.relative(p/100)``: with ``q = p/100``,
    the target success performance is ``1 - q``, which is *also* what
    ``Definition.absolute(1-q)`` and ``Definition.baseline_fraction(1-q)`` solve for, since
    ``u=1``. All three must therefore give the identical ``value``/``lo``/``hi``, not merely
    agree with drc.
 
-2. **A definitional mismatch, per plan section 6.1's own worked example.** drc's
+2. **A definitional mismatch, written into this file rather than absorbed into a tolerance.** drc's
    ``ED(..., interval="delta")`` computes its ``Lower``/``Upper`` columns as ``Estimate +/-
    qnorm(0.975) * Std. Error`` directly on the **original dose scale** -- confirmed against
    every one of the six rows in ``finney71.json`` (``LN.2`` and ``LL.2``, each at ED10/50/90).
@@ -22,26 +22,26 @@ Two things this file pins down.
    5.328710]``, which matches the fixture's ``Lower``/``Upper`` to better than ``1e-6``
    relative. The log-scale-exponentiated reconstruction (``estimate * exp(+/- z * SE /
    estimate)``) does **not** match any of the six rows -- it is off by roughly 2% at ED10 and
-   0.5% at ED50, both far outside plan section 6.1's 1e-3 endpoint tolerance.
+   0.5% at ED50, both far outside the 1e-3 endpoint tolerance.
 
-   robustmargin's own delta method (plan section 5.4) is defined on the **log(severity)** scale
-   and then exponentiated, specifically so the interval stays positive. This is precisely the
-   mismatch plan section 6.1 names as its own example ("drc computing delta intervals on the
-   original scale rather than the log scale"), and per that section it is written into this
-   fixture-reading test, not absorbed into a wider tolerance. So this file asserts:
+   robustmargin's own delta method is defined on the **log(severity)** scale and then
+   exponentiated, specifically so the interval stays positive. This is precisely the mismatch
+   "drc computing delta intervals on the original scale rather than the log scale", and it is
+   written into this fixture-reading test, not absorbed into a wider tolerance. So this file
+   asserts:
 
-   - the point estimate (``Threshold.value``) against drc's ``Estimate`` column, at the plan's
+   - the point estimate (``Threshold.value``) against drc's ``Estimate`` column, at the
      ordinary ``1e-4`` relative -- the ED value itself does not depend on which scale its
      interval happens to be built on;
    - a **reconstructed original-scale standard error**, ``value * sigma_theta`` where
      ``sigma_theta`` is robustmargin's own log-scale delta-method standard error (recovered from
      its reported ``lo``/``hi`` via ``sigma_theta = ln(hi / lo) / (2 * z)``, the exact inverse
-     of the log-scale-then-exponentiate construction plan section 5.4 specifies), against drc's
+     of the log-scale-then-exponentiate construction), against drc's
      own ``Std. Error`` column, at ``1e-3`` relative;
    - and **explicitly that robustmargin's ``lo``/``hi`` do not match drc's ``Lower``/``Upper``**
-     beyond the plan's usual endpoint tolerance, so a future change that silently makes the two
+     beyond the usual endpoint tolerance, so a future change that silently makes the two
      conventions agree (which would itself mean the log-scale convention was dropped, a
-     regression plan section 5.4 forbids) is caught rather than passing unnoticed.
+     regression) is caught rather than passing unnoticed.
 """
 
 from __future__ import annotations
@@ -68,8 +68,8 @@ _FIXTURE_DIR = Path(__file__).resolve().parents[2] / "tools" / "drc_reference"
 _LEVEL = 0.95
 _REL_TOL_VALUE = 1e-4
 _REL_TOL_SE = 1e-3
-# The plan's own endpoint tolerance (section 6.1): used here to prove robustmargin's endpoints
-# fall *outside* it against drc's original-scale endpoints, not inside it.
+# The ordinary endpoint tolerance: used here to prove robustmargin's endpoints fall *outside* it
+# against drc's original-scale endpoints, not inside it.
 _REL_TOL_ENDPOINTS = 1e-3
 
 
@@ -97,7 +97,7 @@ def _finney71_observations() -> Observations:
 
 
 def _reconstructed_original_scale_se(t: Threshold) -> float:
-    """Invert plan section 5.4's log-scale-then-exponentiate delta construction: given
+    """Invert the log-scale-then-exponentiate delta construction: given
     robustmargin's own ``value``/``lo``/``hi``, recover the log-scale standard error
     ``sigma_theta`` it must have used (``lo = value * exp(-z*sigma_theta)``, ``hi = value *
     exp(+z*sigma_theta)``), then propagate it onto the original (dose) scale via
@@ -185,7 +185,7 @@ class TestEdDeltaParity:
         self, link: str, drc_key: str
     ) -> None:
         """The definitional mismatch, pinned as a regression guard: if this ever starts passing
-        at the plan's ordinary endpoint tolerance, robustmargin's delta method silently stopped
+        at the ordinary endpoint tolerance, robustmargin's delta method silently stopped
         being computed on the log scale (module docstring, point 2) -- that is a finding to
         report, not a reason to delete this test.
         """

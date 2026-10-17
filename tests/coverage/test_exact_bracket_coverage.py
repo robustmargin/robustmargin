@@ -1,12 +1,12 @@
-"""Coverage of the failed-fit exact bracket under a monotone true curve (``decisions/0028``).
+"""Coverage of the failed-fit exact bracket under a monotone true curve.
 
 ``censoring.classify`` on a ``SEPARATION`` / ``NOT_CONVERGED`` fit reports an exact bracket (or
-a one-sided exact bound) taken from the tested cells. ``0009`` states its coverage: each side at
-``(1 + level) / 2`` so the pair covers at least ``level``; a one-sided bound at ``level``. The
-rule that shipped took each side's extreme over *every* cell, which broke that: with ``k`` cells
-near the target the error of each side is up to about ``k * (1 - c)``. ``0028`` replaced it with
-fixed-sequence scans (Hsu & Berger, 1999, *JASA* 94:468-482), under which each side errs only if
-the *first* cell past the true threshold errs.
+a one-sided exact bound) taken from the tested cells. Its coverage claim: each side at
+``(1 + level) / 2`` so the pair covers at least ``level``; a one-sided bound at ``level``. A
+rule that took each side's extreme over *every* cell would break that: with ``k`` cells near the
+target the error of each side is up to about ``k * (1 - c)``. The fixed-sequence scans the
+implementation uses (Hsu & Berger, 1999, *JASA* 94:468-482) err on each side only if the *first*
+cell past the true threshold errs.
 
 This is a simulation of the **method**, not the implementation: it draws counts from a known
 monotone decreasing curve, runs the real ``classify``, and counts how often the reported bound
@@ -34,10 +34,9 @@ runs it in the ``coverage-simulations`` job. Run locally with::
   so on them a wrong ``hi`` cannot occur and the upper scan is not tested by simulation at all.
   The threshold is between severities 7 and 8.
 
-(Design A of the ``0028`` table, a steep curve with one level near the target on each side, is
-trivially 0% under both rules and is not repeated here.) The seeds of B, C and D are those of
-the simulation that produced the ``0028`` table, so these numbers reproduce its rows; U is new
-and its seed was fixed before it was run.
+(A steep curve with one level near the target on each side is trivially 0% under both rules
+and is not repeated here.) Each design's seed is fixed in the code, so every reported rate
+reproduces exactly.
 
 **U gives a bracket, not a one-sided upper bound.** The lowest nonzero level has a true rate of
 0.999, so at ``n = 1000`` its lower bound (about 0.99) clears the target in every replicate and
@@ -48,7 +47,7 @@ bracket's ``hi`` as the only side at risk. The one-sided-upper rescan at ``level
 never reaches the control in the descending scan: the control passes, so the scan has already
 stopped before it.
 
-**What is asserted.** The failed-fit fallback is held to the claim ``0009`` makes for it: the
+**What is asserted.** The failed-fit fallback is held to the coverage claim above: the
 fraction of replicates in which the reported *exact-bracket* bound excludes the true threshold is
 at most ``1 - level`` plus a Monte Carlo margin. ``RIGHT`` and ``LEFT`` are different claims --
 each rests on one cell chosen in advance and has its own guarantee of ``1 - level`` -- so they
@@ -56,7 +55,7 @@ are held to the same bound separately, not folded into the fallback's. On B and 
 fire (the top cell fails, the control passes), so the all-claims rate is asserted too. On D the
 top cell sits just under the target, so ``RIGHT`` fires, wrongly, in about 3% of replicates, and
 the all-claims rate (about 7.7%) is **recorded, not asserted**: it is the sum of two separately
-valid ``1 - level`` guarantees and is a finding for the owner, not something a fixed-sequence
+valid ``1 - level`` guarantees and is a finding to report, not something a fixed-sequence
 scan can change.
 
 **The margin.** ``_Z = 3`` standard errors of a proportion at the nominal rate:
@@ -65,10 +64,10 @@ above the limit would have probability about 0.13% (one-sided); the rates measur
 fixed-sequence rule are about 1.2% (B), 2.0% (C) and 4.3% (D, the closest to the claim, 7 standard
 errors under the limit), so the real false-alarm probability is far smaller. The margin is
 statistical, not fitted to the seeds: a different numpy build draws a different stream, and the
-assertion must still hold. It is also tight enough to catch the rule it replaced -- 6.0% on B
+assertion must still hold. It is also tight enough to catch a max-anywhere rule -- 6.0% on B
 (3.6 standard errors over the limit) and 13.6% on C and 28% of D's one-sided results, far over.
 
-**The per-side limit.** The joint limit above is the claim ``0009`` makes for the *pair*, and it
+**The per-side limit.** The joint limit above is the claim made for the *pair*, and it
 is loose against a regression that computes each bracket side at ``level`` instead of
 ``(1 + level) / 2``: that gives about 4.3% on C, which still passes 5.46%. So the bracket's
 **stressed side** -- the side the design puts at risk -- is also held to its own claim,

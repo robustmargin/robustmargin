@@ -1,4 +1,4 @@
-"""drc ``EDcomp`` Fieller/delta parity for ``ratio_interval()`` (plan sections 5.6, 6.1).
+"""drc ``EDcomp`` Fieller/delta parity for ``ratio_interval()``.
 
 **Reads only the committed ``tools/drc_reference/selenium_edcomp.json``. Never runs R.**
 
@@ -10,29 +10,28 @@ pairs of ED50 ratios in total. This file rebuilds the same four curves as robust
 ``upper=1.0, lower=0.0``, ``absolute(0.5)``) and compares ``ratio_interval()`` against both
 tables.
 
-**A data-compatibility note this file works around, not silently.** Every one of the four
-curves' ``conc=0`` control rows has nonzero deaths (2-3%). ``fit_dose_response`` -- and
+**A data-compatibility note this file works around, not silently.** Every one of the four curves'
+``conc=0`` control rows has nonzero deaths (2-3%). ``fit_dose_response`` -- and
 :class:`~robustmargin.Fit` itself, independent of the fitting routine -- both refuse to build a
-``upper=1.0``-fixed fit against a failing control on a log axis (plan section 5.1,
-``Status.CONTROL_INCOMPATIBLE``): the fixed asymptote says the likelihood of any control failure
-is exactly zero, and robustmargin's hard constraint against silent fallbacks (``CLAUDE.md``, item 3)
-means it raises rather than clipping the offending probability away from zero the way drc's own
-fit evidently tolerates. This file therefore fits robustmargin's model on the non-zero-dose rows
-only for every curve -- the same set of rows drc's own ``LL.2`` GLM equivalent uses as covariate
-data (dropping the always-``z*=0``-at-``dose=0`` control row from the fitted regression is
-exactly what ``models.py``'s own fixed-asymptote GLM path already does for a *compatible*
-control, ``_fit_glm``'s ``fit_cells``) -- and confirms below
+``upper=1.0``-fixed fit against a failing control on a log axis (``Status.CONTROL_INCOMPATIBLE``):
+the fixed asymptote says the likelihood of any control failure is exactly zero, and robustmargin has
+no silent fallbacks, so it raises rather than clipping the offending probability away from zero the
+way drc's own fit evidently tolerates. This file therefore fits robustmargin's model on the
+non-zero-dose rows only for every curve -- the same set of rows drc's own ``LL.2`` GLM equivalent
+uses as covariate data (dropping the always-``z*=0``-at-``dose=0`` control row from the fitted
+regression is exactly what ``models.py``'s own fixed-asymptote GLM path already does for a
+*compatible* control, ``_fit_glm``'s ``fit_cells``) -- and confirms below
 (``TestSeleniumFitMatchesDrcCoefficients``) that doing so reproduces drc's own ``(b, e)`` to the
-ordinary ``1e-4`` relative tolerance. That agreement is what licenses comparing the resulting
-ratio against drc's ``EDcomp`` tables at all: this is the same statistical model as drc's,
-fit on the same informative data, not a different one.
+ordinary ``1e-4`` relative tolerance. That agreement is what licenses comparing the resulting ratio
+against drc's ``EDcomp`` tables at all: this is the same statistical model as drc's, fit on the same
+informative data, not a different one.
 
 **Two definitional mismatches found while building this file, written in here rather than
-absorbed into a tolerance (plan section 6.1):**
+absorbed into a tolerance:**
 
 1. **``EDcomp(..., interval="fieller")`` uses a Student-t quantile, not a normal one.** Every
    one of the six pairs' ``Lower``/``Upper`` bounds reproduces exactly (to floating-point
-   precision) from the classic Fieller quadratic (``docs/STATISTICS.md``) using ``qt(0.975, df=17)``
+   precision) from the classic Fieller quadratic using ``qt(0.975, df=17)``
    in place of ``qnorm(0.975)`` -- confirmed against drc's own reported ``e``/``vcov`` entries
    directly, independent of anything robustmargin computes (this file's
    ``test_reconstructed_fieller_matches_drc_with_drcs_own_t_quantile``). ``df=17`` is
@@ -42,7 +41,7 @@ absorbed into a tolerance (plan section 6.1):**
    anywhere in ``Fit``/``Threshold``/``Ratio``), so ``ratio_interval(method="fieller")`` cannot
    reproduce this even in principle. The point **estimate** (the ratio itself) does not depend
    on the quantile and matches drc exactly; only the endpoints are affected, and are asserted
-   below to *not* match at the plan's usual endpoint tolerance, as a regression guard against
+   below to *not* match at the usual endpoint tolerance, as a regression guard against
    this difference ever silently disappearing (which would mean a t-quantile had been added, or
    drc's own default had changed, either of which is worth knowing about).
 2. **``EDcomp(..., interval="delta")`` is a plain Wald interval on the ratio's own original
@@ -158,7 +157,7 @@ def _drc_var_e(curve_type: int) -> float:
 def _fieller_quadratic(
     *, theta_a: float, va: float, theta_b: float, vb: float, z: float
 ) -> tuple[float, float]:
-    """The classic Fieller quadratic's two roots (``docs/STATISTICS.md``), assuming ``C=0``
+    """The classic Fieller quadratic's two roots, assuming ``C=0``
     (independent) and ``A > 0`` (``g < 1``, the ``BOUNDED`` case every selenium pair falls into,
     checked directly below)."""
     a_coef = theta_b**2 - z**2 * vb

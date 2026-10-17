@@ -1,26 +1,22 @@
 """Unit tests for ``robustmargin.validation``'s **model-only** diagnostics:
-:class:`~robustmargin.Diagnostics` and :func:`~robustmargin.diagnose` (plan section 5.7,
-``docs/decisions/0023-fit-diagnostics-and-schema-v3.md``, as amended by that decision's
-"Amendment 1").
+:class:`~robustmargin.Diagnostics` and :func:`~robustmargin.diagnose`.
 
-Amendment 1 moves the adjacent-pair monotonicity check out of ``Diagnostics`` entirely and onto
+The adjacent-pair monotonicity check is not part of ``Diagnostics``: it lives on
 ``Fit.monotonicity`` (a :class:`~robustmargin.MonotonicityCheck`, populated on *every*
 ``fit_dose_response`` return path, whatever the ``Status``) -- because a check that needs only
 raw counts should not disappear when the curve fit fails. Those tests live in
-``tests/unit/test_monotonicity.py`` now, not here. This file covers exactly what
-``Diagnostics`` keeps: goodness of fit, dispersion, and link comparison -- all of which still
-require a converged fit and are still ``None`` for a non-``OK`` one.
+``tests/unit/test_monotonicity.py``, not here. This file covers exactly what ``Diagnostics``
+holds: goodness of fit, dispersion, and link comparison -- all of which require a converged fit
+and are ``None`` for a non-``OK`` one.
 
-Written before the implementation exists (plan section 6, ``CLAUDE.md``'s working rhythm):
-every expected number here is computed *independently* of ``robustmargin.validation`` -- directly
+Every expected number here is computed *independently* of ``robustmargin.validation`` -- directly
 from the binomial deviance/Pearson/AIC formulas via ``scipy``, or by a from-scratch Holm
-step-down -- exactly the "unit test that computes the formulas directly" decisions/0023 itself
-promises for the estimated-asymptote path (which has no R ``glm`` equivalent). ``diagnose()`` is
-expected to agree with that independent computation to floating-point precision, not to within a
-loose tolerance: a formula bug should never hide behind a wide ``pytest.approx``.
+step-down -- as a unit test that computes the formulas directly, which is what the
+estimated-asymptote path needs (it has no R ``glm`` equivalent). ``diagnose()`` is expected to
+agree with that independent computation to floating-point precision, not to within a loose
+tolerance: a formula bug should never hide behind a wide ``pytest.approx``.
 
-**Which cells count towards goodness of fit** (``docs/decisions/0023-fit-diagnostics-and-schema-
-v3.md``'s "Amendment 2"; this file's own C1 finding). A cell is excluded from deviance, Pearson
+**Which cells count towards goodness of fit.** A cell is excluded from deviance, Pearson
 chi-square and the cell count feeding ``df`` **only** when it is *structurally* deterministic
 under the model: a log-axis cell at severity exactly ``0.0`` when ``upper`` is *fixed* at ``1.0``
 (``direction="decreasing"``). That cell has zero variance and zero deviance by construction --
@@ -33,38 +29,33 @@ contributes approximately zero to both statistics and exactly ``1`` to ``df`` ra
 even if its value happens to equal ``1.0`` -- ``TestControlCountedWhenUpperIsEstimated`` below
 pins this down directly.
 
-**This corrects an earlier, wrong version of this same paragraph** (excluding by *computed*
-value rather than by structure), which is exactly the bug Amendment 2's own "C1" finding
-describes: excluding whenever a computed probability rounded to 0 or 1 made ``df`` depend on the
-link (7 for probit/cloglog, 8 for logit, on the saturating grid ``TestStructuralDfExclusion``
-below pins to 8 for all three), because probit/logit/cloglog saturate to floating-point 0/1 at
-different ``z`` magnitudes. R's own ``glm`` never has this problem, and R's convention that
-motivated the original (wrong) rule was actually the *structural* one all along -- see the
-factual correction in ``tests/reference/test_diagnostics_drc.py``'s own module docstring.
+Excluding by *computed* value rather than by structure would be wrong: whenever a computed
+probability rounded to 0 or 1 the cell would be dropped, and ``df`` would then depend on the link
+(7 for probit/cloglog, 8 for logit, on the saturating grid ``TestStructuralDfExclusion`` below
+pins to 8 for all three), because probit/logit/cloglog saturate to floating-point 0/1 at
+different ``z`` magnitudes. R's own ``glm`` never has this problem, and R's convention is the
+*structural* one -- see the factual note in ``tests/reference/test_diagnostics_drc.py``'s own
+module docstring.
 
-**``SPARSE_CELLS:`` (Amendment 2 item 3, corrected by Amendment 3).** Amendment 2's own wording
-flagged a counted cell whenever the expected count on a side (successes or failures) fell below
-1, with no further condition. Amendment 3 found that this fires on essentially every correctly
-specified rich-design fit -- an all-success or all-failure *plateau* cell far from the transition
-has an expected count near zero on its "sparse" side, but since nothing was ever actually
-observed there, that near-zero expectation is not a finding, just an artifact of clean data. The
-corrected rule flags a side only when **both** the expected count is below a cutoff **and** the
-observed count on that same side is at least 1 -- a genuine event against a small expectation,
-which is the actual pathology the warning exists for (zeta PID x sensor_noise's 1 observed
-failure where about 0.005 were expected).
+**``SPARSE_CELLS:``.** A counted cell is flagged on a side (successes or failures) only when
+**both** the expected count on that side is below a cutoff **and** the observed count on that
+same side is at least 1 -- a genuine event against a small expectation, which is the actual
+pathology the warning exists for (the identifiable series in ``tests/data/pooled_counts.csv``,
+``system_a_axis_1``: 1 observed failure where about 0.005 were expected). A near-zero expectation
+with nothing observed there is not a finding: an all-success or all-failure *plateau* cell far
+from the transition has an expected count near zero on its "sparse" side, but since nothing was
+ever observed there that is just an artifact of clean data.
 
-**Amendment 4 tightened the cutoff from below 1 to below 0.1.** Amendment 3 alone still fired on
-about 57.5% of correctly specified fits on the rich design (control + ``logspace(-2, 2, 10)``,
-n=400, probit, ``mu=0``, ``s=0.5``): two grid points near the transition (about 0.215 and 4.64)
-expect about 0.43 events on their sparse side, so a single observed event there is ordinary, not
-a finding -- this is exactly the near-transition risk this file's own
-``TestSparseCellsSilentOnCleanPlateaus`` documented empirically (11 of 20 seeded replicates fired
-under Amendment 3) before Amendment 4 was decided. At the tightened cutoff those two cells no
-longer qualify at all (0.43 is not below 0.1), which is what makes the rich design's false-warning
-rate drop to about 0%. ``TestSparseCellsWarning`` below now needs three roles, not two, to pin
-both conditions: a cell below the cutoff with an event (flagged), a cell below the cutoff with no
-event (silent, Amendment 3's own case), and a cell *at or above* the new cutoff but still below
-the old one, with an event (silent, pinning the 0.1 boundary itself).
+**The cutoff is below 0.1, not below 1.** A cutoff of 1 fires on about 57.5% of correctly
+specified fits on the rich design (control + ``logspace(-2, 2, 10)``, n=400, probit, ``mu=0``,
+``s=0.5``): two grid points near the transition (about 0.215 and 4.64) expect about 0.43 events
+on their sparse side, so a single observed event there is ordinary, not a finding (11 of 20
+seeded replicates fired; ``TestSparseCellsSilentOnCleanPlateaus`` pins the premise). At the
+cutoff of 0.1 those two cells do not qualify at all (0.43 is not below 0.1), which is what makes
+the rich design's false-warning rate about 0%. ``TestSparseCellsWarning`` below needs three roles,
+not two, to pin both conditions: a cell below the cutoff with an event (flagged), a cell below
+the cutoff with no event (silent), and a cell *at or above* the cutoff but still below 1, with an
+event (silent, pinning the 0.1 boundary itself).
 """
 
 from __future__ import annotations
@@ -131,7 +122,7 @@ def _probit_p(mu: float, s: float, upper: float, lower: float, severity: float) 
 
 def _probit_p_linear(mu: float, s: float, upper: float, lower: float, severity: float) -> float:
     """Success probability on a **linear** axis: ``z = (severity - mu) / s`` -- no ``log``, so
-    ``severity == 0.0`` is an ordinary point, not R3's log-axis zero-severity control."""
+    ``severity == 0.0`` is an ordinary point, not a log-axis zero-severity control."""
     z = (severity - mu) / s
     return float(upper - (upper - lower) * norm.cdf(z))
 
@@ -215,8 +206,7 @@ def _generic_fit(
 
 # ------------------------------------------------------------------------------------------
 # Goodness of fit: a small case whose deviance/Pearson/df are computed directly, not read off
-# diagnose()'s own internals (decisions/0023's "checked by a unit test that computes the
-# formulas directly").
+# diagnose()'s own internals (a unit test that computes the formulas directly).
 # ------------------------------------------------------------------------------------------
 
 
@@ -250,19 +240,17 @@ class TestGoodnessOfFitMatchesDirectFormula:
 
 
 # ------------------------------------------------------------------------------------------
-# C1 (decisions/0023 Amendment 2): the structural exclusion rule, pinned against the exact
-# regression the stats review found -- df depending on the link because the pre-Amendment-2
-# implementation excluded a cell by its *computed* fitted probability rather than by structure.
+# The structural exclusion rule, pinned against the failure it prevents -- df depending on the
+# link because a cell was excluded by its *computed* fitted probability rather than by structure.
 # ------------------------------------------------------------------------------------------
 
 
 class TestStructuralDfExclusion:
-    """Control + ``numpy.logspace(-3, 0, 10)``, n=400 per level, a success schedule chosen (by
-    the stats review, not by this file) so probit and cloglog saturate a non-control cell to a
-    computed fitted probability of exactly 0.0/1.0 in double precision while logit does not --
-    the exact condition that made the pre-Amendment-2 implementation's df depend on the link (7
-    for probit/cloglog, 8 for logit). The corrected, structural rule excludes only the control,
-    giving df=8 for every link."""
+    """Control + ``numpy.logspace(-3, 0, 10)``, n=400 per level, a success schedule chosen so
+    probit and cloglog saturate a non-control cell to a computed fitted probability of exactly
+    0.0/1.0 in double precision while logit does not -- the exact condition under which an
+    exclusion by computed value makes df depend on the link (7 for probit/cloglog, 8 for
+    logit). The structural rule excludes only the control, giving df=8 for every link."""
 
     _SEVERITY = [0.0, *np.logspace(-3.0, 0.0, 10).tolist()]
     _SUCCESSES = [400, 400, 400, 400, 400, 399, 374, 179, 13, 1, 0]
@@ -304,15 +292,15 @@ class TestControlCountedWhenUpperIsEstimated:
     for the control's own fitted probability to equal ``1.0``. Built directly (bypassing
     ``fit_dose_response``, which does not converge with ``upper="estimate"`` on data this
     extreme): an *estimated* ``upper`` whose value happens to be exactly ``1.0`` still makes the
-    control's fitted probability exactly ``1.0`` (R3's ``P(0) = upper`` rule applies regardless
-    of ``fixed``), which is exactly the case the old, wrong "exclude by computed value" rule
-    would still have dropped -- proving the fix checks ``fixed``, not the resulting number.
+    control's fitted probability exactly ``1.0`` (``P(0) = upper`` applies regardless of
+    ``fixed``), which is exactly the case an "exclude by computed value" rule would still drop
+    -- proving the exclusion checks ``fixed``, not the resulting number.
     """
 
     def test_control_cell_counts_towards_df_when_upper_is_estimated(self) -> None:
         mu, s, upper, lower = math.log(2.0), 0.5, 1.0, 0.0
         cells = (
-            Cell(severity=0.0, successes=100, trials=100),  # p == upper == 1.0 exactly (R3)
+            Cell(severity=0.0, successes=100, trials=100),  # p == upper == 1.0 exactly
             Cell(severity=1.0, successes=87, trials=100),
             Cell(severity=2.0, successes=48, trials=100),
             Cell(severity=4.0, successes=8, trials=100),
@@ -343,8 +331,8 @@ class TestControlCountedWhenUpperIsEstimated:
 
 
 class TestGenericPathSaturatedNonControlCellStillCounted:
-    """ "with lower=0 fixed on the generic path a saturated cell is still counted" (decisions/0023
-    Amendment 2). Built directly with an extreme severity (``z = 50``, where ``norm.cdf``
+    """With ``lower=0`` fixed on the generic path a saturated cell is still counted. Built
+    directly with an extreme severity (``z = 50``, where ``norm.cdf``
     saturates to exactly ``1.0`` in double precision) so the highest-severity cell's fitted
     probability is exactly ``lower = 0.0`` -- not the control, and not under a fixed ``upper`` --
     so the structural exclusion must not apply to it at all.
@@ -386,8 +374,8 @@ class TestGenericPathSaturatedNonControlCellStillCounted:
 
 
 # ------------------------------------------------------------------------------------------
-# Dispersion threshold: exactly 1.5 does not warn (plan section 5.7 / decisions/0023: "when phi
-# > 1.5", strict), a hair above it does. Built with dyadic (exactly binary-representable)
+# Dispersion threshold: exactly 1.5 does not warn (the warning is "when phi > 1.5", strict), a
+# hair above it does. Built with dyadic (exactly binary-representable)
 # probabilities (0.75/0.5/0.25) so the boundary case lands on exactly 1.5 in floating point, not
 # 1.4999999999999998 or 1.5000000000000002 -- this is a deliberate anti-flake measure, not an
 # accident of the chosen numbers.
@@ -446,13 +434,12 @@ class TestDispersionThreshold:
 
 
 # ------------------------------------------------------------------------------------------
-# SPARSE_CELLS: (decisions/0023 Amendment 2 item 3, corrected by Amendment 3, cutoff tightened by
-# Amendment 4) -- report-only, changes no number. A side (successes or failures) is flagged only
+# SPARSE_CELLS: -- report-only, changes no number. A side (successes or failures) is flagged only
 # when its expected count is below 0.1 AND its observed count is at least 1 -- a genuine event
 # against a small expectation, not merely a small expectation on its own (which an all-success/
-# all-failure plateau cell has on its "wrong" side too, harmlessly, per Amendment 3's own
-# finding), and not merely *any* event against *any* sub-1 expectation (Amendment 3 alone still
-# fired routinely on ordinary events at moderate expectations like ~0.43, per Amendment 4).
+# all-failure plateau cell has on its "wrong" side too, harmlessly), and not merely *any* event
+# against *any* sub-1 expectation (a cutoff of 1 fires routinely on ordinary events at moderate
+# expectations like ~0.43).
 # ------------------------------------------------------------------------------------------
 
 
@@ -471,28 +458,26 @@ def _named_severities(warning: str) -> list[str]:
 
 class TestSparseCellsWarning:
     """Three cells, all fixed ``upper=1, lower=0``, chosen so the fitted probabilities are never
-    near a saturating boundary (W1's "dominated by single events" finding is a different failure
-    mode from C1's structural-exclusion bug above, and must not be confused with it -- none of
-    these cells is ever a candidate for exclusion). decisions/0023 Amendment 4 tightened the
-    expected-count cutoff from below 1 to below 0.1, so three roles are needed to pin the cutoff
-    itself, not just "sparse or not":
+    near a saturating boundary (a fit "dominated by single events" is a different failure mode
+    from the structural-exclusion rule above, and must not be confused with it -- none of
+    these cells is ever a candidate for exclusion). The expected-count cutoff is below 0.1, so
+    three roles are needed to pin the cutoff itself, not just "sparse or not":
 
     - ``0.09``: expected failures ``~= 0.096`` (**below** the 0.1 cutoff) and **one** observed
       failure (``99/100``) -- the genuine pathology: flagged.
     - ``0.05``: expected failures ``~= 0.011`` (also below the cutoff) but **zero** observed
-      failures (all ``100/100`` success) -- Amendment 3's silencing case: a sparse side with
-      nothing observed there is not flagged.
+      failures (all ``100/100`` success) -- the silencing case: a sparse side with nothing
+      observed there is not flagged.
     - ``0.1522``: expected failures ``~= 0.50`` (**at or above** the 0.1 cutoff, though still
-      below the old Amendment 3 cutoff of 1) with **one** observed failure (``99/100``) -- pins
-      the cutoff's own boundary: this cell would have been flagged under Amendment 3 and must
-      not be under Amendment 4.
+      below 1) with **one** observed failure (``99/100``) -- pins the cutoff's own boundary:
+      this cell would be flagged by a cutoff of 1 and must not be at 0.1.
     """
 
     _MU, _S, _UPPER, _LOWER = math.log(2.0), 1.0, 1.0, 0.0
     _FLAGGED_SEVERITY = 0.09  # E[fail] ~= 0.096 (< 0.1), 1 observed failure: flagged.
     _SILENT_ZERO_OBSERVED_SEVERITY = 0.05  # E[fail] ~= 0.011 (< 0.1), 0 observed: silent.
     _SILENT_ABOVE_CUTOFF_SEVERITY = 0.1522  # E[fail] ~= 0.50 (>= 0.1), 1 observed: silent.
-    # Ascending in severity: ``Fit.cells`` must be strictly ascending (decisions/0029), so the
+    # Ascending in severity: ``Fit.cells`` must be strictly ascending, so the
     # three roles are listed in that order and indexed below as 0 = zero-observed, 1 = flagged,
     # 2 = above-cutoff.
     _SEVERITIES = [
@@ -538,7 +523,7 @@ class TestSparseCellsWarning:
         assert n * (1.0 - p[0]) < 0.1
         assert n - self._SUCCESSES[0] == 0
         # Silent (at/above cutoff): expected failures in [0.1, 1), with 1 observed failure --
-        # this is exactly the shape Amendment 3 alone would have flagged.
+        # this is exactly the shape a cutoff of 1 would flag.
         assert 0.1 <= n * (1.0 - p[2]) < 1.0
         assert n - self._SUCCESSES[2] == 1
 
@@ -550,17 +535,16 @@ class TestSparseCellsWarning:
         assert str(self._FLAGGED_SEVERITY) in sparse_warnings[0]
 
     def test_warning_does_not_name_the_severity_with_no_observed_event(self) -> None:
-        """Amendment 3's own point, unchanged by Amendment 4: a small expected count on a side
-        where *nothing was observed* is not a finding by itself."""
+        """A small expected count on a side where *nothing was observed* is not a finding by
+        itself."""
         diag = diagnose(self._fit())
 
         sparse_warning = next(w for w in diag.warnings if w.startswith("SPARSE_CELLS: "))
         assert str(self._SILENT_ZERO_OBSERVED_SEVERITY) not in sparse_warning
 
     def test_warning_does_not_name_the_severity_at_or_above_the_cutoff(self) -> None:
-        """Amendment 4's own point: an observed event against an expectation of ~0.50 (below
-        Amendment 3's old cutoff of 1, but at or above Amendment 4's 0.1) is no longer a
-        finding."""
+        """An observed event against an expectation of ~0.50 (below 1, but at or above the 0.1
+        cutoff) is not a finding."""
         diag = diagnose(self._fit())
 
         sparse_warning = next(w for w in diag.warnings if w.startswith("SPARSE_CELLS: "))
@@ -589,7 +573,7 @@ class TestSparseCellsWarning:
             )
 
     def test_warning_changes_no_number(self) -> None:
-        """The warning is report-only (Amendment 2, item 3): deviance/pearson_chi2/df/dispersion
+        """The warning is report-only: deviance/pearson_chi2/df/dispersion
         equal the plain formula, computed independently, with no special-casing for sparseness."""
         cells = self._cells()
         p = self._p()
@@ -627,13 +611,11 @@ class TestSparseCellsWarning:
 
 class TestSparseCellsSilentOnCleanPlateaus:
     """A correctly specified fit on the rich design (control + ``logspace(-2, 2, 10)``, n=400,
-    probit, ``mu=0``, ``s=0.5``) must never warn -- the blanket claim decisions/0023 Amendment 4
-    restores. Amendment 3 alone (cutoff below 1) still fired on about 57.5% of such fits, because
-    two grid points near the transition (about 0.215 and 4.64) expect about 0.43 events on their
-    sparse side, and observing one there is ordinary, not a finding -- this file's own
-    ``test-author`` re-verification found 11 of 20 seeded replicates fired under Amendment 3
-    alone, which is what led to Amendment 4's tightened 0.1 cutoff: at 0.1, neither near-transition
-    cell qualifies at all (0.43 is not below 0.1), so nothing here can legitimately fire any more.
+    probit, ``mu=0``, ``s=0.5``) must never warn. A cutoff of 1 fires on about 57.5% of such
+    fits, because two grid points near the transition (about 0.215 and 4.64) expect about 0.43
+    events on their sparse side, and observing one there is ordinary, not a finding (11 of 20
+    seeded replicates fired at that cutoff). At the cutoff of 0.1, neither near-transition cell
+    qualifies at all (0.43 is not below 0.1), so nothing here can legitimately fire.
     """
 
     _MU, _S, _UPPER, _LOWER = 0.0, 0.5, 1.0, 0.0
@@ -641,7 +623,7 @@ class TestSparseCellsSilentOnCleanPlateaus:
     _TRIALS = [400] * 11
 
     def _expected_p(self) -> list[float]:
-        p = [self._UPPER]  # control, R3
+        p = [self._UPPER]  # control: P(0) = upper
         for sv in self._SEVERITY[1:]:
             p.append(_probit_p(self._MU, self._S, self._UPPER, self._LOWER, sv))
         return p
@@ -698,12 +680,11 @@ class TestSparseCellsSilentOnCleanPlateaus:
             assert not sparse, f"replicate {i}: unexpected SPARSE_CELLS warning: {sparse!r}"
 
     def test_fixture_premise_the_two_near_transition_cells_no_longer_qualify(self) -> None:
-        """decisions/0023 Amendment 4's own rationale: the two near-transition points (severities
-        ~0.2154 and ~4.6416) have an expected count of about 0.43 on their sparse side --
-        comfortably at or above the 0.1 cutoff, so no observed count there can ever flag them,
-        regardless of sampling. (Under the superseded Amendment-3-only cutoff of 1, these same two
-        cells *did* legitimately qualify -- confirmed empirically during that amendment's own
-        development, seed 20260928, 11 of 20 replicates.)"""
+        """The rationale for the 0.1 cutoff: the two near-transition points (severities ~0.2154
+        and ~4.6416) have an expected count of about 0.43 on their sparse side -- comfortably at
+        or above the 0.1 cutoff, so no observed count there can ever flag them, regardless of
+        sampling. (Under a cutoff of 1, these same two cells *do* legitimately qualify -- seed
+        20260928, 11 of 20 replicates.)"""
         p = self._expected_p()
         near_transition_indices = (4, 7)  # severities ~0.2154 and ~4.6416
         for idx in near_transition_indices:
@@ -716,14 +697,14 @@ class TestSparseCellsSilentOnCleanPlateaus:
             )
 
 
-class TestSparseCellsSilentOnC1GridPlateauCells:
-    """The C1 saturating grid (``TestStructuralDfExclusion``'s own fixture), re-checked under
-    Amendment 4's 0.1 cutoff, link by link (each link fits different ``mu``/``s``, so which cells
-    end up below the cutoff differs per link -- this was re-verified directly, not assumed):
+class TestSparseCellsSilentOnSaturatingGridPlateauCells:
+    """The saturating grid (``TestStructuralDfExclusion``'s own fixture), checked under the 0.1
+    cutoff, link by link (each link fits different ``mu``/``s``, so which cells end up below the
+    cutoff differs per link -- verified directly, not assumed):
 
-    - **probit, logit:** the two cells that had a genuine single event against a ~0.39-0.40 or
-      ~0.15 expectation under the old (Amendment-3-only) cutoff of 1 no longer qualify at 0.1 --
-      neither link flags *any* cell on this grid.
+    - **probit, logit:** the two cells that have a genuine single event against a ~0.39-0.40 or
+      ~0.15 expectation would qualify under a cutoff of 1 but do not at 0.1 -- neither link
+      flags *any* cell on this grid.
     - **cloglog:** severity ``~0.4642`` (1 observed success where cloglog's own fit puts the
       expectation at about 2e-6, far below 0.1) still flags -- cloglog's asymmetry fits this
       saturating grid differently enough that this single success is a genuine, extreme outlier
@@ -754,11 +735,10 @@ class TestSparseCellsSilentOnC1GridPlateauCells:
         assert not any(w.startswith("SPARSE_CELLS: ") for w in diag.warnings)
 
     def test_cloglog_flags_exactly_its_own_extreme_single_success(self) -> None:
-        """Asserts the *exact* named severity, not merely that it is present: under the
-        superseded Amendment-3-only cutoff of 1, cloglog's own warning here also (wrongly,
-        post-Amendment-4) names four plateau severities (the four all-success cells and the
-        all-failure one) that must be silent at the 0.1 cutoff -- a looser "is present" check
-        would not have caught that regression.
+        """Asserts the *exact* named severity, not merely that it is present: under a cutoff of
+        1, cloglog's own warning here would also (wrongly) name four plateau severities (the
+        four all-success cells and the all-failure one) that must be silent at the 0.1 cutoff --
+        a looser "is present" check would not catch that regression.
 
         The expected severity is derived from the fixture's own arrays (the cell whose observed
         successes is exactly 1), not hard-coded as a computed ``np.logspace`` literal: a
@@ -780,20 +760,20 @@ class TestSparseCellsSilentOnC1GridPlateauCells:
         assert _named_severities(sparse_warnings[0]) == [expected_severity_repr], sparse_warnings[0]
 
 
-class TestSparseCellsFiresOnZetaPidSensorNoise:
-    """decisions/0023 Amendment 2's own motivating real-data case, re-confirmed under Amendment
-    4's 0.1 cutoff: 1 observed failure at severity 0.01 where roughly 0.005 (probit) / 0.015
-    (logit) were expected -- both comfortably below 0.1, a genuine event against a small
-    expectation, so it must still fire. Under cloglog the same cell's own expectation is about
-    0.95 (well above the cutoff), so it must not fire there -- the cutoff, not the token, is what
-    makes the difference (decisions/0023 Amendment 4's own recorded consequence)."""
+class TestSparseCellsFiresOnSystemAAxis1:
+    """The motivating real-data case (``system_a_axis_1`` in ``tests/data/pooled_counts.csv``):
+    1 observed failure at severity 0.01 where roughly 0.005 (probit) / 0.015 (logit) were
+    expected -- both comfortably below 0.1, a genuine event against a small expectation, so it
+    must fire. Under cloglog the same cell's own expectation is about 0.95 (well above the
+    cutoff), so it must not fire there -- the cutoff, not the token, is what makes the
+    difference."""
 
     _SEVERITY = [0.0, 0.01, 0.05, 0.1]
     _SUCCESSES = [200, 299, 122, 0]
     _TRIALS = [200, 300, 300, 300]
 
     def _obs(self) -> Observations:
-        axis = Axis(name="sensor_noise", unit="m", scale="log")
+        axis = Axis(name="axis_1", unit="m", scale="log")
         return Observations.from_counts(
             axis,
             severity=self._SEVERITY,
@@ -824,7 +804,7 @@ class TestSparseCellsFiresOnZetaPidSensorNoise:
 
 
 # ------------------------------------------------------------------------------------------
-# df <= 0: not a failed fit, but no GOF numbers either (decisions/0023).
+# df <= 0: not a failed fit, but no GOF numbers either.
 # ------------------------------------------------------------------------------------------
 
 
@@ -866,8 +846,8 @@ class TestDegreesOfFreedomAtOrBelowZero:
         assert diag.dispersion is None
 
     def test_a_non_ok_fit_status_is_not_produced_by_a_low_df_warning(self) -> None:
-        """decisions/0023: df <= 0 is *not* a failed fit -- the ``Fit`` itself stays whatever it
-        already was (``OK`` here); only ``Diagnostics`` carries the warning."""
+        """df <= 0 is *not* a failed fit -- the ``Fit`` itself stays whatever it already was
+        (``OK`` here); only ``Diagnostics`` carries the warning."""
         cells = (
             Cell(severity=1.0, successes=6, trials=10),
             Cell(severity=2.0, successes=3, trials=10),
@@ -881,14 +861,14 @@ class TestDegreesOfFreedomAtOrBelowZero:
 
 # ------------------------------------------------------------------------------------------
 # A failed fit carries no diagnostics: fit_dose_response only fills Fit.diagnostics for
-# Status.OK (decisions/0023, hard constraint 3). Monotonicity is the mirror-image case --
+# Status.OK (a failed fit yields no number). Monotonicity is the mirror-image case --
 # populated on every status -- and is covered in tests/unit/test_monotonicity.py, not here.
 # ------------------------------------------------------------------------------------------
 
 
 class TestFailedFitHasNoDiagnostics:
     def test_control_incompatible_fit_has_diagnostics_none(self) -> None:
-        axis = Axis(name="sensor_noise", unit="m", scale="log")
+        axis = Axis(name="axis_1", unit="m", scale="log")
         obs = Observations.from_counts(
             axis,
             severity=[0.0, 0.01, 0.05, 0.1],
@@ -904,7 +884,7 @@ class TestFailedFitHasNoDiagnostics:
         assert fit.diagnostics is None
 
     def test_separation_fit_has_diagnostics_none(self) -> None:
-        axis = Axis(name="wind", unit="m/s", scale="linear")
+        axis = Axis(name="axis_2", unit="m/s", scale="linear")
         obs = Observations.from_counts(
             axis,
             severity=[0.0, 2.0, 5.0, 10.0],
@@ -925,12 +905,12 @@ class TestFailedFitHasNoDiagnostics:
 # same upper/lower spec; a link whose own refit does not converge reports AIC=None and its
 # Status.
 #
-# The dataset below replaces an earlier one "found by search" (severity=[2,3,10],
-# successes=[10,4,3], trials=[15,5,5]) that pinned cloglog's own NOT_CONVERGED as a fixed
+# The dataset below is deliberately not one "found by search" (such as severity=[2,3,10],
+# successes=[10,4,3], trials=[15,5,5]) pinning cloglog's own NOT_CONVERGED as a fixed
 # literal: 3 cells against 3 estimated parameters (mu, s, upper) put convergence on a knife
-# edge that flipped with platform and library versions (CI found py3.11/Linux converging
-# probit and logit too at latest dependencies, and cloglog converging instead at the
-# minimum-versions floor) -- a test-design flaw, not a statistical finding. The dataset here is
+# edge that flips with platform and library versions (py3.11/Linux converges probit and logit
+# too at latest dependencies, and cloglog converges instead at the minimum-versions floor) --
+# a test-design flaw, not a statistical finding. The dataset here is
 # deliberately over-determined instead: 6 cells (including a zero-severity control anchoring the
 # estimated ``upper``), n=200 per cell, a smooth monotone success schedule spanning the full
 # dynamic range with no cell near a separation or sparse-count boundary -- verified locally to
@@ -1053,8 +1033,7 @@ class TestLinkComparison:
 
 
 # ------------------------------------------------------------------------------------------
-# diagnose() never changes the fit it was given (decisions/0023: "Diagnostics never change a
-# result").
+# diagnose() never changes the fit it was given (diagnostics never change a result).
 # ------------------------------------------------------------------------------------------
 
 

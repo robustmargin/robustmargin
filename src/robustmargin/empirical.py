@@ -1,16 +1,13 @@
-"""The grid break-point rule, copied into robustmargin under neutral names.
+"""The grid break-point rule: the smallest tested severity magnitude at which performance fails.
 
-``grid_break_point`` reproduces the semantics of zeta-bench's
-``robustness/cards.py::break_point`` (commit ``435fc2793b2afdb8404099c83b0c36a71d9ffba9``,
-PR #17): the smallest tested severity magnitude at which performance falls strictly below a
-criterion, or an explicit right-censored result when no tested level fails. See
-https://github.com/robustmargin/robustmargin/blob/main/docs/PROVENANCE.md for which conventions
-were carried over, what was deliberately changed (empty input, non-finite values, and unsigned
-negative severities now raise rather than returning a silent fallback), and why.
+``grid_break_point`` returns the smallest tested severity magnitude at which performance falls
+strictly below a criterion, or an explicit right-censored result when no tested level fails. It
+is a statistic over the levels actually tested, not a fitted estimate. Empty input, non-finite
+values, and negative severities (unless the caller passes ``signed=True``) raise rather than
+returning a silent fallback.
 
-This module holds only the grid rule, which is the part ported from zeta-bench. Model-based
-dose-response estimation is new work, not a port, and lives in the other modules of this
-package.
+This module holds only the grid rule. Model-based dose-response estimation lives in the other
+modules of this package.
 """
 
 from __future__ import annotations
@@ -65,8 +62,7 @@ class GridBreakPoint:
         produces ``LEFT``, ``OPEN_UPPER``, or ``OPEN_LOWER``.
     schema_version
         The version of the serialised result schema this object belongs to. Defaults to
-        ``"4"``, the only version ``from_dict`` reads; ``"1"``, ``"2"`` and ``"3"`` (the card
-        format of this package's former name, ``marginkit``) are rejected.
+        ``"1"``, the only version ``from_dict`` reads; any other version is rejected.
     provenance
         An opaque mapping the caller may attach (for example with :func:`dataclasses.replace`)
         to record where the inputs came from. robustmargin stores it and never interprets it.
@@ -76,7 +72,7 @@ class GridBreakPoint:
     value: float | None
     max_tested: float
     censoring: Censoring
-    schema_version: str = "4"
+    schema_version: str = "1"
     provenance: Mapping[str, object] = field(default_factory=dict)
 
 
@@ -137,7 +133,7 @@ def grid_break_point(
 
     All inputs are converted to float64 before comparing, so the comparison is exact in
     float64. A float32 performance of ``0.95`` is ``0.949999988...`` and therefore fails a
-    criterion of ``0.95``.
+    criterion of ``0.95``. Integers above ``2**53`` lose precision in that conversion.
     """
     severity_arr = np.asarray(severity, dtype=np.float64)
     performance_arr = np.asarray(performance, dtype=np.float64)

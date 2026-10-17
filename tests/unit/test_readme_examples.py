@@ -1,8 +1,6 @@
 """Executes every fenced ```python block in ``README.md``, so its examples cannot silently rot
-as the public API changes underneath them (requested alongside decisions/0023 Amendment 1's
-finney71 worked example, which will land in the README later -- this test already covers
-whatever ```python blocks exist today, and will pick up the new one automatically once it is
-added, with no test change needed).
+as the public API changes underneath them (any ```python block added to the README later is picked
+up automatically, with no test change needed).
 
 Each block is executed in its own fresh namespace (not accumulated top-to-bottom): every block
 in the README already re-imports what it needs, so this does not assume any cross-block reading

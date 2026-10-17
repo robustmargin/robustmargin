@@ -15,13 +15,9 @@ errors that carry little information. With such asymptotes the pre-fit overlap c
 necessary but not sufficient for an interior maximum; it is exact only for ``u = 1, l = 0``.
 
 **v1 is binomial-only.** ``model`` accepts only ``"binomial"``; a new model family (``"ll4"``,
-``"isotonic"``) is a v0.2 addition that requires bumping ``schema_version`` again, not a silent
-extension of the current one. ``schema_version`` is ``"4"``: the only version
-:func:`robustmargin.report.from_dict` reads, with ``"1"``, ``"2"`` and ``"3"`` (the card format of
-this package's former name, ``marginkit``) rejected. The v0.2 model-family addition anticipated
-here needs the bump *after* the current one. That number is deliberately not named:
-:data:`robustmargin.report.SCHEMA_VERSION` is the single source, and a predicted number copied
-elsewhere goes stale when the numbers ahead of it are spent on other changes.
+``"isotonic"``) is a v0.2 addition that requires a new ``schema_version``, not a silent
+extension of the current one. :data:`robustmargin.report.SCHEMA_VERSION` is the one version
+:func:`robustmargin.report.from_dict` reads and the single source of that number.
 
 :class:`Fit` also carries :attr:`~Fit.diagnostics` (model-only goodness of fit, dispersion and
 link comparison, filled only when ``status`` is ``OK`` -- see :func:`robustmargin.diagnose`) and
@@ -72,9 +68,9 @@ _BINOMIAL_PARAM_NAMES = frozenset({"mu", "s", "upper", "lower"})
 _VALID_DIRECTIONS = frozenset({"decreasing", "increasing"})
 _INVALID_FIT_STATUSES = frozenset({Status.UNREACHABLE, Status.FAILS_AT_BASELINE})
 
-# Tolerance for Covariance's positive-definiteness check: the minimum eigenvalue must exceed
-# this, scaled by the matrix's largest magnitude entry so the tolerance is not swamped by the
-# matrix's own scale. Strictly positive (not merely semi-definite, ``>= -tolerance``): a singular
+# Tolerance for Covariance's positive-definiteness check: the minimum eigenvalue of the
+# correlation matrix ``D^-1/2 . matrix . D^-1/2`` must exceed this, unscaled, so the test does
+# not depend on the severity units. Strictly positive (not merely semi-definite): a singular
 # matrix, such as ``((0.0, 0.0), (0.0, 1.0))``, is rejected, because a singular
 # covariance means at least one estimated parameter carries no information at all.
 _POSITIVE_DEFINITE_RELATIVE_TOLERANCE = 1e-12
@@ -336,12 +332,10 @@ class Fit:
     both directions.
 
     ``diagnostics`` (goodness of fit, dispersion, link comparison) and ``monotonicity`` (the
-    adjacent-level monotonicity check) are two fields that both default to ``None``. Carrying
-    them is *not* backwards-compatible with an older schema version: every object in the packaged
-    schema has ``additionalProperties: false``, so a reader of an older schema version rejects a
-    card whose ``Fit`` carries either key at all, including a ``null`` value. That is exactly the
-    incompatibility ``schema_version`` exists to announce, so the fields came with a
-    ``schema_version`` bump.
+    adjacent-level monotonicity check) are two fields that both default to ``None``. The schema's
+    ``Fit`` object has ``additionalProperties: false``, so a card whose ``Fit`` carries a key the
+    schema does not define is rejected, including a key with a ``null`` value. Adding a field to
+    ``Fit`` is therefore a ``schema_version`` change.
 
     Attributes
     ----------
@@ -394,9 +388,8 @@ class Fit:
         Free-text notes surfaced alongside the fit (for example, ``CONTROL_INCOMPATIBLE``
         carries a message suggesting ``upper="estimate"``). Empty by default.
     schema_version
-        The serialised-result schema version this object belongs to. Defaults to ``"4"``, the
-        only version ``from_dict`` reads; ``"1"``, ``"2"`` and ``"3"`` (the card format of this
-        package's former name, ``marginkit``) are rejected.
+        The serialised-result schema version this object belongs to. Defaults to ``"1"``, the
+        only version ``from_dict`` reads; any other version is rejected.
     provenance
         An opaque mapping the caller may attach to record where the inputs came from.
         robustmargin stores it and never interprets it. Empty by default.
@@ -427,7 +420,7 @@ class Fit:
     status: Status
     cluster_ids: tuple[str | int, ...] | None = None
     warnings: tuple[str, ...] = ()
-    schema_version: str = "4"
+    schema_version: str = "1"
     provenance: Mapping[str, JSONValue] = field(default_factory=dict)
     diagnostics: Diagnostics | None = None
     monotonicity: MonotonicityCheck | None = None
@@ -821,9 +814,9 @@ def _is_positive_definite(matrix: NDArray[np.float64]) -> bool:
     entry positive, and minimum eigenvalue ``> 1e-12``. A natural-scale covariance mixes
     severity-unit parameters (``mu``, ``s``, whose variances scale with the square of the
     caller's units) with probabilities (``upper``, ``lower``); a rule on the raw eigenvalues
-    made the fit's status depend on severity units. Since
-    ``min eig(correlation) >= min eig(matrix) / max(diag(matrix))``, every matrix the earlier
-    raw-eigenvalue rule (``> 1e-12 * max(1, max|entry|)``) accepted is still accepted.
+    would make the fit's status depend on severity units. Since, for a positive semi-definite
+    ``matrix``, ``min eig(correlation) >= min eig(matrix) / max(diag(matrix))``, every matrix a
+    raw-eigenvalue rule (``> 1e-12 * max(1, max|entry|)``) would accept is accepted here too.
     """
     if not bool(np.all(np.isfinite(matrix))):
         return False

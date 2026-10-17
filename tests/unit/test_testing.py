@@ -1,16 +1,15 @@
 """Unit tests for ``robustmargin.testing``: ``fake_fit``, ``fake_threshold`` and ``fake_ratio``.
 
-Every combination plan section 5.5 allows must produce a schema-valid, round-tripping object;
-every combination it forbids must raise ``ValueError``. A fake that is not schema-valid would
-let a consumer's own tests (marginbench's, per plan section 3.3 "unblock marginbench early")
-pass against a shape the real implementation could never produce.
+Every allowed combination must produce a schema-valid, round-tripping object; every forbidden
+combination must raise ``ValueError``. A fake that is not schema-valid would let a consumer's
+own tests pass against a shape the real implementation could never produce.
 
 ``fake_ratio``'s parametrised combinations are a representative sample, not an exhaustive
 status x censoring x shape grid like ``fake_threshold``'s: unlike ``Threshold``, ``Ratio``'s
 invariants (``tests/unit/test_results.py``) place no joint restriction between ``status`` and
 ``censoring`` beyond "estimate is ``None`` unless both are trivial", so there is no natural
-forbidden combination to enumerate here without inventing one -- and Phase 6 owns ratio
-censoring propagation, not this phase.
+forbidden combination to enumerate here without inventing one -- and ratio censoring
+propagation is ``ratio_interval``'s concern, not the fakes'.
 """
 
 from __future__ import annotations
@@ -33,7 +32,7 @@ from robustmargin import (
 from robustmargin.report import from_dict, load_schema, to_dict
 from robustmargin.testing import fake_fit, fake_ratio, fake_threshold
 
-# Round 2, rule 9: Fit.status may never be UNREACHABLE or FAILS_AT_BASELINE (those describe
+# Fit.status may never be UNREACHABLE or FAILS_AT_BASELINE (those describe
 # whether a *threshold* can be solved given a successful fit, not whether the fit itself
 # succeeded), so fake_fit's own status parametrisation must exclude them.
 _FIT_STATUSES: tuple[Status, ...] = tuple(
@@ -66,9 +65,9 @@ _VALID_RATIO_COMBINATIONS: tuple[tuple[IntervalShape | None, Status, Censoring],
     (IntervalShape.UNBOUNDED, Status.OK, Censoring.NONE),
     (IntervalShape.EXCLUSIVE, Status.OK, Censoring.NONE),
     (None, Status.OK, Censoring.NONE),
-    # Round 3, item 2: an *explicit* shape is only valid for status OK + censoring NONE, so the
-    # non-OK / non-NONE-censoring combinations here use shape=None (fake_ratio's own default),
-    # not an explicit IntervalShape member as in earlier rounds.
+    # An *explicit* shape is only valid for status OK + censoring NONE, so the non-OK /
+    # non-NONE-censoring combinations here use shape=None (fake_ratio's own default), not an
+    # explicit IntervalShape member.
     (None, Status.NOT_CONVERGED, Censoring.NONE),
     (None, Status.OK, Censoring.RIGHT),
 )
@@ -101,7 +100,7 @@ class TestFakeFit:
 
     @pytest.mark.parametrize("status", [Status.UNREACHABLE, Status.FAILS_AT_BASELINE])
     def test_threshold_level_status_is_rejected(self, status: Status) -> None:
-        """Direct consequence of rule 9 (``Fit.status`` may not be ``UNREACHABLE`` or
+        """Direct consequence of the ``Fit.status`` rule (it may not be ``UNREACHABLE`` or
         ``FAILS_AT_BASELINE``): ``fake_fit`` must not silently build an invalid ``Fit`` for
         either."""
         with pytest.raises(ValueError):
@@ -124,7 +123,7 @@ def _severities_strictly_increase(fit: Fit) -> bool:
 
 
 class TestFakeCellsAreStrictlyAscending:
-    """decisions/0029: ``Fit`` rejects ``cells`` that are not strictly ascending in severity, and
+    """``Fit`` rejects ``cells`` that are not strictly ascending in severity, and
     the fakes are what a consumer builds its own fixtures from. Each must keep producing sorted,
     duplicate-free cells -- on every status, and in the fits nested inside a threshold or a
     ratio. (Were a fake to drift, ``Fit`` would already refuse to construct it; these tests say
@@ -176,13 +175,12 @@ def _observations_from_fit_cells(fit: Fit) -> Observations:
 
 
 class TestFakeFitMirrorsARealFit:
-    """decisions/0023 Amendment 2, item 4: ``fake_fit`` fills ``monotonicity`` through
+    """``fake_fit`` fills ``monotonicity`` through
     :func:`~robustmargin.check_monotonicity` on its own cells for *every* status, and
     ``diagnostics`` through :func:`~robustmargin.diagnose` when ``status`` is ``OK`` -- the same way
     ``fake_threshold`` already builds ``baseline`` through the real
     ``per_cell_clopper_pearson`` path rather than a hand-typed placeholder. Explicit
-    ``diagnostics=``/``monotonicity=`` arguments still override (unchanged from before this
-    amendment)."""
+    ``diagnostics=``/``monotonicity=`` arguments still override."""
 
     @pytest.mark.parametrize("status", _FIT_STATUSES)
     def test_monotonicity_is_not_none_for_every_status(self, status: Status) -> None:
@@ -302,7 +300,7 @@ class TestFakeRatio:
         assert ratio.provenance == {"note": "test"}
 
     def test_shape_none_defaults_to_bounded_when_ok_and_none(self) -> None:
-        """Item 2, round 3: ``shape=None`` (the new default) means ``BOUNDED`` specifically
+        """``shape=None`` (the default) means ``BOUNDED`` specifically
         when the ratio is status OK + censoring NONE -- the one combination that requires a
         shape at all."""
         ratio = fake_ratio(shape=None, status=Status.OK, censoring=Censoring.NONE)
@@ -326,8 +324,8 @@ class TestFakeRatio:
 
 
 class TestFakeRatioThresholdsComeFromDisjointData:
-    """Rule 16: ``fake_ratio``'s two thresholds must come from fits whose ``cells`` differ, so
-    they are built from disjoint data -- plan section 5.6 forbids ``dependence="independent"``
+    """``fake_ratio``'s two thresholds must come from fits whose ``cells`` differ, so
+    they are built from disjoint data -- ``dependence="independent"`` is forbidden
     on shared data, and a fake built to demonstrate the independent path should not itself be
     an example of the case that path forbids."""
 
@@ -338,8 +336,8 @@ class TestFakeRatioThresholdsComeFromDisjointData:
 
 
 class TestFakeRatioSatisfiesOkNoneInvariants:
-    """Rule 17: every shape ``fake_ratio`` produces with ``status`` OK / ``censoring`` NONE
-    must satisfy rules 11-14 (``tests/unit/test_results.py``)."""
+    """Every shape ``fake_ratio`` produces with ``status`` OK / ``censoring`` NONE must satisfy
+    the OK/NONE ``Ratio`` invariants (``tests/unit/test_results.py``)."""
 
     @pytest.mark.parametrize("shape", list(IntervalShape))
     def test_shape_satisfies_the_ok_none_invariants(self, shape: IntervalShape) -> None:
@@ -368,7 +366,7 @@ class TestFakeRatioSatisfiesOkNoneInvariants:
 
 
 class TestFakeFitClusterIds:
-    """Item 4, round 3: ``fake_fit`` has no cluster information to invent, so it always sets
+    """``fake_fit`` has no cluster information to invent, so it always sets
     ``cluster_ids=None``."""
 
     def test_cluster_ids_is_none(self) -> None:
@@ -378,7 +376,7 @@ class TestFakeFitClusterIds:
 
 
 class TestFakeThresholdDependence:
-    """Item 4, round 3: every fake threshold is built from a single fit with no cluster ids, so
+    """Every fake threshold is built from a single fit with no cluster ids, so
     it is honestly labelled ``dependence="independent"``."""
 
     def test_dependence_is_independent(self) -> None:

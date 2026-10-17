@@ -1,38 +1,34 @@
-"""Fieller interval shapes (plan section 5.6): the full decision tree, as of ``decisions/0022``
-(which supersedes part of ``0017``, narrows ``0021``, and amends ``0015``'s "Forecloses" clause).
+"""Fieller interval shapes: the full decision tree.
 
-``docs/STATISTICS.md`` and ``decisions/0017``/``0019``/``0021``/``0022`` record the closed form
-this file computes independently and compares ``ratio_interval()`` against: solve
-``A*rho^2 - 2*B*rho + K = 0`` for ``A = theta_b^2 - z^2*Vb``, ``B = theta_a*theta_b - z^2*C``,
-``K = theta_a^2 - z^2*Va`` (``C = 0`` under ``dependence="independent"``, so ``B > 0`` whenever
-both severities are positive); the confidence set is ``{rho : A*rho^2 - 2*B*rho + K <= 0}``,
-intersected with the positive parameter space before being reported. The full, current branch
-table (``_expected_shape_and_bounds`` below is this table, executable):
+This file computes the closed form independently and compares ``ratio_interval()`` against it:
+solve ``A*rho^2 - 2*B*rho + K = 0`` for ``A = theta_b^2 - z^2*Vb``,
+``B = theta_a*theta_b - z^2*C``, ``K = theta_a^2 - z^2*Va`` (``C = 0`` under
+``dependence="independent"``, so ``B > 0`` whenever both severities are positive); the confidence
+set is ``{rho : A*rho^2 - 2*B*rho + K <= 0}``, intersected with the positive parameter space
+before being reported. The full branch table (``_expected_shape_and_bounds`` below is this table,
+executable):
 
 - **``A > 0``** (``g < 1``): always ``BOUNDED`` -- the discriminant is always positive here (the
-  point estimate itself is a root of the boundary, `docs/STATISTICS.md`). If the lower root is
-  negative (``K <= 0``), it is clipped to ``0`` -- ``decisions/0019`` -- with ``hi`` untouched
-  and the unclipped root named in ``warnings``. This branch, and its clip, are unaffected by
-  ``0022`` (`decisions/0022`: "the upper-only geometry stays ``BOUNDED``").
-- **``A == 0``** (``g == 1`` exactly, `decisions/0017`): the quadratic degenerates to the linear
+  point estimate itself is a root of the boundary). If the lower root is negative (``K <= 0``),
+  it is clipped to ``0`` -- a negative ratio is not a possible one -- with ``hi`` untouched and
+  the unclipped root named in ``warnings``. The upper-only geometry stays ``BOUNDED``.
+- **``A == 0``** (``g == 1`` exactly): the quadratic degenerates to the linear
   ``-2*B*rho + K = 0``, root ``rho = K/(2*B)``. If ``K > 0`` this is a genuine positive lower
-  bound -- **``HALF_OPEN`` with ``lo = K/(2*B)``, superseding ``0017`` for this sub-case**
-  (`decisions/0022`). If ``K <= 0`` the root is at or below zero, so intersected with the
-  positive axis the set is all of ``(0, inf)`` -- ``UNBOUNDED``, ``0017`` unchanged.
-- **``A < 0``** with a non-positive discriminant: ``UNBOUNDED`` (`decisions/0017`, unaffected by
-  ``0022`` -- there are no real roots to intersect at all).
+  bound -- ``HALF_OPEN`` with ``lo = K/(2*B)``. If ``K <= 0`` the root is at or below zero, so
+  intersected with the positive axis the set is all of ``(0, inf)`` -- ``UNBOUNDED``.
+- **``A < 0``** with a non-positive discriminant: ``UNBOUNDED`` (there are no real roots to
+  intersect at all).
 - **``A < 0``** with a positive discriminant: the two roots are opposite-signed whenever
   ``K > 0`` (product of roots ``= K/A < 0``), so intersected with the positive axis only the
-  positive root survives -- **``HALF_OPEN`` with ``lo`` = that positive root**
-  (`decisions/0022`, superseding the ``EXCLUSIVE`` this branch previously reported: measured at
-  an open region of the parameter space, not the measure-zero case ``0017`` assumed when
-  it decided the frozen-enum cost wasn't worth paying). When ``K <= 0`` instead, both roots are
-  negative (`decisions/0021`) and the set is again all of ``(0, inf)`` -- ``UNBOUNDED``.
-- **``EXCLUSIVE`` is unreachable through ``ratio_interval()`` in v0.1.** It would need
+  positive root survives -- ``HALF_OPEN`` with ``lo`` = that positive root. (Reporting this as
+  ``EXCLUSIVE`` with a negative lower bound would be wrong: this occurs on an open region of the
+  parameter space, not only in a measure-zero case.) When ``K <= 0`` instead, both roots are
+  negative and the set is again all of ``(0, inf)`` -- ``UNBOUNDED``.
+- **``EXCLUSIVE`` is unreachable through ``ratio_interval()`` in this release.** It would need
   same-signed roots with ``A < 0``, which needs ``B <= 0``, which needs ``C > 0`` -- only
-  possible once ``dependence="paired"`` lands in v0.2 (`decisions/0022`'s own consequence). The
-  member stays in ``IntervalShape`` and ``Ratio``'s invariants for it stay enforced (tested
-  directly, not through ``ratio_interval``, in ``TestExclusiveRemainsAValidRatioShapeForV02``).
+  possible once ``dependence="paired"`` is implemented. The member stays in ``IntervalShape`` and
+  ``Ratio``'s invariants for it stay enforced (tested directly, not through ``ratio_interval``,
+  in ``TestExclusiveRemainsAValidRatioShapeForPairedDependence``).
 
 **The primary versions of every shape here construct their ``Fit``/``Threshold`` objects
 directly rather than fitting real data**, so the expected ``Va``/``Vb`` are known exactly and
@@ -40,7 +36,7 @@ directly rather than fitting real data**, so the expected ``Va``/``Vb`` are know
 not just by shape name. Every case here goes through the public ``ratio_interval()`` end-to-end
 on hand-built inputs, which is the smallest thing that can be tested through the public API --
 **with one documented exception**, ``TestEmptyConfidenceSetRaises`` at the end of this file: the
-``A == 0, B == 0, K > 0`` empty-confidence-set case (`docs/REVIEWS.md` R9 #11) is mathematically
+``A == 0, B == 0, K > 0`` empty-confidence-set case is mathematically
 unreachable through any real ``Threshold`` (``B = theta_a*theta_b == 0`` forces
 ``theta_a == 0``, which in turn forces ``K = -z^2*Va <= 0``, so ``K > 0`` can never coincide with
 it for a genuine, non-negative delta-method variance) while ``dependence="independent"`` fixes
@@ -169,7 +165,7 @@ def _expected_fieller(
     k_coef = theta_a**2 - z**2 * va
     disc = b_coef**2 - a_coef * k_coef
     if a_coef > 0.0:
-        assert disc > 0.0, "g < 1 must always yield two real roots (docs/STATISTICS.md)"
+        assert disc > 0.0, "g < 1 must always yield two real roots"
         sq = math.sqrt(disc)
         lo, hi = sorted([(b_coef - sq) / a_coef, (b_coef + sq) / a_coef])
         return IntervalShape.BOUNDED, lo, hi
@@ -183,10 +179,9 @@ def _expected_fieller(
 def _expected_shape_and_bounds(
     *, theta_a: float, va: float, theta_b: float, vb: float, z: float
 ) -> tuple[IntervalShape, float | None, float | None]:
-    """The *reported* shape, per the full branch table in this module's docstring
-    (``decisions/0017``, ``0019``, ``0021``, ``0022`` together) -- the Fieller set intersected
-    with the positive parameter space, unlike ``_expected_fieller`` above, which returns the raw,
-    unclipped classic-quadratic answer. Solved independently of ``ratio_interval()``.
+    """The *reported* shape, per the full branch table in this module's docstring -- the Fieller set
+    intersected with the positive parameter space, unlike ``_expected_fieller`` above, which returns
+    the raw, unclipped classic-quadratic answer. Solved independently of ``ratio_interval()``.
     """
     a_coef = theta_b**2 - z**2 * vb
     b_coef = theta_a * theta_b
@@ -196,23 +191,23 @@ def _expected_shape_and_bounds(
         disc = b_coef**2 - a_coef * k_coef
         sq = math.sqrt(disc)
         lo, hi = sorted([(b_coef - sq) / a_coef, (b_coef + sq) / a_coef])
-        return IntervalShape.BOUNDED, max(lo, 0.0), hi  # decisions/0019
+        return IntervalShape.BOUNDED, max(lo, 0.0), hi  # negative lower root clipped to 0
 
     if a_coef == 0.0:
         root = k_coef / (2.0 * b_coef)
         if k_coef > 0.0:
-            return IntervalShape.HALF_OPEN, root, None  # decisions/0022
-        return IntervalShape.UNBOUNDED, None, None  # decisions/0017
+            return IntervalShape.HALF_OPEN, root, None  # a genuine positive lower bound
+        return IntervalShape.UNBOUNDED, None, None  # root at or below zero
 
     # a_coef < 0.0
     disc = b_coef**2 - a_coef * k_coef
     if disc <= 0.0:
-        return IntervalShape.UNBOUNDED, None, None  # decisions/0017: no real roots
+        return IntervalShape.UNBOUNDED, None, None  # no real roots
     sq = math.sqrt(disc)
     r1, r2 = sorted([(b_coef - sq) / a_coef, (b_coef + sq) / a_coef])
     if k_coef <= 0.0:
-        return IntervalShape.UNBOUNDED, None, None  # decisions/0021: both roots negative
-    return IntervalShape.HALF_OPEN, r2, None  # decisions/0022: opposite-signed roots
+        return IntervalShape.UNBOUNDED, None, None  # both roots negative
+    return IntervalShape.HALF_OPEN, r2, None  # opposite-signed roots: only the positive one
 
 
 class TestBoundedShapeFromConstructedInputs:
@@ -274,25 +269,22 @@ class TestBoundedShapeFromARealFit:
 
 class TestHalfOpenAndUnboundedFromRealFits:
     """``g >= 1`` reached through real ``fit_dose_response`` calls (module docstring), found by
-    search rather than assumed unreachable: two adjacent severity levels, ``n=20``, and a
-    near-flat success pattern (``5/20`` then ``4/20``) barely constrain the fitted slope at all,
-    giving a denominator threshold with an enormous log-scale standard error
-    (``sigma_log ~= 8.3``, ``g ~= 265`` at ``level=0.95`` -- far past the ``g=1`` boundary).
-    Pairing that same denominator with a *tightly*-determined numerator (a five-fold, ``n=200``
-    design with a clear gradient) gives a positive discriminant and ``K > 0`` (``HALF_OPEN``,
-    `decisions/0022` -- this class previously asserted ``EXCLUSIVE`` here, before ``0022``
-    corrected that); pairing it with an equally poorly-determined numerator (the same two-level,
-    ``n=20`` shape, a different near-flat pattern) makes the discriminant non-positive instead
-    (``UNBOUNDED``, `decisions/0017`, unaffected by ``0022`` since there are no real roots to
-    intersect at all) -- exactly the discriminant-sign distinction the constructed cases above
-    make with hand-picked numbers, now from data. Every fit here is ``Status.OK`` with
-    ``Censoring.NONE`` (confirmed empirically, mirroring
-    ``tests/unit/test_threshold_status_coverage.py``'s own convention for search-found fixtures):
-    the profile interval happens to come back open on both sides for the two poorly-determined
-    fits (no ``Censoring`` member exists for that in v1, so it is reported as ``NONE`` with
-    ``lo=hi=None`` -- ``intervals.py``'s own documented "open on both sides" outcome), which does
-    not affect ``ratio_interval()``, since that reads each fit's own covariance directly rather
-    than the input ``Threshold``'s ``lo``/``hi``.
+    search rather than assumed unreachable: two adjacent severity levels, ``n=20``, and a near-flat
+    success pattern (``5/20`` then ``4/20``) barely constrain the fitted slope at all, giving a
+    denominator threshold with an enormous log-scale standard error (``sigma_log ~= 8.3``,
+    ``g ~= 265`` at ``level=0.95`` -- far past the ``g=1`` boundary). Pairing that same denominator
+    with a *tightly*-determined numerator (a five-fold, ``n=200`` design with a clear gradient)
+    gives a positive discriminant and ``K > 0`` (``HALF_OPEN``); pairing it with an equally
+    poorly-determined numerator (the same two-level, ``n=20`` shape, a different near-flat pattern)
+    makes the discriminant non-positive instead (``UNBOUNDED``, since there are no real roots to
+    intersect at all) -- exactly the discriminant-sign distinction the constructed cases above make
+    with hand-picked numbers, now from data. Every fit here is ``Status.OK`` with ``Censoring.NONE``
+    (confirmed empirically, mirroring ``tests/unit/test_threshold_status_coverage.py``'s own
+    convention for search-found fixtures): the profile interval happens to come back open on both
+    sides for the two poorly-determined fits (no ``Censoring`` member exists for that in v1, so it
+    is reported as ``NONE`` with ``lo=hi=None`` -- ``intervals.py``'s own documented "open on both
+    sides" outcome), which does not affect ``ratio_interval()``, since that reads each fit's own
+    covariance directly rather than the input ``Threshold``'s ``lo``/``hi``.
     """
 
     def _poorly_determined_denominator(self) -> Threshold:
@@ -369,16 +361,14 @@ class TestHalfOpenAndUnboundedFromRealFits:
 
 
 class TestGEqualsOneBoundary:
-    """``decisions/0017``/``0022``: at ``A = theta_b^2 - z^2*Vb == 0`` exactly, the quadratic
-    degenerates to the linear ``-2*B*rho + K = 0``, root ``rho = K/(2*B)``. **``K > 0`` is now
-    ``HALF_OPEN`` with ``lo = K/(2*B)``, superseding the ``UNBOUNDED`` this exact construction
-    asserted before ``decisions/0022``** (a genuine positive lower bound was being discarded,
-    not merely a rare curiosity -- ``0022``'s whole point). ``K <= 0`` is unchanged: the root
-    sits at or below zero, so intersected with the positive axis the set is still all of
-    ``(0, inf)`` -- ``UNBOUNDED``, ``0017`` unaffected for that sub-case.
+    """At ``A = theta_b^2 - z^2*Vb == 0`` exactly, the quadratic degenerates to the linear
+    ``-2*B*rho + K = 0``, root ``rho = K/(2*B)``. **``K > 0`` is ``HALF_OPEN`` with
+    ``lo = K/(2*B)``** (a genuine positive lower bound must not be discarded as ``UNBOUNDED``).
+    ``K <= 0``: the root sits at or below zero, so intersected with the positive axis the set is
+    all of ``(0, inf)`` -- ``UNBOUNDED``.
 
-    **Hitting ``A == 0`` exactly in floating point turned out to be constructible, with no
-    tolerance widening needed** -- verified empirically for the values used here, not merely
+    **Hitting ``A == 0`` exactly in floating point is constructible, with no tolerance widening
+    needed** -- verified empirically for the values used here, not merely
     assumed. Choosing ``theta_b = 1.0`` makes ``theta_b**2 == 1.0`` and
     ``value_b**2 * var_mu_b == var_mu_b`` exact regardless of how squaring is implemented
     (multiplying by exactly ``1.0`` introduces no rounding), which removes one whole source of
@@ -388,7 +378,7 @@ class TestGEqualsOneBoundary:
     and true regardless of whether the squaring is written ``z**2`` or ``z*z`` (both give the
     identical ``float``). This is not a universal IEEE-754 guarantee (``a * (1/a) == 1`` can fail
     for adversarial ``a``), only an empirical confirmation for the natural, un-adversarial values
-    a real ``level``/``Vb`` combination produces -- stated plainly per the brief, rather than
+    a real ``level``/``Vb`` combination produces -- stated plainly, rather than
     silently building in a tolerance this construction did not turn out to need. Both sub-tests
     below reuse the identical ``theta_b``/``var_mu_b`` pair, varying only the numerator, so both
     hit ``A == 0`` bit-for-bit.
@@ -446,15 +436,13 @@ class TestHalfOpenFromConstructedInputs:
     numerator), theta_b=1.0 (Vb=0.5, very uncertain denominator) gives ``g ~= 1.92``, a positive
     discriminant, and ``K = theta_a^2 - z^2*Va ~= 0.058 > 0``.
 
-    **This is the exact case that led to ``decisions/0022``.** Before ``0022`` this class
-    asserted ``shape is EXCLUSIVE`` with ``lo=-1.141, hi=0.055`` -- a negative lower bound on a
-    severity ratio, reported with no warning. The round-1 property test written against that
-    expectation (``tests/property/test_ratio_interval_properties.py``'s
-    ``TestFiellerLowerAndUpperNeverNegative``) is what surfaced it as a live defect rather than a
-    hypothetical one, and showing it occupies an open region of the parameter space (under
-    independence, `decisions/0022`) is what turned it into a decision: intersected with the
-    positive parameter space, ``(-inf, -1.141] union [0.055, inf)`` is exactly ``[0.055, inf)``
-    -- ``HALF_OPEN`` with ``lo = 0.055`` (the positive root), not ``EXCLUSIVE``.
+    **Reporting this as ``EXCLUSIVE`` would be wrong:** it would give ``lo=-1.141, hi=0.055`` --
+    a negative lower bound on a severity ratio, reported with no warning. The property test
+    ``tests/property/test_ratio_interval_properties.py``'s ``TestFiellerLowerAndUpperNeverNegative``
+    pins that a bound is never negative, and this construction shows the case occupies an open
+    region of the parameter space (under independence): intersected with the positive parameter
+    space, ``(-inf, -1.141] union [0.055, inf)`` is exactly ``[0.055, inf)`` -- ``HALF_OPEN`` with
+    ``lo = 0.055`` (the positive root), not ``EXCLUSIVE``.
     ``TestBothRootsNegativeIsUnbounded`` below is the sibling case (``K <= 0``) that stays
     ``UNBOUNDED``.
     """
@@ -466,8 +454,8 @@ class TestHalfOpenFromConstructedInputs:
         result = ratio_interval(t_a, t_b, method="fieller", dependence="independent", level=_LEVEL)
 
         # The raw, unclipped classic-quadratic answer is still EXCLUSIVE with lo < 0 < hi --
-        # confirming this construction hits the case decisions/0022 reclassifies, not some other
-        # branch -- before checking what the *reported*, intersected shape must now be.
+        # confirming this construction hits the case that is reclassified on intersection, not
+        # some other branch -- before checking what the *reported*, intersected shape must be.
         raw_shape, raw_lo, raw_hi = _expected_fieller(
             theta_a=0.5, va=0.05, theta_b=1.0, vb=0.5, z=_Z
         )
@@ -492,8 +480,7 @@ class TestUnboundedShapeFromConstructedInputs:
     numerator is now uncertain enough, relative to theta_a^2, that the confidence set covers the
     whole line) alongside the same theta_b=1.0, Vb=0.5 denominator as the ``HALF_OPEN`` case
     above -- the discriminant's sign is what separates the two, not ``g`` itself. This branch
-    (no real roots at all) is unaffected by ``decisions/0021``/``0022``, both of which are about
-    what to do when real roots exist."""
+    (no real roots at all) is independent of the rules for what to do when real roots exist."""
 
     def test_shape_is_unbounded_and_matches_the_closed_form(self) -> None:
         t_a = _threshold_with_known_natural_variance(value=0.5, variance=0.5)
@@ -514,12 +501,12 @@ class TestUnboundedShapeFromConstructedInputs:
 
 
 class TestNegativeLowerRootIsClippedToZero:
-    """``decisions/0019``: whenever the numerator's own natural-scale interval covers zero
+    """Whenever the numerator's own natural-scale interval covers zero
     (``K = theta_a^2 - z^2*Va <= 0``), the Fieller lower root falls below zero -- not a possible
     ratio on either a log or a linear axis. Rather than report a negative ``lo`` (correct
     arithmetic, meaningless as a severity ratio) or discard the information as ``UNBOUNDED``
-    (wrong direction -- the set genuinely is bounded above), the decision intersects the
-    reported interval with the positive parameter space: ``lo = 0.0``, ``shape`` stays
+    (wrong direction -- the set genuinely is bounded above), the reported interval is
+    intersected with the positive parameter space: ``lo = 0.0``, ``shape`` stays
     ``BOUNDED``, ``hi`` is untouched, and the unclipped root is named in ``warnings``.
 
     ``K <= 0`` is a condition on the *numerator* alone (``theta_a``, ``Va``), independent of
@@ -596,7 +583,7 @@ class TestNegativeLowerRootIsClippedToZero:
 
 
 class TestOpenBothSidesInputWarns:
-    """W2 (Phase 6 stats review): when an input ``Threshold`` is ``(OK, NONE)`` but its own
+    """When an input ``Threshold`` is ``(OK, NONE)`` but its own
     profile interval did not close on *either* side (``lo is None and hi is None`` -- v1's
     "open on both sides" outcome, ``intervals.py``'s own documented case, since no ``Censoring``
     member exists for it), ``ratio_interval`` still has a covariance to compute a Fieller/
@@ -636,23 +623,22 @@ class TestOpenBothSidesInputWarns:
 
 
 class TestBothRootsNegativeIsUnbounded:
-    """``decisions/0021``: the ``EXCLUSIVE``-branch gap in ``decisions/0019``. When ``A < 0``
-    (the ``EXCLUSIVE``-or-``UNBOUNDED`` regime, ``decisions/0017``) *and* ``K <= 0``, the two
+    """The ``EXCLUSIVE``-branch gap in the clipping rule. When ``A < 0``
+    (the ``EXCLUSIVE``-or-``UNBOUNDED`` regime) *and* ``K <= 0``, the two
     roots share a sign (product ``= K/A >= 0``) and that sign is negative (sum ``= 2*B/A < 0``,
     ``B = theta_a*theta_b > 0`` under independence). Both rays of the raw ``EXCLUSIVE`` set then
     lie entirely below zero, so intersected with the positive parameter space the confidence set
     is all of ``(0, inf)`` -- reported as ``UNBOUNDED`` (exactly, not as a conservative
-    approximation, per 0021's own "why"), with ``lo = hi = None`` and the unclipped roots named
-    in ``warnings``.
+    approximation), with ``lo = hi = None`` and the unclipped roots named in ``warnings``.
 
-    The exact case from 0021's own context section: ``theta_a = theta_b = 1.0``,
+    The motivating case: ``theta_a = theta_b = 1.0``,
     ``z^2*Va = z^2*Vb = 1.5`` (so ``A = K = -0.5``, ``disc = 0.75 > 0`` -- genuinely two real
     roots, not a degenerate tangency), giving unclipped roots
     ``(-3.732050807568877, -0.2679491924311227)``, both negative.
     """
 
     def test_both_roots_negative_reports_unbounded_with_a_warning(self) -> None:
-        variance = 1.5 / _Z**2  # so z^2 * variance == 1.5 exactly, matching 0021's own example
+        variance = 1.5 / _Z**2  # so z^2 * variance == 1.5 exactly, matching the case above
         t_a = _threshold_with_known_natural_variance(value=1.0, variance=variance)
         t_b = _threshold_with_known_natural_variance(value=1.0, variance=variance)
 
@@ -660,8 +646,8 @@ class TestBothRootsNegativeIsUnbounded:
             theta_a=1.0, va=variance, theta_b=1.0, vb=variance, z=_Z
         )
         # _expected_fieller reports the *raw*, unclipped shape (module docstring): confirm this
-        # construction really does hit A < 0, K <= 0 before checking what 0021 says should
-        # happen once clipped.
+        # construction really does hit A < 0, K <= 0 before checking what should happen once
+        # clipped.
         assert expected_shape is IntervalShape.EXCLUSIVE
         assert expected_lo is not None and expected_lo < 0.0
         assert expected_hi is not None and expected_hi < 0.0
@@ -676,17 +662,17 @@ class TestBothRootsNegativeIsUnbounded:
         assert any(len(warning.strip()) > 20 for warning in result.warnings)
 
 
-class TestExclusiveRemainsAValidRatioShapeForV02:
-    """``decisions/0022``: ``EXCLUSIVE`` is unreachable *through* ``ratio_interval()`` in v0.1 --
+class TestExclusiveRemainsAValidRatioShapeForPairedDependence:
+    """``EXCLUSIVE`` is unreachable *through* ``ratio_interval()`` in this release --
     it needs same-signed roots with ``A < 0``, which needs ``B <= 0``, which needs ``C > 0``,
-    which needs ``dependence="paired"`` (v0.2). The member stays in ``IntervalShape`` and
-    ``Ratio``'s own invariants for it stay enforced, because the type is v0.2 surface that must
-    already be valid when paired dependence starts producing it -- so this constructs a ``Ratio``
+    which needs ``dependence="paired"`` (not implemented). The member stays in ``IntervalShape``
+    and ``Ratio``'s own invariants for it stay enforced, because the type must already be valid
+    when paired dependence starts producing it -- so this constructs a ``Ratio``
     directly (not through ``ratio_interval``, which cannot reach this shape) and checks both that
     a well-formed ``EXCLUSIVE`` ``Ratio`` is still accepted and that a malformed one is still
     rejected, exactly as ``tests/unit/test_results.py``'s ``TestRatioShapeExclusive`` already
-    established before ``0022`` existed -- restated here, next to the rest of this file's shape
-    coverage, specifically to record that unreachability is deliberate, not an oversight.
+    establishes -- restated here, next to the rest of this file's shape coverage, specifically
+    to record that unreachability is deliberate, not an oversight.
     """
 
     def test_a_well_formed_exclusive_ratio_is_still_accepted(self) -> None:
@@ -732,22 +718,22 @@ class TestExclusiveRemainsAValidRatioShapeForV02:
 
 
 class TestEmptyConfidenceSetRaises:
-    """Regression (Phase 6 outsider `/code-review` of PR #8, ``docs/REVIEWS.md`` R9 #11):
-    ``A == 0`` degenerates the Fieller inequality to the linear ``-2*B*rho + K <= 0``; when
-    ``B`` is *also* ``0`` (only possible under independence via ``theta_a == 0``, module
-    docstring) that degenerates further to ``K <= 0``, so ``K > 0`` describes an **empty**
-    confidence set -- not a half-line, and reporting ``UNBOUNDED`` (the whole positive axis) used
-    to be the least informative possible answer to what is actually a contradictory input. It now
-    raises ``ValueError`` naming the empty set, rather than reporting a shape at all.
+    """Regression: ``A == 0`` degenerates the Fieller inequality to the linear
+    ``-2*B*rho + K <= 0``; when ``B`` is *also* ``0`` (only possible under independence via
+    ``theta_a == 0``, module docstring) that degenerates further to ``K <= 0``, so ``K > 0``
+    describes an **empty** confidence set -- not a half-line, and reporting ``UNBOUNDED`` (the whole
+    positive axis) would be the least informative possible answer to what is actually a
+    contradictory input. It raises ``ValueError`` naming the empty set, rather than reporting a
+    shape at all.
 
-    **Unreachable through the public API in v0.1**, confirmed by the module docstring's argument,
-    not merely asserted: this test calls ``robustmargin.ratio``'s private ``_fieller_shape``
-    directly with ``theta_a=0.0`` and a deliberately-impossible **negative** ``va`` -- no real
-    delta-method variance is ever negative, and a genuine non-negative ``va`` with
-    ``theta_a == 0`` forces ``K = -z^2*va <= 0``, never ``> 0``. ``v0.2``'s ``dependence="paired"``
-    (nonzero covariance ``C``) can reach ``B == 0`` without ``theta_a == 0``, and that path may
-    reach ``K > 0`` genuinely -- this branch is guarded, not dead, but it is guarded against a
-    case v0.1 itself cannot construct.
+    **Unreachable through the public API in this release**, confirmed by the module docstring's
+    argument, not merely asserted: this test calls ``robustmargin.ratio``'s private
+    ``_fieller_shape`` directly with ``theta_a=0.0`` and a deliberately-impossible **negative**
+    ``va`` -- no real delta-method variance is ever negative, and a genuine non-negative ``va`` with
+    ``theta_a == 0`` forces ``K = -z^2*va <= 0``, never ``> 0``. ``dependence="paired"`` (nonzero
+    covariance ``C``) can reach ``B == 0`` without ``theta_a == 0``, and that path may reach
+    ``K > 0`` genuinely -- this branch is guarded, not dead, but it is guarded against a case this
+    release itself cannot construct.
     """
 
     def test_a_zero_b_zero_k_positive_raises_rather_than_reporting_unbounded(self) -> None:

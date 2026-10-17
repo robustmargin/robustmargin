@@ -1,12 +1,10 @@
-"""Property tests for :func:`~robustmargin.check_monotonicity`
-(``docs/decisions/0023-fit-diagnostics-and-schema-v3.md``'s "Amendment 1"; plan section 6.4).
+"""Property tests for :func:`~robustmargin.check_monotonicity` (hypothesis).
 
 Two properties, mirroring ``tests/property/test_models_properties.py``'s own conventions:
 
 - Row permutation changes nothing (the check pools per exact severity before testing anything,
   the same way ``Observations.cells()`` already does).
-- Aggregated and disaggregated inputs give identical checks (R1), the amendment's own "Tests
-  (Phase 7)" bullet.
+- Aggregated and disaggregated inputs give identical checks.
 """
 
 from __future__ import annotations

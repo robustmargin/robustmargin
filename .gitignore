@@ -2,25 +2,20 @@
 .DS_Store
 
 # ---------------------------------------------------------------------------
-# Private working material — deliberately not published.
+# Private working material, never committed.
 #
-# robustmargin is intended to become a public package, so the planning documents,
-# the agent/tooling setup, and the internal review log stay local. They remain
-# on disk and fully usable; they are simply never committed.
-#
-# Nothing here was ever committed or pushed, so there is no history to purge.
-# See the note at the bottom of this file before publishing.
+# This repository is public and is the source of the robustmargin package on PyPI.
+# The agent and tooling setup, the planning and design documents, and the review log
+# stay local: they remain on disk and fully usable, and are never committed.
 # ---------------------------------------------------------------------------
 
 # Claude Code setup: agent definitions, skills, hook wiring, scratch
 .claude/
 
-# Repo tooling that references the above. The CI workflow is the exception: it is
-# committed so GitHub Actions runs (owner decision 2026-09-12, resolving review R4
-# option 1). `.github/*` rather than `.github/` — git cannot re-include a path
-# whose parent directory is excluded. CODEOWNERS is committed too, so GitHub can
-# request the code owner's review on every PR. The PR template is committed so GitHub
-# pre-fills every PR description with it, including PRs opened from the web UI.
+# Repository tooling that references the above. The exceptions are committed on
+# purpose: the workflows, so GitHub Actions runs them; CODEOWNERS, so GitHub requests
+# the code owner's review on every pull request; and the PR template, so GitHub
+# pre-fills every PR description.
 .github/*
 !.github/workflows/
 !.github/CODEOWNERS
@@ -29,21 +24,8 @@
 # Project instructions for Claude Code
 CLAUDE.md
 
-# Planning, architecture, consumer contract, statistics index, review log,
-# and owner decision records. PROVENANCE.md is the exception: it carries the
-# zeta-bench attribution that Apache-2.0 §4 expects to travel with the package
-# (decision 0002), so it is committed (owner decision 2026-09-12).
-docs/*
-!docs/PROVENANCE.md
-
-# ---------------------------------------------------------------------------
-# Before making this repository public, reconsider one of the entries above:
-#
-#   CLAUDE.md and docs/ — IMPLEMENTATION_PLAN §4 lists both as part of the
-#     repository tree, and Phase 1 has creating them as a task. Ignoring them is a
-#     deliberate departure from the plan, not an oversight; update the plan if it
-#     is permanent.
-# ---------------------------------------------------------------------------
+# Planning and design documents, kept private on purpose.
+docs/
 
 # Python
 __pycache__/

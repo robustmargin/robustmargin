@@ -162,9 +162,8 @@ class Threshold:
         one-sided bounds against the *fitted* curve rather than testing raw adjacent levels; the two
         may disagree and both are reported when they fire.
     schema_version
-        The serialised-result schema version this object belongs to. Defaults to ``"4"``, the
-        only version ``from_dict`` reads; ``"1"``, ``"2"`` and ``"3"`` (the card format of this
-        package's former name, ``marginkit``) are rejected.
+        The serialised-result schema version this object belongs to. Defaults to ``"1"``, the
+        only version ``from_dict`` reads; any other version is rejected.
     provenance
         An opaque mapping the caller may attach to record where the inputs came from.
         robustmargin stores it and never interprets it. Empty by default.
@@ -189,7 +188,7 @@ class Threshold:
     dependence: str
     fit: Fit
     warnings: tuple[str, ...] = ()
-    schema_version: str = "4"
+    schema_version: str = "1"
     provenance: Mapping[str, JSONValue] = field(default_factory=dict)
     baseline: BaselineRate | None = None
     grid: GridBreakPoint | None = None

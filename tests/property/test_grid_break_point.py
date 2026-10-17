@@ -4,9 +4,8 @@ Invariants that must hold for any valid input, not just the hand-picked cases in
 ``tests/unit/test_empirical.py``: permutation invariance, ``value`` is always one of the
 tested magnitudes (or ``None``), ``value is None`` if and only if the criterion held at every
 level if and only if ``censoring is Censoring.RIGHT``, ``max_tested`` is the max magnitude, and
-agreement with a direct, independent re-statement of zeta-bench's own two-line rule
-(``robustness/cards.py::break_point``, lines 137-139). Example counts are kept modest so the
-suite stays fast (plan section 6.4 lists these as the invariants that matter most).
+agreement with a direct, independent re-statement of the two-line rule. Example counts are
+kept modest so the suite stays fast.
 """
 
 from __future__ import annotations
@@ -120,9 +119,7 @@ def test_value_none_iff_no_level_fails_iff_right_censored(
     assert (result.value is None) == no_level_fails
     assert (result.value is None) == (result.censoring is Censoring.RIGHT)
     # The grid rule only ever reports NONE or RIGHT, never LEFT or OPEN_*: it is a two-outcome
-    # port of zeta-bench's break_point (docs/PROVENANCE.md), and IMPLEMENTATION_PLAN.md section
-    # 7 Phase 2 scopes this function to exactly that pair of outcomes. Section 4.2 only defines
-    # the full Censoring enum for later, model-based results.
+    # rule, and the full Censoring enum is for model-based results.
     assert result.censoring in (Censoring.NONE, Censoring.RIGHT)
 
 
@@ -153,10 +150,10 @@ def test_value_never_exceeds_max_tested(
 
 @given(_curves_with_tied_criterion())
 @settings(max_examples=_MAX_EXAMPLES, deadline=None)
-def test_agrees_with_zeta_bench_two_line_rule(
+def test_agrees_with_the_two_line_rule(
     curve: tuple[list[float], list[float], float, bool],
 ) -> None:
-    """Independent re-statement of ``break_point``'s two lines (cards.py lines 137-139).
+    """Independent re-statement of the grid rule's two lines.
 
     ``max_tested = max(abs(sev) for sev, _ in curve)``;
     ``failing = sorted(abs(sev) for sev, success in curve if success < gate)``;
@@ -188,8 +185,7 @@ def test_scaling_severity_scales_value_and_max_tested(
     exponent: int,
 ) -> None:
     """Rescaling severity by ``c > 0`` scales ``value`` and ``max_tested`` by ``c`` and leaves
-    ``censoring`` unchanged (plan section 6.4's units property, ROADMAP's "unit correctness is
-    a correctness property").
+    ``censoring`` unchanged (the units property: unit correctness is a correctness property).
 
     ``c`` is restricted to a power of two: multiplying an IEEE-754 float by a power of two only
     ever moves its exponent, never rounds its mantissa, so the scaled result matches ``c *
