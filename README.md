@@ -241,6 +241,7 @@ pytest            # enforces 90% branch coverage
 CI runs the tests on Python 3.11, 3.12, and 3.13 against current dependencies. It also runs them
 on Python 3.11 against the oldest supported versions, pinned in
 [`ci/constraints-min.txt`](https://github.com/robustmargin/robustmargin/blob/main/ci/constraints-min.txt).
+Changes are recorded in [`CHANGELOG.md`](https://github.com/robustmargin/robustmargin/blob/main/CHANGELOG.md).
 
 ## License
 
