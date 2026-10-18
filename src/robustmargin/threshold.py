@@ -36,9 +36,13 @@ _TERMINAL_STATUSES = frozenset(
 _NONCONVERGENT_STATUSES = frozenset({Status.SEPARATION, Status.NOT_CONVERGED})
 _VALID_DIRECTIONS = frozenset({"decreasing", "increasing"})
 
-# A threshold with a value, with status OK or UNREACHABLE, or with an open-sided censoring
-# needs the fit underneath it to have actually converged.
-_REQUIRE_FIT_OK_STATUSES = frozenset({Status.OK, Status.UNREACHABLE})
+# A threshold with a value, with status OK, or with an open-sided censoring needs the fit
+# underneath it to have actually converged. UNREACHABLE does not: a target outside (0, 1) is
+# unreachable whatever the fit did, so it may sit on a failed fit as well as on a converged one.
+# It may not sit on a CONTROL_INCOMPATIBLE fit, which is reported as itself before any target is
+# examined.
+_REQUIRE_FIT_OK_STATUSES = frozenset({Status.OK})
+_UNREACHABLE_FIT_STATUSES = frozenset({Status.OK, Status.SEPARATION, Status.NOT_CONVERGED})
 _REQUIRE_FIT_OK_CENSORING = frozenset({Censoring.OPEN_UPPER, Censoring.OPEN_LOWER})
 # SEPARATION, NOT_CONVERGED and CONTROL_INCOMPATIBLE are properties of the fit itself; a
 # threshold reporting one of these must be built on a fit reporting the very same status.
@@ -68,30 +72,59 @@ class Threshold:
     (the fitted curve, being drawn from a monotone parametric family, is monotone by
     construction regardless). A ``RIGHT`` bound reads "threshold > lo (one-sided, exact,
     monotonicity assumed)", never as a value on its own; the mirrored reading applies to
-    ``LEFT``. A ``SEPARATION``/``NOT_CONVERGED`` bracket is built from *two* one-sided exact
-    bounds, each individually computed at confidence ``(1 + level) / 2``, so their **joint**
-    coverage is at least ``level`` -- not merely at least ``2 * level - 1``, the floor that two
-    bounds each at ``level`` would guarantee. Each bound comes from a fixed-sequence scan, not
-    from the most extreme qualifying level anywhere: the lower bound is the last severity in the
-    run of confidently passing nonzero severities ascending from the lowest nonzero severity, the
-    upper bound is the last severity in the run of confidently failing severities descending from
-    the highest, and each scan stops at the first severity that does not qualify (fixed-sequence
-    testing; Hsu & Berger, 1999, *Journal of the American Statistical Association* 94:468-482).
-    Under a monotone curve this keeps each side's error at most ``1 - c`` at confidence ``c``
-    whatever the number of tested levels, at the cost of reporting no bound on a side whose run
-    cannot start. If only one side is determined, it is rescanned the same way at ``level`` and
-    reported alone. A one-sided ``RIGHT``/``LEFT`` bound is genuinely one-sided and stays at
-    ``level`` itself.
+    ``LEFT``.
 
-    One limitation applies across these results. Five kinds of exact result can be returned: a
-    ``RIGHT`` bound, a ``LEFT`` bound, a bracket, a one-sided lower bound and a one-sided upper
-    bound. For each kind, the probability that ``threshold()`` returns that kind *and* it
-    excludes the true threshold -- the severity where performance crosses the resolved target --
-    is at most ``1 - level``. That is not the probability that a result of that kind, once
-    seen, is wrong. The kinds are also not controlled jointly: which kind is returned depends on
-    the data, so the combined rate of a wrong exact result is bounded only by
-    ``4 * (1 - level)``. In simulation it reached about 8.4% at ``level = 0.95``, when the true
-    performance at tested levels sat just above and just below the target.
+    **Exact results share one error budget.** The exact results are ``FAILS_AT_BASELINE``,
+    ``RIGHT``, ``LEFT``, and the bracket or one-sided bound of a ``SEPARATION``/``NOT_CONVERGED``
+    fit. All of them are read off one-sided exact (Clopper-Pearson) tests, and the error budget
+    ``1 - level`` is split four ways, ``(1 - level) / 4`` each, so every test runs at confidence
+    ``1 - (1 - level) / 4`` (0.9875 at ``level = 0.95``). The four parts are:
+
+    - an ascending run over the nonzero severities from the lowest: each severity whose lower
+      bound clears the target extends the run, and the run stops at the first that does not. Its
+      end is the lower bound;
+    - the highest nonzero severity alone: its lower bound clearing the target gives ``RIGHT``;
+    - a descending run over the nonzero severities from the highest, on upper bounds below the
+      target, stopping at the first that does not qualify. Its end is the upper bound;
+    - the lowest nonzero severity alone: its upper bound falling below the target gives the upper
+      bound at that severity, the upper half of ``LEFT`` (which also needs the control's lower
+      bound to clear the target) and half of ``FAILS_AT_BASELINE`` (which also needs the control's
+      upper bound to fall below it).
+
+    Each run is a fixed-sequence procedure (Hsu & Berger, 1999, *Journal of the American
+    Statistical Association* 94:468-482): under a monotone curve it can only err by wrongly
+    passing, or wrongly failing, the first severity past the true crossing, whatever the number of
+    tested severities. A bracket needs both sides. If only one side is determined it is reported
+    alone, at that same confidence, with a warning naming it; nothing is rescanned at a looser
+    one. No bound is ever at the control.
+
+    **The joint guarantee.** Under the assumptions below, the probability that ``threshold()``
+    returns an exact result of any kind that is wrong -- one whose claim about where the curve
+    crosses the resolved target is false for the true curve -- is at most ``1 - level`` in total,
+    whichever kind the data selects. This is a probability over repeated data, not the probability
+    that a result, once seen, is wrong. The assumptions are:
+
+    - the true curve is non-increasing over all tested severities, the control included;
+    - trials are independent;
+    - the target is fixed, as it is under ``absolute``.
+
+    **A target taken from the control.** For a failed fit under ``baseline_fraction``, the
+    target is the stated fraction of the control's observed rate, so it depends on the control's
+    counts. The joint guarantee is not proved for that case. In simulation at ``level = 0.95``
+    the rate of wrong exact results stayed below ``1 - level``: at most 1.4%, on a design built so
+    that the control passes its exact test only when the target exceeds its true rate.
+
+    **Exact ties.** A claim is read non-strictly at the tested severities: a lower bound means the
+    true rate there is at least the target, an upper bound that it is at most the target. If a
+    tested severity's true rate equals the target exactly, the strict reading of a claim is not
+    covered by the bound above; the proven bound for that reading is ``1.5 * (1 - level)``, and
+    the worst case simulated (every tested severity exactly at the target, ``level = 0.95``) was
+    below 4%.
+
+    **Scope.** The guarantee is for the exact results only. A model-based ``value`` with its
+    profile or delta interval keeps its own model-based coverage, and the guarantee is not proved
+    for a converged fit whose asymptotes are estimated under ``baseline_fraction`` or
+    ``relative``, where the target depends on the fit.
 
     Binomial curves are decreasing-only in this release: ``direction="increasing"`` raises, since
     increasing-is-worse outcomes are not yet supported.
@@ -102,8 +135,9 @@ class Threshold:
     - ``status`` in ``{UNREACHABLE, CONTROL_INCOMPATIBLE, FAILS_AT_BASELINE}``: ``value``,
       ``lo`` and ``hi`` are all ``None``; ``censoring`` is ``NONE``; ``interval_method`` is
       ``"exact_bound"``. There is no threshold at all in these cases -- either it cannot be
-      reached given the fitted asymptotes, or the question of a crossing does not arise
-      because the control already fails.
+      reached (the target lies outside ``(0, 1)``, which no binomial curve crosses, or outside
+      what the fitted asymptotes allow), or the question of a crossing does not arise because
+      the control already fails.
     - ``status`` in ``{SEPARATION, NOT_CONVERGED}``: ``value`` is ``None``; ``censoring`` is one
       of ``{NONE, RIGHT, LEFT}``; ``interval_method`` is ``"exact_bound"``; ``lo`` and ``hi``
       may be set, as the exact-bound fallback.
@@ -112,19 +146,20 @@ class Threshold:
     - ``censoring == LEFT``: ``value`` is ``None``, ``hi`` is set, ``lo`` is ``None``,
       ``interval_method == "exact_bound"``.
     - ``censoring == OPEN_UPPER``: ``status == OK``, ``value`` and ``lo`` are set, ``hi`` is
-      ``None``, ``interval_method == "profile"``. ``OPEN_LOWER`` mirrors it, with ``hi`` set
-      and ``lo`` ``None``.
+      ``None``, ``lo <= value``, ``interval_method == "profile"``. ``OPEN_LOWER`` mirrors it,
+      with ``hi`` set, ``lo`` ``None`` and ``value <= hi``.
     - ``censoring == NONE`` with ``status == OK``: ``value``, ``lo`` and ``hi`` are all set,
       with ``lo <= value <= hi``, and ``interval_method`` is ``"profile"`` or ``"delta"``.
     - When both ``lo`` and ``hi`` are set: ``lo < hi`` strictly for a ``SEPARATION`` /
       ``NOT_CONVERGED`` bracket, ``lo <= hi`` otherwise.
     - On a log axis, ``value``, ``lo`` and ``hi`` must each be ``> 0`` when present (a linear
       axis keeps ``>= 0``).
-    - ``fit.status`` must equal ``OK`` whenever ``value`` is set, ``status`` is ``OK`` or
-      ``UNREACHABLE``, or ``censoring`` is ``OPEN_UPPER``/``OPEN_LOWER``. ``fit.status`` must
-      equal ``status`` itself when ``status`` is ``SEPARATION``, ``NOT_CONVERGED`` or
-      ``CONTROL_INCOMPATIBLE``. ``FAILS_AT_BASELINE`` places no constraint on ``fit.status``
-      (the control's exact test does not depend on the rest of the curve having converged).
+    - ``fit.status`` must equal ``OK`` whenever ``value`` is set, ``status`` is ``OK``, or
+      ``censoring`` is ``OPEN_UPPER``/``OPEN_LOWER``. ``fit.status`` must equal ``status`` itself
+      when ``status`` is ``SEPARATION``, ``NOT_CONVERGED`` or ``CONTROL_INCOMPATIBLE``.
+      ``UNREACHABLE`` and ``FAILS_AT_BASELINE`` place no constraint on ``fit.status``: a target
+      outside ``(0, 1)`` is unreachable whatever the fit did, and the control's exact test does
+      not depend on the rest of the curve having converged.
 
     Attributes
     ----------
@@ -160,7 +195,11 @@ class Threshold:
         whatever ``status``/``censoring`` turn out to be -- distinct from
         :mod:`robustmargin.censoring`'s own ``"NON_MONOTONE: "`` token, which compares exact
         one-sided bounds against the *fitted* curve rather than testing raw adjacent levels; the two
-        may disagree and both are reported when they fire.
+        may disagree and both are reported when they fire. Carries an ``"EXTRAPOLATED: "``-prefixed
+        entry, appended after the interval method's own warnings, whenever a model-based ``value``
+        is positive and lies strictly below the lowest or strictly above the highest nonzero tested
+        severity. It is report-only: it describes ``value`` alone, whatever the interval method or
+        outcome, and changes no number, status or censoring.
     schema_version
         The serialised-result schema version this object belongs to. Defaults to ``"1"``, the
         only version ``from_dict`` reads; any other version is rejected.
@@ -235,9 +274,13 @@ class Threshold:
         )
         if requires_fit_ok and self.fit.status is not Status.OK:
             raise ValueError(
-                "Threshold.fit.status must be OK when value is set, status is OK or "
-                "UNREACHABLE, or censoring is OPEN_UPPER/OPEN_LOWER; got "
-                f"fit.status={self.fit.status!r}"
+                "Threshold.fit.status must be OK when value is set, status is OK, or "
+                f"censoring is OPEN_UPPER/OPEN_LOWER; got fit.status={self.fit.status!r}"
+            )
+        if self.status is Status.UNREACHABLE and self.fit.status not in _UNREACHABLE_FIT_STATUSES:
+            raise ValueError(
+                "Threshold.fit.status must be OK, SEPARATION or NOT_CONVERGED when status is "
+                f"UNREACHABLE; got fit.status={self.fit.status!r}"
             )
         if self.status in _MIRROR_FIT_STATUS_STATUSES and self.fit.status is not self.status:
             raise ValueError(
@@ -325,6 +368,11 @@ class Threshold:
                 raise ValueError("Threshold.value and .lo must be set when censoring is OPEN_UPPER")
             if self.hi is not None:
                 raise ValueError("Threshold.hi must be None when censoring is OPEN_UPPER")
+            if not self.lo <= self.value:
+                raise ValueError(
+                    "Threshold requires lo <= value when censoring is OPEN_UPPER, got "
+                    f"lo={self.lo!r}, value={self.value!r}"
+                )
         elif self.censoring is Censoring.OPEN_LOWER:
             if self.status is not Status.OK:
                 raise ValueError("Threshold.censoring OPEN_LOWER requires status OK")
@@ -337,6 +385,11 @@ class Threshold:
                 raise ValueError("Threshold.value and .hi must be set when censoring is OPEN_LOWER")
             if self.lo is not None:
                 raise ValueError("Threshold.lo must be None when censoring is OPEN_LOWER")
+            if not self.value <= self.hi:
+                raise ValueError(
+                    "Threshold requires value <= hi when censoring is OPEN_LOWER, got "
+                    f"value={self.value!r}, hi={self.hi!r}"
+                )
         elif self.censoring is Censoring.NONE and self.status is Status.OK:
             # `value` is still required. `lo`/`hi` are not: a converged fit on a design too
             # coarse to constrain the parameter can have a profile that crosses the chi-square
@@ -452,6 +505,33 @@ def _resolve_target(definition: Definition, *, fit: Fit) -> tuple[float, str | N
     if definition.kind == "baseline_fraction":
         return definition.value * upper, warning
     return upper - definition.value * (upper - lower), warning  # relative
+
+
+def _extrapolation_warning(fit: Fit, *, value: float) -> str | None:
+    """The report-only ``"EXTRAPOLATED: "`` warning, or ``None`` when it does not apply.
+
+    It applies to a solved ``value`` that is positive and lies strictly outside the range of the
+    nonzero tested severities: strictly below the lowest, or strictly above the highest. The
+    control is not the bottom of the range, since every value is above severity 0, and a value
+    exactly at either end is inside it. It describes ``value`` only, never an interval endpoint,
+    and it changes no number: it records that the fitted curve was read where no severity was
+    tested.
+    """
+    nonzero = [cell.severity for cell in fit.cells if cell.severity > 0.0]
+    if not nonzero or not value > 0.0:
+        return None
+    lowest, highest = min(nonzero), max(nonzero)
+    if value < lowest:
+        side, where, endpoint = "below", "lowest", lowest
+    elif value > highest:
+        side, where, endpoint = "above", "highest", highest
+    else:
+        return None
+    return (
+        f"EXTRAPOLATED: threshold: the reported value {value!r} lies {side} the {where} nonzero "
+        f"tested severity {endpoint!r}; it is the fitted curve's crossing read outside the range "
+        "the data covers, not a severity the tested levels bracket"
+    )
 
 
 def threshold(
@@ -594,6 +674,11 @@ def threshold(
                 value=value,
             )
         collected_warnings.extend(interval_result.warnings)
+        # Report-only and last: it describes `value` alone, whatever the interval method or its
+        # outcome, and changes no number, status, censoring or method.
+        extrapolation = _extrapolation_warning(fit, value=value)
+        if extrapolation is not None:
+            collected_warnings.append(extrapolation)
         return Threshold(
             axis=fit.axis,
             definition=definition,

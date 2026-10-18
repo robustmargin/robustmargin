@@ -1509,16 +1509,19 @@ class TestThresholdDefaultsAndFrozen:
 
 class TestThresholdFitStatusConsistency:
     """A threshold's own ``status``/``censoring`` constrain what ``fit.status`` may be. First, a
-    ``value``, or ``status`` OK/UNREACHABLE, or censoring OPEN_UPPER/OPEN_LOWER, requires
+    ``value``, or ``status`` OK, or censoring OPEN_UPPER/OPEN_LOWER, requires
     ``fit.status is OK``; second, ``status`` SEPARATION/NOT_CONVERGED/CONTROL_INCOMPATIBLE
     requires ``fit.status`` to match. Both are exercised as rejections, each against a
-    deliberately mismatched ``fit=``. The exemption for RIGHT/LEFT/FAILS_AT_BASELINE is
-    exercised as the one accept test: of the fourteen allowed (status, censoring) combinations,
-    FAILS_AT_BASELINE+NONE is the only one that places no constraint on the fit status at all
-    (every other combination pairs a status already covered by the first rule (OK, UNREACHABLE)
-    or the second (SEPARATION, NOT_CONVERGED, CONTROL_INCOMPATIBLE) with RIGHT/LEFT/NONE
-    censoring), so it is the only combination where "any fit status" is actually distinct from
-    what those two rules already require.
+    deliberately mismatched ``fit=``.
+
+    ``FAILS_AT_BASELINE`` places no constraint on the fit status, and is exercised as an accept
+    test. ``UNREACHABLE`` places a narrower one: it is accepted on a fit that is ``OK``,
+    ``SEPARATION`` or ``NOT_CONVERGED``, and rejected on a ``CONTROL_INCOMPATIBLE`` fit, which is
+    reported as itself before any target is examined. ``UNREACHABLE`` is reported for a target
+    outside ``(0, 1)`` on a fit of any other status (no binomial curve crosses such a target, so
+    no fitted curve is needed to say so), as well as for a target the fitted asymptotes cannot
+    reach on a converged one. Of the fourteen allowed (status, censoring) combinations these two
+    are the ones that are not tied to a single fit status by the first two rules.
     """
 
     def test_a_value_with_a_mismatched_fit_status_raises(self) -> None:
@@ -1533,8 +1536,30 @@ class TestThresholdFitStatusConsistency:
                 fit=_fit_with_axis(_AXIS, status=Status.SEPARATION),
             )
 
-    def test_unreachable_status_with_a_non_ok_fit_raises(self) -> None:
-        with pytest.raises(ValueError):
+    @pytest.mark.parametrize(
+        "fit_status", [Status.OK, Status.SEPARATION, Status.NOT_CONVERGED], ids=lambda s: s.name
+    )
+    def test_unreachable_accepts_a_fit_of_any_status_a_threshold_can_be_built_on(
+        self, fit_status: Status
+    ) -> None:
+        threshold = _threshold(
+            value=None,
+            lo=None,
+            hi=None,
+            interval_method="exact_bound",
+            censoring=Censoring.NONE,
+            status=Status.UNREACHABLE,
+            fit=_fit_with_axis(_AXIS, status=fit_status),
+        )
+
+        assert threshold.fit.status is fit_status
+        assert threshold.status is Status.UNREACHABLE
+
+    def test_unreachable_with_a_control_incompatible_fit_raises(self) -> None:
+        """A ``CONTROL_INCOMPATIBLE`` fit is reported as itself before any target is examined, so
+        a threshold that says ``UNREACHABLE`` on top of one has misdescribed the fit. The match
+        pins the rejection to this rule rather than to some other ``ValueError``."""
+        with pytest.raises(ValueError, match=r"(?s)UNREACHABLE.*CONTROL_INCOMPATIBLE"):
             _threshold(
                 value=None,
                 lo=None,
@@ -1542,7 +1567,39 @@ class TestThresholdFitStatusConsistency:
                 interval_method="exact_bound",
                 censoring=Censoring.NONE,
                 status=Status.UNREACHABLE,
-                fit=_fit_with_axis(_AXIS, status=Status.NOT_CONVERGED),
+                fit=_fit_with_axis(_AXIS, status=Status.CONTROL_INCOMPATIBLE),
+            )
+
+    @pytest.mark.parametrize(
+        ("value", "lo", "hi", "censoring", "interval_method"),
+        [
+            (0.05, None, None, Censoring.NONE, "exact_bound"),
+            (None, 0.03, None, Censoring.NONE, "exact_bound"),
+            (None, None, 0.08, Censoring.NONE, "exact_bound"),
+            (None, None, None, Censoring.RIGHT, "exact_bound"),
+            (None, None, None, Censoring.NONE, "profile"),
+        ],
+        ids=["value", "lo", "hi", "censoring", "method"],
+    )
+    def test_unreachable_on_a_failed_fit_still_carries_no_numbers(
+        self,
+        value: float | None,
+        lo: float | None,
+        hi: float | None,
+        censoring: Censoring,
+        interval_method: str,
+    ) -> None:
+        """Loosening which fit it may sit on does not loosen what it carries: no value, no
+        bounds, no censoring, and ``exact_bound`` as the method."""
+        with pytest.raises(ValueError):
+            _threshold(
+                value=value,
+                lo=lo,
+                hi=hi,
+                interval_method=interval_method,
+                censoring=censoring,
+                status=Status.UNREACHABLE,
+                fit=_fit_with_axis(_AXIS, status=Status.SEPARATION),
             )
 
     def test_open_upper_with_a_non_ok_fit_raises(self) -> None:

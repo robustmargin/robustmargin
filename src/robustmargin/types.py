@@ -99,11 +99,16 @@ class Status(StrEnum):
         The optimizer did not converge, or converged to a point where the Hessian is not
         positive-definite. Same fallback as ``SEPARATION``.
     UNREACHABLE
-        The target performance implied by a threshold's ``Definition`` lies outside the fitted
-        curve's range (at or beyond one of the asymptotes), so no severity solves for it.
+        No severity solves for the target performance implied by a threshold's
+        ``Definition``. Either the target lies at or below 0 or at or above 1, which no
+        binomial performance curve crosses, whatever the fit's status; or, on a converged fit,
+        it lies outside the fitted curve's range (at or beyond one of the asymptotes); or, on a
+        linear axis, the fitted curve crosses it only at or below zero severity.
     FAILS_AT_BASELINE
-        The zero-severity control's exact one-sided bound already fails the criterion: the
-        threshold does not exist because the system was never passing to begin with.
+        The zero-severity control, and the lowest nonzero severity when there is one, both
+        confidently fail the criterion by exact one-sided tests, and no nonzero severity
+        confidently passes it: the threshold does not exist because the system was never
+        passing to begin with.
     CONTROL_INCOMPATIBLE
         The upper asymptote is fixed (commonly at 1) but the zero-severity control has
         failures, which drives the likelihood to zero for that fixed value. Refit with
@@ -240,7 +245,8 @@ class Definition:
     - ``absolute(a)``: performance crosses a fixed level ``a``.
       Whether ``a`` is reachable given the fitted asymptotes is decided at threshold-solving
       time (:data:`Status.UNREACHABLE`), not at construction time, so any finite ``a`` --
-      including one that looks out of range, such as 1.5 -- constructs successfully.
+      including one that looks out of range, such as 1.5 -- constructs successfully. An ``a``
+      at or below 0 or at or above 1 is :data:`Status.UNREACHABLE` on every fit.
     - ``baseline_fraction(p)``: performance falls to ``p`` times the performance at zero
       severity. Requires ``0 < p < 1``.
     - ``relative(p)``: a fraction ``p`` of the fitted dynamic range (upper minus lower

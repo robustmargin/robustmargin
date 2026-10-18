@@ -30,7 +30,7 @@ from robustmargin import (
     fit_dose_response,
     threshold,
 )
-from robustmargin.censoring import classify
+from robustmargin.censoring import classify, exact_one_sided_bound
 from robustmargin.testing import fake_fit
 
 _CSV_PATH = Path(__file__).resolve().parents[1] / "data" / "pooled_counts.csv"
@@ -99,8 +99,9 @@ class TestSystemAAxis2RightCensoredCompleteSeparation:
     """500/500 at every tested wind level (2, 5, 10 m/s), 100/100 at the zero control: complete
     separation (no failure anywhere), so ``fit_dose_response`` itself reports
     ``Status.SEPARATION`` (confirmed directly: ``tests/unit/test_models_pooled_counts.py::
-    test_system_a_axis_2_u_1_l_0_is_separation``). The exact one-sided 95% lower bound on the
-    success rate at 10 m/s is ``0.05**(1/500) ~= 0.994``, well above 0.95, so the result is
+    test_system_a_axis_2_u_1_l_0_is_separation``). The exact one-sided lower bound on the
+    success rate at 10 m/s, at the confidence ``c4 = 1 - (1 - level) / 4 = 0.9875`` that every
+    exact claim uses, is ``0.0125**(1/500) ~= 0.991``, well above 0.95, so the result is
     ``RIGHT`` with the bound reported at ``lo=10.0`` -- independent of the fit having converged to
     an interior estimate at all.
     """
@@ -137,8 +138,9 @@ class TestSystemBAxis1FailsAtBaseline:
     separation`` -- no success at all is observed at any nonzero level, so
     ``fit_dose_response``'s pre-fit separation check fires unconditionally, for *any* ``upper``
     argument), but ``FAILS_AT_BASELINE`` places no constraint on ``fit.status``: it is decided
-    from an exact one-sided test of the raw control cell alone, before -- and regardless of --
-    whatever the rest of the curve does.
+    from exact one-sided tests of the raw cells alone (the control, and the lowest nonzero level,
+    both failing at ``c4 = 0.9875``; here ``0/300`` has an upper bound of 0.0145), before -- and
+    regardless of -- whatever the rest of the curve does.
     """
 
     def test_absolute_0_95_fails_at_baseline_with_the_control_rate_attached(self) -> None:
@@ -173,7 +175,8 @@ class TestSystemBAxis1LeftCensored:
     severity 0.01 the result is
     0/300, whose exact one-sided 95% upper bound is ``1 - 0.05**(1/300) ~= 0.0099`` -- far below
     0.245 -- while the control (98/200) clears 0.245 easily, so the result is ``LEFT`` with the
-    bound reported at ``hi=0.01``.
+    bound reported at ``hi=0.01``. (Both tests are at ``c4 = 0.9875``, where the ``0/300``
+    upper bound is 0.0145 and the control's lower bound is about 0.40.)
     """
 
     def test_baseline_fraction_0_5_is_left_censored_at_0_01(self) -> None:
@@ -330,25 +333,31 @@ class TestSystemCAxis3SignedAxis:
     Both magnitude series converge to ``Status.OK`` with fixed ``upper=1.0, lower=0.0``
     (confirmed: ``test_system_c_axis_3_positive_magnitude_u_1_l_0_is_ok`` /
     ``..._negative_magnitude_..._is_ok``), and each fitted ``mu`` (~0.084 positive side, ~0.13
-    negative side) lies strictly inside its own tested range ``[0.0, 0.2]``. **This does not
-    give ``NONE`` censoring with a profile interval** -- the ``RIGHT``/``LEFT`` conditions are
-    evaluated on the data and outrank a converged fit.
-    On both magnitude sides, the control passes ``absolute(0.95)`` (exact one-sided lower bound
-    ``0.9534 > 0.95`` on the shared ``99/100`` control) while **no nonzero level passes**:
-    positive ``0.1: 33/100`` has exact upper bound ``0.4155``; negative ``0.1: 77/100`` has exact
-    upper bound ``0.8374``; both well below ``0.95``, and ``0.2`` fails even more clearly on
-    either side. This differs from ``system_a_axis_1`` (the plain interior case), where
-    ``0.01 -> 299/300`` genuinely passes and ``0.05 -> 122/300`` fails --
-    *some* nonzero level passes there, so the crossing interpolates between two measured points
-    and keeps its number. Here, with no nonzero level passing on either side, the crossing is
-    only bracketed by the unmeasured control-to-``0.1`` gap, so it is ``LEFT`` with the bound at
-    the lowest nonzero severity (``0.1``), on both sides, despite the fit itself being ``OK``
-    with an interior ``mu``.
+    negative side) lies strictly inside its own tested range ``[0.0, 0.2]``.
 
-    ``(Status.OK, Censoring.LEFT)`` is one of the fourteen ``(status, censoring)`` pairs that
-    ``robustmargin.testing.fake_threshold``'s ``_ALLOWED_THRESHOLD_COMBINATIONS`` allows -- this
-    is what makes it reachable at all, not a new invariant.
+    **Recorded statistical change.** On both magnitude sides the control passes ``absolute(0.95)``
+    at confidence 0.95 (exact one-sided lower bound ``0.9534`` on the shared ``99/100`` control)
+    while **no nonzero level passes** (positive ``0.1: 33/100`` has exact upper bound ``0.4155``
+    at 0.95; negative ``0.1: 77/100``, ``0.8374``; ``0.2`` fails even more clearly on either side).
+    A ``LEFT`` result gated on the control at confidence 0.95 therefore fired here, with the bound
+    at the lowest nonzero severity ``0.1``. Under the joint-coverage rule every exact claim,
+    including the control's gate for ``LEFT``, is a test at ``c4 = 1 - (1 - level) / 4 = 0.9875``,
+    and the control's lower bound there is ``0.9379``, below 0.95: the control no longer
+    confidently passes, ``LEFT`` does not fire, and the converged fit's own crossing is reported.
+    That crossing lies below the lowest nonzero tested severity (``0.1``), so the value carries
+    the ``EXTRAPOLATED: `` warning. The test below pins the new result as a deliberate
+    statistical change, not as a fixture fix; the other series in this file do not move.
+
+    The expected numbers are the probit-link profile and delta results (relative tolerance 1e-3).
     """
+
+    # method -> (value, lo, hi) per magnitude half, at level 0.95.
+    _EXPECTED = {
+        ("positive", "profile"): (0.02536, 0.00508, 0.04406),
+        ("positive", "delta"): (0.02536, 0.01181, 0.05446),
+        ("negative", "profile"): (0.05444, 0.03544, 0.06977),
+        ("negative", "delta"): (0.05444, 0.03981, 0.07444),
+    }
 
     @staticmethod
     def _magnitude_split() -> tuple[Observations, Observations]:
@@ -388,45 +397,46 @@ class TestSystemCAxis3SignedAxis:
                 direction="decreasing",
             )
 
-    def test_positive_magnitude_split_absolute_0_95_is_left_censored_at_0_1(self) -> None:
-        """The control passes but no nonzero level does, so the converged ``OK`` fit's own
-        interior ``mu`` is not reported -- see the class docstring for the exact-bound
-        arithmetic.
-        """
-        positive, _negative = self._magnitude_split()
-        fit = fit_dose_response(positive, model="binomial", link="probit", upper=1.0, lower=0.0)
+    def test_the_controls_lower_bound_clears_the_target_at_the_level_but_not_at_c4(self) -> None:
+        """The premise of the change, made explicit: the control (99/100) passes at 0.95 and does
+        not at the confidence the gate now uses."""
+        c4 = 1.0 - (1.0 - _LEVEL) / 4.0
+        assert exact_one_sided_bound(99, 100, level=_LEVEL, side="lower") >= 0.95
+        assert exact_one_sided_bound(99, 100, level=c4, side="lower") < 0.95
+
+    @pytest.mark.parametrize("half", ["positive", "negative"])
+    @pytest.mark.parametrize("method", ["profile", "delta"])
+    def test_absolute_0_95_reports_the_models_value_flagged_as_extrapolated(
+        self, half: str, method: str
+    ) -> None:
+        positive, negative = self._magnitude_split()
+        fit = fit_dose_response(
+            positive if half == "positive" else negative,
+            model="binomial",
+            link="probit",
+            upper=1.0,
+            lower=0.0,
+        )
         assert fit.status is Status.OK
+        value, lo, hi = self._EXPECTED[(half, method)]
 
         t = threshold(
-            fit, definition=Definition.absolute(0.95), interval_method="profile", level=_LEVEL
+            fit, definition=Definition.absolute(0.95), interval_method=method, level=_LEVEL
         )
 
         assert t.status is Status.OK
-        assert t.censoring is Censoring.LEFT
-        assert t.value is None
-        assert t.lo is None
-        assert t.hi == 0.1
-        assert t.interval_method == "exact_bound"
-
-    def test_negative_magnitude_split_absolute_0_95_is_left_censored_at_0_1(self) -> None:
-        """Mirrors the positive side -- the control passes but no nonzero level
-        does (``0.1: 77/100``'s exact upper bound is ``0.8374``, still below ``0.95``), so this
-        is also ``LEFT`` despite the fit converging to an interior ``mu`` (~0.13).
-        """
-        _positive, negative = self._magnitude_split()
-        fit = fit_dose_response(negative, model="binomial", link="probit", upper=1.0, lower=0.0)
-        assert fit.status is Status.OK
-
-        t = threshold(
-            fit, definition=Definition.absolute(0.95), interval_method="profile", level=_LEVEL
-        )
-
-        assert t.status is Status.OK
-        assert t.censoring is Censoring.LEFT
-        assert t.value is None
-        assert t.lo is None
-        assert t.hi == 0.1
-        assert t.interval_method == "exact_bound"
+        assert t.censoring is Censoring.NONE
+        assert t.interval_method == method
+        assert t.value == pytest.approx(value, rel=1e-3)
+        assert t.lo == pytest.approx(lo, rel=1e-3)
+        assert t.hi == pytest.approx(hi, rel=1e-3)
+        assert t.baseline is None and t.grid is None
+        # The value lies below the lowest nonzero tested severity, 0.1: reported, flagged, and
+        # no other warning is added by that.
+        assert t.value is not None and t.value < 0.1
+        extrapolated = [w for w in t.warnings if w.startswith("EXTRAPOLATED: ")]
+        assert len(extrapolated) == 1, t.warnings
+        assert not any(w.startswith("NON_MONOTONE: ") for w in t.warnings)
 
 
 class TestRealSeriesReachingTheExactBoundFallbackAreUnchangedByFixedSequenceScans:
