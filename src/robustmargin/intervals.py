@@ -324,9 +324,29 @@ def _solve_profile_bracket(
     upper_limit: float,
     scale: str,
 ) -> IntervalResult:
+    """Search each side of ``theta_hat`` for the sign change of ``g`` and map the roots back.
+
+    The upper side steps from ``theta_hat`` up to ``upper_limit`` and the lower side steps down to
+    ``lower_limit``. The limits are fixed multiples of the *tested* range, so a fit whose crossing
+    lies far outside that range has ``theta_hat`` at or beyond one of them. A side whose limit is
+    at or on the wrong side of ``theta_hat`` has nothing to search: stepping "outward" toward it
+    would walk back across ``theta_hat`` and find the *other* side's root, reported as this side's
+    bound. That side is open instead, ``g`` is not evaluated for it, and the warning names both
+    ``theta_hat`` and the limit. Every ``theta`` that is evaluated therefore lies between
+    ``theta_hat`` and its own side's limit, and every root found lies on its own side of
+    ``theta_hat``.
+    """
     collected_warnings: list[str] = []
 
     def _side(direction: float, limit: float, label: str) -> float | None:
+        beyond_limit = limit <= theta_hat if direction > 0.0 else limit >= theta_hat
+        if beyond_limit:
+            collected_warnings.append(
+                f"intervals.profile_interval: the estimate (theta_hat={theta_hat!r}) is at or "
+                f"beyond the {label} search limit ({limit!r}), so there is nothing to search "
+                f"on the {label} side; {label} side left open"
+            )
+            return None
         outcome = _bracket_root(g, theta_hat, limit, direction)
         if outcome[0] == "open_failed":
             collected_warnings.append(

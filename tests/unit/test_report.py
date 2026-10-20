@@ -227,6 +227,19 @@ class TestFromDictErrors:
 
         assert rebuilt.warnings == ()
 
+    def test_unreachable_threshold_over_a_control_incompatible_fit_is_rejected_on_load(
+        self,
+    ) -> None:
+        """The packaged schema does not tie a threshold's status to its fit's status; ``Threshold``
+        does, and ``from_dict`` builds one. So a payload that says ``UNREACHABLE`` over a
+        ``CONTROL_INCOMPATIBLE`` fit is refused rather than loaded."""
+        payload = to_dict(fake_threshold(status=Status.CONTROL_INCOMPATIBLE))
+        assert payload["fit"]["status"] == "CONTROL_INCOMPATIBLE"
+        payload["status"] = "UNREACHABLE"
+
+        with pytest.raises(ValueError, match="UNREACHABLE"):
+            from_dict(payload)
+
 
 class TestFromDictValidatesNestedTypeTags:
     """``from_dict`` must check nested ``"type"`` tags too, not just the top-level one.

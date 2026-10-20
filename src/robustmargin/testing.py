@@ -98,8 +98,10 @@ _ALLOWED_THRESHOLD_COMBINATIONS: frozenset[tuple[Status, Censoring]] = frozenset
     }
 )
 
-# UNREACHABLE and FAILS_AT_BASELINE are properties of a perfectly good fit (the target
-# performance is out of the fitted curve's range, or the control already fails); SEPARATION,
+# The default fit under a threshold. UNREACHABLE and FAILS_AT_BASELINE are properties of the
+# target and the data, not of how the fit went (the target performance is out of the fitted
+# curve's range or outside (0, 1), or the control already fails), so a `Threshold` accepts them
+# on a fit of any status; the fake builds the common case, a converged fit. SEPARATION,
 # NOT_CONVERGED and CONTROL_INCOMPATIBLE are properties of the fit itself, so a threshold with
 # one of those statuses is built on a fit carrying the same status.
 _FIT_STATUS_FOR_THRESHOLD_STATUS: dict[Status, Status] = {
