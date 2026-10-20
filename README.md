@@ -1,10 +1,10 @@
 # robustmargin
 Robustness margins with confidence intervals, via dose-response threshold estimation. Model-agnostic — no GPU, no ML framework required
 
-> **Status: latest release `0.1.1`.** Binomial dose-response fits, thresholds with profile-likelihood or delta
+> **Status: latest release `0.2.0`.** Binomial dose-response fits, thresholds with profile-likelihood or delta
 > confidence intervals, censoring, ratios of two thresholds with Fieller or log-delta intervals,
 > fit diagnostics, and the grid break-point rule. Continuous outcomes, clustered and paired
-> inference, and design helpers are planned for `0.2`. While the version is below 1.0, a minor
+> inference, and design helpers are planned for `0.3`. While the version is below 1.0, a minor
 > release may change the public API.
 
 ## What it does
@@ -137,7 +137,7 @@ assert any(w.startswith("NON_MONOTONE_DATA: ") for w in ratio.warnings)
 ```
 
 Treat an overdispersed fit's intervals as too narrow. Clustered inference, which addresses this,
-is planned for `0.2`.
+is planned for `0.3`.
 
 ## Grid break-point rule
 

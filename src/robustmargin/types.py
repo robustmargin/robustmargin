@@ -146,11 +146,11 @@ class IntervalShape(StrEnum):
     EXCLUSIVE
         Two disjoint rays, ``(-inf, lo] union [hi, inf)``, with both ``lo`` and ``hi`` on the
         same side of zero (both negative is the ``UNBOUNDED`` case; a positive ``lo`` never
-        arises under ``dependence="independent"``). **Unreachable in v0.1**: under
+        arises under ``dependence="independent"``). **Unreachable in this release**: under
         ``dependence="independent"`` the covariance term is 0, which forces opposite-signed roots
         whenever this branch's other conditions hold, so the real result is always ``HALF_OPEN``
         instead. The member and :class:`~robustmargin.Ratio`'s invariants for it stay enforced
-        against v0.2's ``dependence="paired"``, which can make the covariance term nonzero and
+        against a future ``dependence="paired"``, which can make the covariance term nonzero and
         reach this shape for the first time.
     HALF_OPEN
         One ray, ``[lo, inf)``: ``lo`` is set, ``hi`` is ``None``. This is what a two-ray

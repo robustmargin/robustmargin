@@ -89,7 +89,7 @@ class Ratio:
         counts, and that ratio is valid -- only the identical *object* is refused.
         ``ratio_interval`` checks only object identity and ``cluster_ids``, for exactly this reason:
         a full shared-data check would need an observation id that nothing in the package records
-        yet (deferred to v0.2's paired dependence work).
+        yet.
     estimate
         The point estimate of the ratio. Required and equal to
         ``threshold_a.value / threshold_b.value`` (``math.isclose``, ``rel_tol=1e-9``) when
@@ -108,8 +108,8 @@ class Ratio:
           ``(-inf, lo] union [hi, inf)``, and ``estimate`` lies in that union (``estimate <=
           lo`` or ``estimate >= hi``) -- the point estimate always lies inside the Fieller
           confidence set, never in the excluded gap. **Unreachable via ``ratio_interval`` in
-          v0.1**: the invariant stays enforced for a directly-constructed
-          ``Ratio`` and for v0.2's ``dependence="paired"``.
+          this release**: the invariant stays enforced for a directly-constructed
+          ``Ratio`` and for a future ``dependence="paired"``.
         - ``HALF_OPEN``: ``lo`` set, ``hi`` is ``None``, meaning ``[lo, inf)``, and
           ``lo <= estimate``. ``method="log_delta"`` additionally requires ``lo > 0``, as for
           ``BOUNDED``. This is what a two-ray Fieller set with ``K > 0`` is once intersected
@@ -128,8 +128,8 @@ class Ratio:
         are both ``"log"`` and that ``threshold_a.value`` and ``threshold_b.value`` are both
         ``> 0`` (the log-scale delta method is undefined off the log axis or through zero).
     dependence
-        ``"independent"`` in v0.1 (v0.2 adds ``"paired"``). With ``"independent"``, the
-        two thresholds' fits must not share a cluster id.
+        ``"independent"`` in this release (``"paired"`` is not yet implemented). With
+        ``"independent"``, the two thresholds' fits must not share a cluster id.
     level
         The confidence level, strictly between 0 and 1.
     censoring
@@ -303,7 +303,7 @@ class Ratio:
         elif self.shape is IntervalShape.EXCLUSIVE:
             # Unreachable through `ratio_interval` while `dependence="independent"` fixes the
             # covariance term at 0: every same-signed-root case that would
-            # produce this shape needs a nonzero covariance, which only v0.2's
+            # produce this shape needs a nonzero covariance, which only a future
             # `dependence="paired"` can supply. The invariant stays enforced -- for a `Ratio`
             # built directly (as `robustmargin.testing.fake_ratio` does) and for when `paired`
             # lands -- rather than being deleted along with the now-dead production path.
@@ -465,7 +465,7 @@ def _fieller_shape(
 
     ``EXCLUSIVE`` (same-signed roots with ``A < 0``) needs ``B <= 0``, i.e. a nonzero covariance
     term -- unreachable through this function while ``dependence="independent"`` fixes ``C = 0``.
-    :class:`Ratio`'s invariants for it stay enforced against v0.2's ``dependence="paired"``.
+    :class:`Ratio`'s invariants for it stay enforced against a future ``dependence="paired"``.
 
     ``A < 0`` with a non-positive discriminant: ``UNBOUNDED`` (no real roots, confidence set is
     the whole line).
@@ -575,14 +575,14 @@ def _fieller_shape(
 
     # B <= 0 cannot arise under dependence="independent" (B = theta_a*theta_b, and both values
     # are non-negative by Threshold's own invariant), so this is a defensive branch matching the
-    # general algebra rather than a reachable v0.1 case.
+    # general algebra rather than a case reachable in this release.
     if b_coef == 0.0:
         # A == 0 and B == 0 degenerate the inequality to `K <= 0`, so K > 0 is an EMPTY
         # confidence set -- not a half-line, and emphatically not the whole axis. Reporting
         # UNBOUNDED there would be the least informative possible answer to an input that is
         # actually contradictory, so it raises rather than silently falling back. Unreachable
         # while dependence="independent" keeps B = theta_a*theta_b >= 0 (B == 0 forces
-        # theta_a == 0, hence K = -z^2*Va <= 0), but v0.2's paired covariance can reach it.
+        # theta_a == 0, hence K = -z^2*Va <= 0), but a future paired covariance can reach it.
         if k_coef > 0.0:
             raise ValueError(
                 "ratio_interval: the Fieller confidence set is empty (A == 0, B == 0, "
@@ -725,7 +725,7 @@ def ratio_interval(
     ``IntervalShape.HALF_OPEN``; an open region of the parameter space, not a measure-zero
     boundary -- how often it occurs is a property of the design's power) or the whole positive
     axis (``UNBOUNDED``) -- never a genuine two-ray exclusion, which needs a nonzero covariance
-    term that only v0.2's ``dependence="paired"`` can supply. ``EXCLUSIVE``'s :class:`Ratio`
+    term that only a future ``dependence="paired"`` can supply. ``EXCLUSIVE``'s :class:`Ratio`
     invariants stay enforced against that future, but no call through this function reaches them
     today.
 
@@ -740,8 +740,8 @@ def ratio_interval(
     method
         ``"fieller"`` or ``"log_delta"``.
     dependence
-        ``"independent"`` only, in this release. ``"paired"`` raises, naming that it is v0.2
-        work (mirrors :func:`robustmargin.threshold`'s own guard for the same request).
+        ``"independent"`` only, in this release. ``"paired"`` raises, naming that it is not
+        implemented yet (mirrors :func:`robustmargin.threshold`'s own guard for the same request).
         Under ``"independent"``, ``t_a.fit`` and ``t_b.fit`` must not be the same object and
         must not share a cluster id -- both checks are necessary but **not sufficient** for
         actual independence.
@@ -775,7 +775,7 @@ def ratio_interval(
         ids under ``dependence="independent"`` (via :class:`Ratio`'s own validation, once this
         function reaches the point of constructing one); ``method`` outside
         ``{"fieller", "log_delta"}``; ``dependence`` anything other than ``"independent"``
-        (``"paired"`` gets its own message, naming it v0.2 work); ``level`` outside ``(0, 1)``, or a
+        (``"paired"`` gets its own message, not yet implemented); ``level`` outside ``(0, 1)``, or a
         ``level`` mismatch; ``threshold_b.value == 0`` (nothing to divide by); for
         ``method="log_delta"`` once both inputs are ``(OK, NONE)``, either axis not ``scale="log"``
         or either ``value`` not ``> 0``; for ``method="log_delta"``, a combined log-scale standard
@@ -794,8 +794,8 @@ def ratio_interval(
         )
     if dependence not in _VALID_DEPENDENCE:
         raise ValueError(
-            "ratio_interval: dependence must be 'independent' (v0.2 will add 'paired'), got "
-            f"{dependence!r}"
+            "ratio_interval: dependence must be 'independent' ('paired' is not yet "
+            f"implemented), got {dependence!r}"
         )
 
     # The shared-`Fit`-object check lives here, in the function, rather than in

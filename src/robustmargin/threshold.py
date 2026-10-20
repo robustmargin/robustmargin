@@ -243,7 +243,7 @@ class Threshold:
         if self.direction != "decreasing":
             raise ValueError(
                 "Threshold: direction='increasing' is not supported in this release; an "
-                "increasing-is-worse definition is planned for v0.2"
+                "increasing-is-worse definition is planned for a later release"
             )
         if self.interval_method not in _VALID_INTERVAL_METHODS:
             raise ValueError(
@@ -597,7 +597,7 @@ def threshold(
         )
     if dependence is not None and dependence not in _VALID_DEPENDENCE_INPUTS:
         raise ValueError(
-            "threshold: dependence must be None, 'independent', or (v0.2, not yet implemented) "
+            "threshold: dependence must be None, 'independent', or (not yet implemented) "
             f"'paired', got {dependence!r}"
         )
     if fit.cluster_ids is not None and dependence is None:
@@ -631,7 +631,7 @@ def threshold(
     if classification.solve:
         theta_hat, value = solve_value(fit, target=target)
         if value <= 0.0:
-            # A linear axis can solve to a crossing at or below zero severity. v0.1 severity is
+            # A linear axis can solve to a crossing at or below zero severity. Severity is
             # non-negative (`Threshold` enforces it), so such a crossing is not reachable on the
             # axis as tested. It is reported as UNREACHABLE with a warning that names the solved
             # value, so it is distinguishable from the asymptote-driven UNREACHABLE. Allowing
