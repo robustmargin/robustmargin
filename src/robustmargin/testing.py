@@ -444,7 +444,7 @@ def fake_ratio(
         else:
             # EXCLUSIVE: unreachable through ratio_interval() itself while
             # dependence="independent" fixes the covariance term at 0, but Ratio's own
-            # invariants for it stay enforced against v0.2's dependence="paired", and this fake
+            # invariants for it stay enforced against a future dependence="paired", and this fake
             # builds one directly so a consumer can still test against it. The point estimate
             # sits on the near edge of the excluded gap, inside the (-inf, lo] ray of the
             # Fieller confidence set.

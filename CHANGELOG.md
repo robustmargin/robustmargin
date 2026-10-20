@@ -7,6 +7,8 @@ minor release may change the public API, and every such change carries a migrati
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-10-20
+
 ### Changed
 - **Behavioural change: the exact results `threshold()` reports are now jointly correct at the
   stated confidence.**

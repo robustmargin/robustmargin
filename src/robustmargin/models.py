@@ -15,7 +15,7 @@ errors that carry little information. With such asymptotes the pre-fit overlap c
 necessary but not sufficient for an interior maximum; it is exact only for ``u = 1, l = 0``.
 
 **v1 is binomial-only.** ``model`` accepts only ``"binomial"``; a new model family (``"ll4"``,
-``"isotonic"``) is a v0.2 addition that requires a new ``schema_version``, not a silent
+``"isotonic"``) is a later addition that requires a new ``schema_version``, not a silent
 extension of the current one. :data:`robustmargin.report.SCHEMA_VERSION` is the one version
 :func:`robustmargin.report.from_dict` reads and the single source of that number.
 
@@ -347,9 +347,9 @@ class Fit:
     direction
         ``"decreasing"`` only, in this release (see above).
     model
-        The model family. Only ``"binomial"`` exists in v0.1; a new family such as ``"ll4"`` or
-        ``"isotonic"`` is a v0.2 addition requiring a further ``schema_version`` bump beyond the
-        current one (:data:`robustmargin.report.SCHEMA_VERSION`).
+        The model family. Only ``"binomial"`` exists in this release; a new family such as
+        ``"ll4"`` or ``"isotonic"`` is a later addition requiring a further ``schema_version``
+        bump beyond the current one (:data:`robustmargin.report.SCHEMA_VERSION`).
     link
         The link function: ``"probit"``, ``"logit"`` or ``"cloglog"`` for ``model="binomial"``.
         Required; the schema's ``link`` enum carries no ``null`` alternative, so this is a
@@ -445,7 +445,7 @@ class Fit:
         if self.model == "binomial" and self.direction != "decreasing":
             raise ValueError(
                 "Fit: model='binomial' only supports direction='decreasing' in this release; "
-                "an increasing-is-worse definition is planned for v0.2"
+                "an increasing-is-worse definition is planned for a later release"
             )
         allowed_links = _VALID_LINKS[self.model]
         if self.link not in allowed_links:
@@ -2028,7 +2028,7 @@ def fit_dose_response(
         raise ValueError(
             "fit_dose_response: direction='increasing' is not supported in this release "
             "(model='binomial' only supports 'decreasing'; an increasing-is-worse definition "
-            "is planned for v0.2)"
+            "is planned for a later release)"
         )
 
     # Computed from the raw Observations before a fitting path is even chosen, and attached to
