@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+type: software
+message: "If you use this software, please cite it using the metadata below."
+title: robustmargin
+authors:
+  - family-names: Badkoubeh
+    given-names: Babak
+    orcid: "https://orcid.org/0009-0005-3586-7901"
+    affiliation: Independent Researcher
+license: Apache-2.0
+repository-code: "https://github.com/robustmargin/robustmargin"
+url: "https://pypi.org/project/robustmargin/"
+abstract: >-
+  robustmargin estimates robustness margins with confidence intervals via
+  dose-response threshold estimation. It fits binomial generalised linear
+  models with probit, logit or complementary log-log links to success counts
+  observed at increasing severity levels, and reports the severity at which
+  performance crosses a chosen level, with profile-likelihood or delta-method
+  intervals. When the data cannot support an estimate, a threshold beyond the
+  tested range is reported as an exact censoring bound and a failed fit is
+  flagged rather than given a number. It is domain-neutral and needs no GPU or
+  machine-learning framework.
+keywords:
+  - dose-response
+  - threshold estimation
+  - robustness margin
+  - confidence intervals
+  - binomial regression
+  - statistics

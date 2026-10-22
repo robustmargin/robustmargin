@@ -83,10 +83,18 @@ _CITATION_PATTERNS: tuple[_Pattern, ...] = (
     # (`0023`, `0023 Amendment 2`, "0008, 0009"). It must not match a digit run that is part of a
     # number: `0.0025` (preceded by "."), `1e-0025` (preceded by an exponent sign), `10025` or
     # `1_0025` (preceded by a word character), `0.00250` or `0023.5` (followed by a word
-    # character or by "." and a digit).
+    # character or by "." and a digit). The four digit groups of an ORCID iD URL
+    # (`https://orcid.org/0009-0005-3586-7901`) are exempt: that is a public researcher
+    # identifier, not a citation. The exemption is anchored on `orcid.org/` (fixed-width
+    # look-behinds, one per group), so a bare `0009-0005` or `0031-0034` is still flagged.
     (
         "decision-record number",
-        re.compile(r"(?<![\w.])(?<![eE][-+])0\d{3}(?!\w|\.\d)"),
+        re.compile(
+            r"(?<![\w.])(?<![eE][-+])"
+            r"(?<!orcid\.org/)(?<!orcid\.org/\d{4}-)"
+            r"(?<!orcid\.org/\d{4}-\d{4}-)(?<!orcid\.org/\d{4}-\d{4}-\d{4}-)"
+            r"0\d{3}(?!\w|\.\d)"
+        ),
     ),
     ("section sign", re.compile("§")),
     # The word "plan" and its plural; `\b` keeps "planned", "planning", "planar", "explanation".
@@ -527,6 +535,9 @@ _KNOWN_BAD: tuple[tuple[str, str], ...] = (
     ("decision 0011 says so", "decision-record number"),
     ("(0008, 0009)", "decision-record number"),
     ("0010.", "decision-record number"),
+    ("see 0023", "decision-record number"),
+    ("0031-0034", "decision-record number"),
+    ("bare iD 0009-0005-3586-7901 without the URL", "decision-record number"),
     # section sign
     ("label §5.3-§5.5", "section sign"),
     ("(§3.1)", "section sign"),
@@ -751,6 +762,9 @@ _KNOWN_GOOD: tuple[str, ...] = (
     "urn:robustmargin:schema:scorecard-v1",
     "schema_dir.glob('scorecard-v*.json')",
     "f'scorecard-v{version}.json'",
+    # A public ORCID iD URL is an identifier, not a decision-record citation.
+    "orcid: https://orcid.org/0009-0005-3586-7901",
+    "https://orcid.org/0000-0002-1825-0097",
     # Numeric literals that contain four digits with a leading zero.
     "0.0025",
     "alpha = 0.0025",
