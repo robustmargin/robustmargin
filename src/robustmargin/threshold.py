@@ -108,11 +108,13 @@ class Threshold:
     - trials are independent;
     - the target is fixed, as it is under ``absolute``.
 
-    **A target taken from the control.** For a failed fit under ``baseline_fraction``, the
-    target is the stated fraction of the control's observed rate, so it depends on the control's
-    counts. The joint guarantee is not proved for that case. In simulation at ``level = 0.95``
-    the rate of wrong exact results stayed below ``1 - level``: at most 1.4%, on a design built so
-    that the control passes its exact test only when the target exceeds its true rate.
+    **A target taken from the control.** On a failed fit (``SEPARATION`` or ``NOT_CONVERGED``),
+    ``baseline_fraction(p)`` resolves its target from the control's observed rate, ``p * k0 / n0``
+    for ``k0`` successes in ``n0`` control trials. The exact claims are then tests against that
+    plug-in target. They carry no coverage guarantee for ``p`` times the true zero-severity rate,
+    which is the quantity the definition names, and the joint bound above is not proved for a
+    target that depends on the control's counts. For a covered claim on a failed fit, use
+    ``absolute(a)``.
 
     **Exact ties.** A claim is read non-strictly at the tested severities: a lower bound means the
     true rate there is at least the target, an upper bound that it is at most the target. If a

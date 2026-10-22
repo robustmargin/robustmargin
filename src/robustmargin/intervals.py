@@ -40,7 +40,7 @@ from __future__ import annotations
 import math
 import warnings
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 from numpy.typing import NDArray
@@ -54,10 +54,12 @@ from statsmodels.genmod.generalized_linear_model import GLM
 from statsmodels.tools.sm_exceptions import PerfectSeparationWarning
 
 from robustmargin.models import (
+    _NEWTON_DECREMENT_TOLERANCE,
     _STATSMODELS_LINKS,
     Fit,
     _cells_to_arrays,
     _full_binomial_log_likelihood,
+    _newton_decrement_half,
     _transform,
 )
 from robustmargin.types import Censoring, Definition, _check_finite_number
@@ -410,12 +412,19 @@ def _fixed_profile_llf(
     link: str,
     scale: str,
     z_star: float,
+    direct: Callable[[], float | None],
 ) -> float | None:
     """``ell_p(theta)`` for the fixed-asymptote path: fit the no-intercept offset GLM at this
     ``theta`` (an *optimiser*, per this module's docstring), then evaluate the full likelihood
-    at the resulting ``(mu, s)``. Returns ``None`` (an inner-fit failure) when the GLM does not
-    converge or its fitted slope is non-positive -- a wrong-sign slope means the profile value
-    is the flat-curve boundary, so that side never closes there.
+    at the resulting ``(mu, s)``. Returns ``None`` (an inner-fit failure) when its fitted slope
+    is non-positive -- a wrong-sign slope means the profile value is the flat-curve boundary, so
+    that side never closes there.
+
+    The GLM's clipped iteratively reweighted least squares can stop short of the maximum, or
+    report non-convergence where a maximum exists. When it does not converge, or its slope
+    fails the Newton-decrement check on the stable log-likelihood (``lambda^2 / 2`` above the
+    shared tolerance), ``direct`` recomputes ``ell_p(theta)`` by direct constrained maximisation
+    of the same model.
     """
     covariate = (_transform(nonzero_severity, scale=scale) - theta).reshape(-1, 1)
     failures = nonzero_trials - nonzero_successes
@@ -439,14 +448,30 @@ def _fixed_profile_llf(
     except (np.linalg.LinAlgError, ValueError):
         return None
     if not bool(result.converged):
-        return None
+        return direct()
     beta = float(result.params[0])
     if not beta > 0.0:
         return None
 
+    # The decrement is parametrisation-invariant; `log(beta)` keeps its finite-difference step
+    # relative, whatever the units of the severity axis make `beta` (the inverse slope scale).
+    def _log_beta_loglike(x: NDArray[np.float64]) -> float:
+        slope_scale = math.exp(-float(x[0]))
+        return _full_binomial_log_likelihood(
+            all_severity,
+            all_successes,
+            all_trials,
+            mu=theta - slope_scale * z_star,
+            s=slope_scale,
+            upper=upper,
+            lower=lower,
+            scale=scale,
+            link=link,
+        )
+
     s = 1.0 / beta
     mu = theta - s * z_star
-    return _full_binomial_log_likelihood(
+    glm_llf = _full_binomial_log_likelihood(
         all_severity,
         all_successes,
         all_trials,
@@ -457,10 +482,20 @@ def _fixed_profile_llf(
         scale=scale,
         link=link,
     )
+    if _newton_decrement_half(_log_beta_loglike, np.array([math.log(beta)])) <= (
+        _NEWTON_DECREMENT_TOLERANCE
+    ):
+        return glm_llf
+    # The direct value is a maximum over the same set, so the larger of the two is the better
+    # estimate of the profile; a failed direct maximisation leaves the converged GLM value.
+    direct_llf = direct()
+    if direct_llf is None or not math.isfinite(glm_llf):
+        return direct_llf if direct_llf is not None else glm_llf
+    return max(glm_llf, direct_llf)
 
 
 def _profile_interval_fixed(
-    fit: Fit, *, target: float, level: float, theta_hat: float
+    fit: Fit, *, definition: Definition, target: float, level: float, theta_hat: float
 ) -> IntervalResult:
     assert fit.params is not None
     upper = fit.params["upper"].value
@@ -477,7 +512,14 @@ def _profile_interval_fixed(
     llf_hat = _llf_hat(fit)
     chi2_target = float(chi2.ppf(level, 1))
 
+    replaced = False
+
     def g(theta: float) -> float | None:
+        def direct() -> float | None:
+            nonlocal replaced
+            replaced = True
+            return _estimated_profile_llf(theta, fit=fit, definition=definition)
+
         llf_p = _fixed_profile_llf(
             theta,
             nonzero_severity=nz_severity,
@@ -491,6 +533,7 @@ def _profile_interval_fixed(
             link=fit.link,
             scale=fit.axis.scale,
             z_star=z_star,
+            direct=direct,
         )
         if llf_p is None:
             return None
@@ -505,12 +548,23 @@ def _profile_interval_fixed(
         )
 
     lower_limit, upper_limit = _search_limits(fit)
-    return _solve_profile_bracket(
+    result = _solve_profile_bracket(
         g,
         theta_hat=theta_hat,
         lower_limit=lower_limit,
         upper_limit=upper_limit,
         scale=fit.axis.scale,
+    )
+    if not replaced:
+        return result
+    return replace(
+        result,
+        warnings=(
+            *result.warnings,
+            "intervals.profile_interval: the profile inner fit was replaced by direct "
+            "constrained maximisation of the same model at some theta, because the GLM did not "
+            "reach the maximum there",
+        ),
     )
 
 
@@ -731,7 +785,9 @@ def profile_interval(
         and fit.params["upper"].value == 1.0
         and fit.params["lower"].value == 0.0
     ):
-        return _profile_interval_fixed(fit, target=target, level=level, theta_hat=theta_hat)
+        return _profile_interval_fixed(
+            fit, definition=definition, target=target, level=level, theta_hat=theta_hat
+        )
     return _profile_interval_estimated(fit, definition=definition, level=level, theta_hat=theta_hat)
 
 

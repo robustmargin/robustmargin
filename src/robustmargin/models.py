@@ -37,7 +37,7 @@ from typing import Literal
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
-from scipy.special import expit, gammaln, xlogy
+from scipy.special import expit, gammaln, log_expit
 from scipy.special import logit as _logit
 from scipy.stats import norm
 from statsmodels.base.model import GenericLikelihoodModel
@@ -95,7 +95,8 @@ _ASYMPTOTE_PROBABILITY_EPS = 1e-6
 # statsmodels' PerfectSeparationWarning. That warning tests `allclose(fitted, observed)`, which on
 # grouped binomial data also fires on an exact fit -- every two-level design with overlap -- so it
 # is filtered to "ignore" around both GLM calls below. Every fit reaching those calls has already
-# passed the exact check. The check is exact for fixed u = 1, l = 0 (Albert & Anderson, 1984); with
+# passed the exact check. The check is exact for fixed u = 1, l = 0 (Albert & Anderson, 1984;
+# Silvapulle, 1981, for the existence of a finite maximum under log-concave links); with
 # estimated or other fixed asymptotes it is necessary but not sufficient, and a near-step curve
 # there is not yet detected (see the module docstring).
 
@@ -861,6 +862,81 @@ def _centering_and_scale(severity: NDArray[np.float64], *, scale: str) -> tuple[
     return m, d
 
 
+def _f_log_cdf(z: NDArray[np.float64], link: str) -> NDArray[np.float64]:
+    """``log F(z)``, computed in log space so it stays finite and accurate where ``F`` is
+    far below the smallest double: ``norm.logcdf`` for probit, ``log_expit(z)`` for logit, and
+    ``log(-expm1(-exp(z)))`` for cloglog.
+    """
+    if link == "probit":
+        return np.asarray(norm.logcdf(z), dtype=np.float64)
+    if link == "logit":
+        return np.asarray(log_expit(z), dtype=np.float64)
+    # For z < -30, `-expm1(-exp(z))` is exp(z) to double precision and its log is z; evaluating
+    # the log directly would underflow to -inf near z = -745.
+    with np.errstate(over="ignore", divide="ignore"):
+        direct = np.log(-np.expm1(-np.exp(z)))
+    return np.asarray(np.where(z < -30.0, z, direct), dtype=np.float64)
+
+
+def _f_log_survival(z: NDArray[np.float64], link: str) -> NDArray[np.float64]:
+    """``log(1 - F(z))``, the mirror of :func:`_f_log_cdf`: ``norm.logsf`` for probit,
+    ``log_expit(-z)`` for logit, and ``-exp(z)`` for cloglog.
+    """
+    if link == "probit":
+        return np.asarray(norm.logsf(z), dtype=np.float64)
+    if link == "logit":
+        return np.asarray(log_expit(-z), dtype=np.float64)
+    with np.errstate(over="ignore"):
+        return np.asarray(-np.exp(z), dtype=np.float64)
+
+
+def _log_or_neg_inf(value: float) -> float:
+    return math.log(value) if value > 0.0 else -math.inf
+
+
+def _curve_log_success_and_failure_probability(
+    severity: ArrayLike,
+    *,
+    mu: float,
+    s: float,
+    upper: float,
+    lower: float,
+    scale: str,
+    link: str,
+    center: float = 0.0,
+    spread: float = 1.0,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """``(log p, log(1 - p))`` for ``p = l + (u - l) * (1 - F(z))``, each combined in log space:
+    ``log p = logaddexp(log l, log(u - l) + log(1 - F))`` and
+    ``log(1 - p) = logaddexp(log(1 - u), log(u - l) + log F)``. Neither term is formed as the
+    complement of the other, so neither rounds to ``log(0)`` in a tail where the curve is
+    smaller than the smallest double. ``log 0`` is ``-inf``, which ``logaddexp`` absorbs.
+
+    Shares :func:`_curve_success_probability`'s zero-severity-control handling (``p(0) = u``)
+    and ``center``/``spread`` reparametrisation.
+    """
+    x = np.asarray(severity, dtype=np.float64)
+    log_p = np.empty_like(x)
+    log_q = np.empty_like(x)
+    zero_control = (scale == "log") & (x == 0.0)
+    nonzero = ~zero_control
+    log_lower = _log_or_neg_inf(lower)
+    log_one_minus_upper = _log_or_neg_inf(1.0 - upper)
+    log_range = math.log(upper - lower)
+    if np.any(nonzero):
+        t = (_transform(x[nonzero], scale=scale) - center) / spread
+        z = (t - mu) / s
+        # A non-finite `z` (an optimizer step that overflowed `s`) gives NaN, as it always did;
+        # the optimizers and the finiteness guard handle it, so the warning is not repeated here.
+        with np.errstate(invalid="ignore"):
+            log_p[nonzero] = np.logaddexp(log_lower, log_range + _f_log_survival(z, link))
+            log_q[nonzero] = np.logaddexp(log_one_minus_upper, log_range + _f_log_cdf(z, link))
+    if np.any(zero_control):
+        log_p[zero_control] = _log_or_neg_inf(upper)
+        log_q[zero_control] = log_one_minus_upper
+    return log_p, log_q
+
+
 def _full_binomial_log_likelihood(
     severity: NDArray[np.float64],
     successes: NDArray[np.float64],
@@ -878,13 +954,16 @@ def _full_binomial_log_likelihood(
     """The full binomial log-likelihood, including the ``lchoose`` combinatorial term, so it
     matches R ``drc``'s ``logLik()`` on both fitting paths (see
     https://github.com/robustmargin/robustmargin/blob/main/tools/drc_reference/README.md).
-    :func:`scipy.special.xlogy` gives a 0-successes or 0-failures cell a term of exactly ``0.0``
-    without ever evaluating ``log(0)``.
 
-    ``center``/``spread`` are forwarded to :func:`_curve_success_probability` -- see there.
+    Evaluated in log space through :func:`_curve_log_success_and_failure_probability`, so a cell
+    deep in a tail keeps a finite, accurate term instead of the ``-inf`` that ``log`` of a
+    probability rounded to exactly ``0`` gives. A 0-successes or 0-failures cell has a term of
+    exactly ``0.0``, even where the matching log probability is ``-inf``.
+
+    ``center``/``spread`` are forwarded to the curve evaluation -- see there.
     Defaulted to the identity, so this still computes the reported ``Fit.log_likelihood`` on
     natural-scale ``mu``/``s`` against raw severity when a caller omits them (both fitting
-    paths' final report does); only the estimated-asymptote optimiser's own iterations, which
+    paths' final report does); only the optimisers' own iterations, which
     work in centred-and-scaled units, pass them explicitly.
 
     Summed with the plain Python builtin ``sum`` over a fixed-order list, not ``numpy.sum``:
@@ -896,7 +975,7 @@ def _full_binomial_log_likelihood(
     sequential accumulation is a bit-exact no-op. This is what keeps the aggregation property
     test's "with control" and "without control" fits bit-identical, not merely close.
     """
-    p = _curve_success_probability(
+    log_p, log_q = _curve_log_success_and_failure_probability(
         severity,
         mu=mu,
         s=s,
@@ -909,7 +988,10 @@ def _full_binomial_log_likelihood(
     )
     failures = trials - successes
     lchoose = gammaln(trials + 1.0) - gammaln(successes + 1.0) - gammaln(failures + 1.0)
-    terms = lchoose + xlogy(successes, p) + xlogy(failures, 1.0 - p)
+    with np.errstate(invalid="ignore"):
+        success_terms = np.where(successes > 0.0, successes * log_p, 0.0)
+        failure_terms = np.where(failures > 0.0, failures * log_q, 0.0)
+    terms = lchoose + success_terms + failure_terms
     return float(sum(terms.tolist()))
 
 
@@ -1304,6 +1386,26 @@ def _boundary_warning(
     return None
 
 
+_NONFINITE_LOG_LIKELIHOOD_WARNING = (
+    "fit_dose_response: the log-likelihood at the fitted parameters is not finite -- no "
+    "estimate is reported"
+)
+_REPLACED = "so it was replaced by direct likelihood maximisation of the same model"
+_REFIT_NOT_CONVERGED_WARNING = f"fit_dose_response: the GLM did not converge, {_REPLACED}"
+_REFIT_OPTIMALITY_WARNING = (
+    f"fit_dose_response: the GLM estimate failed the optimality check (it is not a maximum of "
+    f"the likelihood), {_REPLACED}"
+)
+_REFIT_INFORMATION_WARNING = (
+    f"fit_dose_response: the GLM's information could not be evaluated, {_REPLACED}"
+)
+_INFORMATION_RECOVERED_WARNING = (
+    "fit_dose_response: the GLM's observed information could not be evaluated (it is not "
+    "finite at cells where the fitted probability is 0 or 1), so it was computed from the "
+    "stable log-likelihood instead"
+)
+
+
 def _failure_warnings(reason: str, *, pilot_wrong_sign: bool) -> tuple[str, ...]:
     """The ``warnings`` tuple for a ``NOT_CONVERGED`` estimated-asymptote fit: ``reason`` alone,
     or ``reason`` plus the shared wrong-sign/flat reason when a pilot GLM slope on the (rescaled)
@@ -1616,6 +1718,17 @@ def _fit_generic(
         scale=axis.scale,
         link=link,
     )
+    if not math.isfinite(log_likelihood):
+        return _status_only_fit(
+            obs,
+            cells=cells,
+            cluster_ids=cluster_ids,
+            link=link,
+            status=Status.NOT_CONVERGED,
+            fit_warnings=_failure_warnings(
+                _NONFINITE_LOG_LIKELIHOOD_WARNING, pilot_wrong_sign=pilot_wrong_sign
+            ),
+        )
 
     params = {
         "mu": Parameter(value=mu, fixed=False),
@@ -1649,6 +1762,90 @@ def _fit_generic(
 # ================================================================================================
 
 
+# The GLM path and the profile's inner fit accept an estimate only when its Newton decrement on
+# the stable log-likelihood, lambda^2 = g' (-H)^-1 g, satisfies lambda^2 / 2 <= this value: the
+# log-likelihood the estimate would still gain from a Newton step. Unlike a bound on the raw score,
+# it does not depend on the parametrisation or on the sample size.
+_NEWTON_DECREMENT_TOLERANCE = 1e-6
+
+
+def _numerical_gradient_and_hessian(
+    func: Callable[[NDArray[np.float64]], float], x: NDArray[np.float64]
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """The gradient and Hessian of ``func`` at ``x`` by central differences with a step of
+    ``1e-4 * max(1, |x_j|)`` -- numerical differentiation of an already-fitted quantity, not a
+    fitting procedure.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    size = x.size
+    step = 1e-4 * np.maximum(1.0, np.abs(x))
+    f0 = func(x)
+    gradient = np.zeros(size, dtype=np.float64)
+    hessian = np.zeros((size, size), dtype=np.float64)
+    for i in range(size):
+        up = x.copy()
+        up[i] += step[i]
+        down = x.copy()
+        down[i] -= step[i]
+        f_up, f_down = func(up), func(down)
+        gradient[i] = (f_up - f_down) / (2.0 * step[i])
+        hessian[i, i] = (f_up - 2.0 * f0 + f_down) / step[i] ** 2
+        for j in range(i + 1, size):
+            corners = []
+            for sign_i, sign_j in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
+                point = x.copy()
+                point[i] += sign_i * step[i]
+                point[j] += sign_j * step[j]
+                corners.append(func(point))
+            hessian[i, j] = hessian[j, i] = (corners[0] - corners[1] - corners[2] + corners[3]) / (
+                4.0 * step[i] * step[j]
+            )
+    return gradient, hessian
+
+
+def _newton_decrement_half(
+    func: Callable[[NDArray[np.float64]], float], x: NDArray[np.float64]
+) -> float:
+    """``lambda^2 / 2`` for the log-likelihood ``func`` at ``x``, with ``lambda^2 = g' (-H)^-1 g``
+    from the numerical score and observed information. ``inf`` when the information is not
+    finite and positive-definite, which is itself a failed optimality check.
+    """
+    gradient, hessian = _numerical_gradient_and_hessian(func, x)
+    information = -(hessian + hessian.T) / 2.0
+    if not bool(np.all(np.isfinite(information))) or not bool(np.all(np.isfinite(gradient))):
+        return math.inf
+    if float(np.min(np.linalg.eigvalsh(information))) <= 0.0:
+        return math.inf
+    return float(gradient @ np.linalg.solve(information, gradient)) / 2.0
+
+
+def _refit_by_direct_likelihood(
+    obs: Observations,
+    *,
+    cells: tuple[Cell, ...],
+    cluster_ids: tuple[str | int, ...] | None,
+    link: str,
+    reason: str,
+) -> Fit:
+    """Refit the fixed ``upper=1, lower=0`` model by direct maximisation of its likelihood
+    through the estimated-asymptote path with both asymptotes fixed: the same link, the same
+    curve, a statsmodels optimizer. That path's own convergence, score and Hessian checks decide
+    the status, and the result carries ``reason``, which states which check replaced the GLM
+    estimate.
+    """
+    refit = _fit_generic(
+        obs,
+        cells=cells,
+        cluster_ids=cluster_ids,
+        link=link,
+        upper_is_estimate=False,
+        upper_value=1.0,
+        lower_is_estimate=False,
+        lower_value=0.0,
+    )
+    return replace(refit, warnings=(reason, *refit.warnings))
+
+
 def _fit_glm(
     obs: Observations,
     *,
@@ -1677,14 +1874,16 @@ def _fit_glm(
         glm_result = model.fit()
     convergence_warned = any(issubclass(w.category, ConvergenceWarning) for w in caught)
 
+    # The GLM's clipped IRLS can report non-convergence, or converge to a point that is not the
+    # maximum, on data whose maximum is finite and unique. Either case is refit as the same
+    # model by direct likelihood maximisation, and the result says so.
     if convergence_warned or not bool(glm_result.converged):
-        return _status_only_fit(
+        return _refit_by_direct_likelihood(
             obs,
             cells=cells,
             cluster_ids=cluster_ids,
             link=link,
-            status=Status.NOT_CONVERGED,
-            fit_warnings=("fit_dose_response: the GLM optimizer did not converge",),
+            reason=_REFIT_NOT_CONVERGED_WARNING,
         )
 
     beta0 = float(glm_result.params[0])
@@ -1720,6 +1919,35 @@ def _fit_glm(
             fit_warnings=(_WRONG_SIGN_OR_FLAT_WARNING,),
         )
 
+    # Optimality of the GLM estimate on the stable log-likelihood, in the GLM's own coefficients:
+    # the Newton decrement is the same in any parametrisation.
+    def _beta_loglike(beta: NDArray[np.float64]) -> float:
+        if not float(beta[1]) > 0.0:
+            return -math.inf
+        return _full_binomial_log_likelihood(
+            severity,
+            successes,
+            trials,
+            mu=-float(beta[0]) / float(beta[1]),
+            s=1.0 / float(beta[1]),
+            upper=1.0,
+            lower=0.0,
+            scale=axis.scale,
+            link=link,
+            center=center,
+            spread=spread,
+        )
+
+    glm_beta = np.array([beta0, beta1], dtype=np.float64)
+    if _newton_decrement_half(_beta_loglike, glm_beta) > _NEWTON_DECREMENT_TOLERANCE:
+        return _refit_by_direct_likelihood(
+            obs,
+            cells=cells,
+            cluster_ids=cluster_ids,
+            link=link,
+            reason=_REFIT_OPTIMALITY_WARNING,
+        )
+
     # Both fitting paths report covariance from the *observed* information
     # (the inverse of the negative Hessian of the log-likelihood at the MLE), not statsmodels'
     # own `cov_params()` (the *expected*/Fisher information), which for a non-canonical link
@@ -1738,6 +1966,21 @@ def _fit_glm(
         dtype=np.float64,
     )
     neg_observed_information = -(observed_hessian + observed_hessian.T) / 2.0
+    ok_warnings: tuple[str, ...] = ()
+    if not bool(np.all(np.isfinite(neg_observed_information))):
+        # statsmodels divides by zero at a cell whose fitted probability is exactly 0 or 1; the
+        # information of the stable log-likelihood is finite there.
+        _, numerical_hessian = _numerical_gradient_and_hessian(_beta_loglike, glm_beta)
+        neg_observed_information = -(numerical_hessian + numerical_hessian.T) / 2.0
+        if not _is_positive_definite(neg_observed_information):
+            return _refit_by_direct_likelihood(
+                obs,
+                cells=cells,
+                cluster_ids=cluster_ids,
+                link=link,
+                reason=_REFIT_INFORMATION_WARNING,
+            )
+        ok_warnings = (_INFORMATION_RECOVERED_WARNING,)
     try:
         sigma_beta = np.linalg.inv(neg_observed_information)
     except np.linalg.LinAlgError:
@@ -1797,6 +2040,15 @@ def _fit_glm(
         scale=axis.scale,
         link=link,
     )
+    if not math.isfinite(log_likelihood):
+        return _status_only_fit(
+            obs,
+            cells=cells,
+            cluster_ids=cluster_ids,
+            link=link,
+            status=Status.NOT_CONVERGED,
+            fit_warnings=(_NONFINITE_LOG_LIKELIHOOD_WARNING,),
+        )
 
     params = {
         "mu": Parameter(value=mu, fixed=False),
@@ -1820,7 +2072,7 @@ def _fit_glm(
         cells=cells,
         status=Status.OK,
         cluster_ids=cluster_ids,
-        warnings=(),
+        warnings=ok_warnings,
         provenance={},
     )
 

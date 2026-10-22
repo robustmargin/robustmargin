@@ -285,7 +285,13 @@ class Definition:
     @classmethod
     def baseline_fraction(cls, p: float, /) -> Definition:
         """Build a ``baseline_fraction(p)`` definition: performance falls to ``p`` times the
-        zero-severity performance. Requires ``0 < p < 1``."""
+        zero-severity performance. Requires ``0 < p < 1``.
+
+        On a failed fit (``SEPARATION`` or ``NOT_CONVERGED``) the target is resolved from the
+        control's observed rate, ``p * k0 / n0``, and the exact claims are tests against that
+        plug-in target. They carry no coverage guarantee for ``p`` times the true zero-severity
+        rate. For a covered claim on a failed fit, use ``absolute(a)``.
+        """
         return cls(kind="baseline_fraction", value=p)
 
     @classmethod
