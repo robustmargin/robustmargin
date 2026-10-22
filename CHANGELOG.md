@@ -10,6 +10,11 @@ minor release may change the public API, and every such change carries a migrati
 ## [0.2.1] — undated until tagged
 
 ### Fixed
+- A fit with estimated asymptotes no longer raises when the optimizer steps to a point where
+  the two asymptotes coincide in floating point.
+- An estimated-asymptote fit at the maximum is no longer reported `NOT_CONVERGED` because the
+  optimizer's step-size criterion stalled at rounding level. Its status is decided by the Newton
+  decrement.
 - **Behavioural change: fixed-asymptote fits (`upper=1`, `lower=0`) land on the true
   maximum-likelihood estimate, their profile intervals are computed from the true profile
   likelihood, and a non-finite log-likelihood no longer raises.**

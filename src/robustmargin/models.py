@@ -922,7 +922,8 @@ def _curve_log_success_and_failure_probability(
     nonzero = ~zero_control
     log_lower = _log_or_neg_inf(lower)
     log_one_minus_upper = _log_or_neg_inf(1.0 - upper)
-    log_range = math.log(upper - lower)
+    # `l < u` holds only in exact arithmetic; a zero range is the constant curve `p = u`.
+    log_range = _log_or_neg_inf(upper - lower)
     if np.any(nonzero):
         t = (_transform(x[nonzero], scale=scale) - center) / spread
         z = (t - mu) / s
@@ -1616,8 +1617,17 @@ def _fit_generic(
     score_tolerance = _SCORE_TOLERANCE_FACTOR * (1.0 + abs(float(result.llf)))
     score_not_near_zero = bool(np.any(np.abs(score) > score_tolerance))
 
-    not_converged_reason: str | None = None
+    # Newton's step tolerance is below the roundoff of the numerical derivatives its step is
+    # built from, so the step criterion can stall exactly at the maximum and report
+    # non-convergence there. The Newton decrement of the same objective is scale-free, so it
+    # decides instead.
+    step_stall_at_maximum = False
     if not converged_flag or convergence_warned:
+        decrement = _newton_decrement_half(loglike_fn, final_params)
+        step_stall_at_maximum = decrement <= _NEWTON_DECREMENT_TOLERANCE
+
+    not_converged_reason: str | None = None
+    if (not converged_flag or convergence_warned) and not step_stall_at_maximum:
         not_converged_reason = "fit_dose_response: the optimizer did not converge"
     elif llf_regressed:
         not_converged_reason = (
