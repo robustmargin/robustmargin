@@ -1,4 +1,6 @@
 # robustmargin
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23585829.svg)](https://doi.org/10.5281/zenodo.23585829)
+
 Robustness margins with confidence intervals, via dose-response threshold estimation. Model-agnostic — no GPU, no ML framework required
 
 > **Status: latest release `0.2.0`.** Binomial dose-response fits, thresholds with profile-likelihood or delta

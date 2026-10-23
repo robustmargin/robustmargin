@@ -3,6 +3,9 @@
 # it is a dry run of the whole pipeline and never reaches PyPI.
 # Uploads use PyPI Trusted Publishing (OIDC), so no API token is stored anywhere. The `pypi`
 # environment requires a maintainer's approval, so nothing reaches PyPI without it.
+# After PyPI succeeds, a final version also gets a GitHub Release (notes from CHANGELOG.md, wheel
+# and sdist attached). Zenodo archives a version when its GitHub Release is published, so
+# pre-releases, which get no Release, are never archived.
 #
 # One-time setup, done by a maintainer:
 #   - pypi.org and test.pypi.org: add a trusted publisher for project `robustmargin` (a
@@ -11,6 +14,8 @@
 #     workflow `release.yml`, environment `pypi` (pypi.org) or `testpypi` (test.pypi.org).
 #   - GitHub: create environments `testpypi` and `pypi`, the latter with a required
 #     reviewer, and restrict deployment to `v*` tags.
+#   - Zenodo: sign in with GitHub, grant the Zenodo app access to the `robustmargin`
+#     organization, and enable the repository (Zenodo -> GitHub) so Releases are archived.
 name: release
 
 on:
@@ -114,3 +119,60 @@ jobs:
           name: dist
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    name: create GitHub Release
+    needs: [build, pypi]
+    # Runs only after PyPI succeeded, and only for final versions (no Release, hence no Zenodo
+    # archive, for a pre-release).
+    if: needs.build.outputs.prerelease == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      # Release notes are the "## [X.Y.Z] - <date>" section of CHANGELOG.md, up to the next "## "
+      # heading. A missing or empty section fails the job rather than publishing empty notes.
+      - name: extract release notes
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          python - <<'PY'
+          import os, pathlib, re, sys
+          version = os.environ["VERSION"]
+          lines = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8").splitlines()
+          head = re.compile(r"^## \[" + re.escape(version) + r"\](\s|$)")
+          start = next((i for i, ln in enumerate(lines) if head.match(ln)), None)
+          if start is None:
+              sys.exit(f"CHANGELOG.md has no '## [{version}]' section")
+          end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+          body = "\n".join(lines[start + 1 : end]).strip()
+          if not body:
+              sys.exit(f"CHANGELOG.md section for {version} is empty")
+          pathlib.Path("release-notes.md").write_text(body + "\n", encoding="utf-8")
+          print(body)
+          PY
+      # Not idempotent by design: if a Release for this tag already exists, the job fails with a
+      # message instead of silently doing nothing or overwriting it. Re-running after a transient
+      # failure is safe (nothing was created); to redo an existing Release, delete it by hand first.
+      # --verify-tag refuses to create a tag, so the Release attaches to the tag that was pushed.
+      - name: create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "::error::A GitHub Release for $GITHUB_REF_NAME already exists; delete it by hand to recreate it."
+            exit 1
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --title "robustmargin $VERSION" \
+            --notes-file release-notes.md \
+            dist/*.whl dist/*.tar.gz
