@@ -21,7 +21,7 @@ import pytest
 _ROOT = Path(__file__).resolve().parents[2]
 _CFF = _ROOT / "CITATION.cff"
 
-_ORCID = "0009-0005-3586-7901"
+_ORCID_URL = "https://orcid.org/0009-0005-3586-7901"
 
 
 def _text() -> str:
@@ -104,7 +104,7 @@ def test_citation_has_exactly_one_author_with_the_expected_identity() -> None:
     assert fields == {
         "family-names": "Badkoubeh",
         "given-names": "Babak",
-        "orcid": f"https://orcid.org/{_ORCID}",
+        "orcid": _ORCID_URL,
         "affiliation": "Independent Researcher",
     }
 
@@ -126,7 +126,8 @@ def _scalar_in_authors_orcid() -> str:
 
 
 def test_orcid_checksum_routine_accepts_the_published_example_and_rejects_a_typo() -> None:
-    # ORCID's documentation example 0000-0002-1825-0097 is valid; changing a digit is not.
+    # ORCID's documentation example https://orcid.org/0000-0002-1825-0097 is valid;
+    # changing a digit makes it invalid.
     assert _orcid_checksum_char("000000021825009") == "7"
     assert _orcid_checksum_char("000000021825008") != "7"
 
