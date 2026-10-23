@@ -12,9 +12,11 @@ minor release may change the public API, and every such change carries a migrati
 ### Fixed
 - A fit with estimated asymptotes no longer raises when the optimizer steps to a point where
   the two asymptotes coincide in floating point.
-- An estimated-asymptote fit at the maximum is no longer reported `NOT_CONVERGED` because the
-  optimizer's step-size criterion stalled at rounding level. Its status is decided by the Newton
-  decrement.
+- A fit by direct likelihood maximisation (estimated asymptotes, fixed asymptotes other than
+  `1`/`0`, and the refit that replaces a GLM estimate) at the maximum is no longer reported
+  `NOT_CONVERGED` because the optimizer's step-size criterion stalled at rounding level. The
+  Newton decrement replaces only that step test; the flat-slope, boundary, regression, score and
+  information checks still decide.
 - **Behavioural change: fixed-asymptote fits (`upper=1`, `lower=0`) land on the true
   maximum-likelihood estimate, their profile intervals are computed from the true profile
   likelihood, and a non-finite log-likelihood no longer raises.**
@@ -56,6 +58,29 @@ minor release may change the public API, and every such change carries a migrati
     `NOT_CONVERGED`, or that used profile intervals on such fits. Code that caught `ValueError`
     around `fit_dose_response` for this case should check `fit.status` instead. Results where the
     GLM was already at the maximum are unchanged.
+- A non-finite estimate or log-likelihood from the optimizer is `NOT_CONVERGED` with a warning
+  saying the estimate is not finite, rather than being reported as `OK` or blamed on the
+  information matrix.
+- The optimality check's numerical derivatives (used for GLM estimates and the profile's inner
+  fit) reduce their step to a fraction of the estimate's standard error where the default step
+  is too coarse, so a true maximum of a steeply curved or badly scaled likelihood is no longer
+  rejected by truncation error. Steps are never enlarged.
+- **Behavioural change: a fit whose data are a step between adjacent tested levels is
+  `NOT_CONVERGED`.**
+  - **Before.** With an estimated asymptote or a fixed one other than `1`/`0`, such data have no
+    finite maximum (the log-likelihood rises as the slope `s` tends to 0). Depending on the
+    platform, the optimizer stopped at an arbitrary point and some fits were `OK` in 0.2.0, with
+    very large standard errors.
+  - **Now.** A fit is `NOT_CONVERGED` with the warning "no fitted curve exceeded the
+    log-likelihood of a step between adjacent tested levels" when no stage of the optimizer
+    exceeded the log-likelihood of the closed-form `s -> 0` step, with no parameters, covariance
+    or log-likelihood. An estimated asymptote at a parameter-space boundary keeps its boundary
+    reason, and flat or rising data keep the wrong-sign/flat reason. Some fits that were already
+    `NOT_CONVERGED` now carry the step reason instead of the optimizer's. A fit that was `OK` in
+    0.2.0 at a local maximum below the step's log-likelihood is now `NOT_CONVERGED` too.
+  - **Migration.** Code that relied on an `OK` fit for step-like data should check `fit.status`.
+    On a `NOT_CONVERGED` fit, `threshold()`'s exact bracket applies to definitions that do not
+    need fitted asymptotes (`Definition.absolute`); a `relative` definition raises `ValueError`.
 
 ### Documented
 - On a failed fit (`SEPARATION` or `NOT_CONVERGED`), `Definition.baseline_fraction(p)` resolves

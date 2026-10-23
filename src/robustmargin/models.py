@@ -9,10 +9,11 @@ interior maximum (wrong-sign slope, or an estimated asymptote pinned to a parame
 boundary) is reported as ``Status.NOT_CONVERGED`` with the reason in ``Fit.warnings``, never as
 a number that happens to be where the optimizer stopped.
 
-**Known limitation.** A near-step curve (``s -> 0``) with an estimated asymptote, or a fixed
-one other than ``1``/``0``, is not detected: it can return ``Status.OK`` with Wald standard
-errors that carry little information. With such asymptotes the pre-fit overlap check is
-necessary but not sufficient for an interior maximum; it is exact only for ``u = 1, l = 0``.
+A curve that is a step between adjacent tested levels, with an estimated asymptote or a fixed
+one other than ``1``/``0``, has no finite maximum: the log-likelihood keeps rising as ``s -> 0``.
+Such a fit is reported as ``Status.NOT_CONVERGED``, found by comparing the fitted
+log-likelihood with the closed-form supremum on the ``s -> 0`` boundary. The pre-fit overlap check
+is exact only for ``u = 1, l = 0``.
 
 **v1 is binomial-only.** ``model`` accepts only ``"binomial"``; a new model family (``"ll4"``,
 ``"isotonic"``) is a later addition that requires a new ``schema_version``, not a silent
@@ -33,11 +34,11 @@ import math
 import warnings
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
-from typing import Literal
+from typing import Literal, NamedTuple
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
-from scipy.special import expit, gammaln, log_expit
+from scipy.special import expit, gammaln, log_expit, xlog1py, xlogy
 from scipy.special import logit as _logit
 from scipy.stats import norm
 from statsmodels.base.model import GenericLikelihoodModel
@@ -97,8 +98,8 @@ _ASYMPTOTE_PROBABILITY_EPS = 1e-6
 # is filtered to "ignore" around both GLM calls below. Every fit reaching those calls has already
 # passed the exact check. The check is exact for fixed u = 1, l = 0 (Albert & Anderson, 1984;
 # Silvapulle, 1981, for the existence of a finite maximum under log-concave links); with
-# estimated or other fixed asymptotes it is necessary but not sufficient, and a near-step curve
-# there is not yet detected (see the module docstring).
+# estimated or other fixed asymptotes it is necessary but not sufficient, and a curve that is a
+# step between adjacent levels there is detected after the fit (see the module docstring).
 
 # A fitted `s` greater than this factor times the span of the likelihood-contributing transformed
 # levels (the tested range on `log x` or `x`, excluding a log-axis zero-severity control, which
@@ -1244,6 +1245,98 @@ class _GenericLogLikelihood:
         )
 
 
+def _pooled_rate(successes: NDArray[np.float64], trials: NDArray[np.float64]) -> float:
+    return float(np.sum(successes) / np.sum(trials))
+
+
+def _binomial_group_log_likelihood(
+    successes: NDArray[np.float64], trials: NDArray[np.float64], p: float
+) -> float:
+    """``sum k log p + (n - k) log(1 - p)`` with ``0 log 0 = 0`` (no binomial coefficient)."""
+    return float(np.sum(xlogy(successes, p) + xlog1py(trials - successes, -p)))
+
+
+class _StepSupremum(NamedTuple):
+    """The step supremum and whether its best configuration is the constant curve (``u == l``)."""
+
+    value: float
+    degenerate: bool
+
+
+def _step_supremum_log_likelihood(
+    severity: NDArray[np.float64],
+    successes: NDArray[np.float64],
+    trials: NDArray[np.float64],
+    *,
+    estimate_lower: bool,
+    estimate_upper: bool,
+    lower_value: float,
+    upper_value: float,
+    scale: str,
+) -> _StepSupremum:
+    """The supremum of the full binomial log-likelihood (binomial coefficients included) on the
+    ``s -> 0`` boundary of the decreasing curve, where the curve is a step at ``mu``.
+
+    Levels are ordered by severity. For a step between two adjacent levels, the levels before it
+    sit at the upper asymptote ``u`` and the levels after it at the lower asymptote ``l``. A single
+    level may instead sit on the step itself, with the levels before it at ``u``, the levels after
+    it at ``l``, and its own fitted probability its rate clipped to ``[l, u]``; an end level may do
+    so only when the asymptote of its empty side is fixed, and a zero-severity control on a log
+    axis never does (it always takes ``u``). An
+    estimated asymptote is its side's pooled rate subject to ``l <= u`` (when the pooled rates
+    violate it, both equal the pooled rate of the two sides together; with ``u`` fixed an
+    estimated ``l`` is clipped into ``[0, u]``, and with ``l`` fixed an estimated ``u`` into
+    ``[l, 1]``); a fixed asymptote keeps its value. The result is the maximum over all steps and
+    free-level choices, with ``degenerate`` true when the best configuration has ``u == l`` (the
+    constant curve); fewer than two levels give ``(-inf, False)``.
+    """
+    order = np.argsort(severity, kind="stable")
+    sev = np.asarray(severity, dtype=np.float64)[order]
+    k = np.asarray(successes, dtype=np.float64)[order]
+    n = np.asarray(trials, dtype=np.float64)[order]
+    count = k.size
+    if count < 2:
+        return _StepSupremum(-math.inf, False)
+    coefficients = float(np.sum(gammaln(n + 1.0) - gammaln(k + 1.0) - gammaln(n - k + 1.0)))
+    rates = k / n
+    has_control = scale == "log" and bool(sev[0] == 0.0)
+    everyone = np.arange(count)
+
+    # Each configuration is (baseline-side levels, free level or None, far-side levels). A free
+    # level sits at the transition itself, so the sides are the levels before and after it.
+    configurations: list[tuple[NDArray[np.intp], int | None, NDArray[np.intp]]] = [
+        (everyone[:split], None, everyone[split:]) for split in range(1, count)
+    ]
+    for level in range(count):
+        left, right = everyone[:level], everyone[level + 1 :]
+        if has_control and level == 0:
+            continue
+        if (left.size == 0 and estimate_upper) or (right.size == 0 and estimate_lower):
+            continue
+        configurations.append((left, level, right))
+
+    best = _StepSupremum(-math.inf, False)
+    for left, free, right in configurations:
+        upper = _pooled_rate(k[left], n[left]) if estimate_upper else upper_value
+        lower = _pooled_rate(k[right], n[right]) if estimate_lower else lower_value
+        if estimate_upper and estimate_lower:
+            if lower > upper:
+                upper = lower = _pooled_rate(k, n)
+        elif estimate_lower:
+            lower = min(lower, upper)
+        elif estimate_upper:
+            upper = max(upper, lower)
+        total = coefficients
+        total += _binomial_group_log_likelihood(k[left], n[left], upper)
+        total += _binomial_group_log_likelihood(k[right], n[right], lower)
+        if free is not None:
+            p_free = float(np.clip(rates[free], lower, upper))
+            total += _binomial_group_log_likelihood(k[free : free + 1], n[free : free + 1], p_free)
+        if total > best.value:
+            best = _StepSupremum(total, abs(upper - lower) <= 1e-12)
+    return best
+
+
 def _pilot_start(
     severity: NDArray[np.float64],
     successes: NDArray[np.float64],
@@ -1391,6 +1484,14 @@ _NONFINITE_LOG_LIKELIHOOD_WARNING = (
     "fit_dose_response: the log-likelihood at the fitted parameters is not finite -- no "
     "estimate is reported"
 )
+_STEP_PLATEAU_WARNING = (
+    "fit_dose_response: no fitted curve exceeded the log-likelihood of a step between adjacent "
+    "tested levels (s -> 0) -- the data do not identify the slope"
+)
+_NONFINITE_ESTIMATE_WARNING = (
+    "fit_dose_response: the optimizer's estimate or its log-likelihood is not finite -- no "
+    "estimate is reported"
+)
 _REPLACED = "so it was replaced by direct likelihood maximisation of the same model"
 _REFIT_NOT_CONVERGED_WARNING = f"fit_dose_response: the GLM did not converge, {_REPLACED}"
 _REFIT_OPTIMALITY_WARNING = (
@@ -1416,6 +1517,16 @@ def _failure_warnings(reason: str, *, pilot_wrong_sign: bool) -> tuple[str, ...]
     if pilot_wrong_sign and reason != _WRONG_SIGN_OR_FLAT_WARNING:
         return (reason, _WRONG_SIGN_OR_FLAT_WARNING)
     return (reason,)
+
+
+def _step_plateau_reason(log_likelihood: float, step: _StepSupremum) -> str | None:
+    """The reason when a fitted log-likelihood does not exceed the step supremum by more than the
+    optimality tolerance, else ``None``. When the best step is the constant curve, the data are
+    flat or rising and the reason is the shared wrong-sign/flat one.
+    """
+    if log_likelihood > step.value + _NEWTON_DECREMENT_TOLERANCE:
+        return None
+    return _WRONG_SIGN_OR_FLAT_WARNING if step.degenerate else _STEP_PLATEAU_WARNING
 
 
 def _fit_generic(
@@ -1506,6 +1617,20 @@ def _fit_generic(
     exog = np.ones((severity.size, start_params.size))
     model = GenericLikelihoodModel(successes, exog, loglike=loglike_fn)
 
+    # When the data are a step between adjacent levels the log-likelihood has no finite maximum
+    # (it rises as s -> 0), whatever the optimizer reported: a fit that has not exceeded the
+    # closed-form supremum on the s -> 0 boundary is a point on that plateau. The supremum is
+    # taken over the same observations and fixed values the objective uses.
+    step_supremum = _step_supremum_log_likelihood(
+        severity,
+        successes,
+        trials,
+        estimate_lower=lower_is_estimate,
+        estimate_upper=upper_is_estimate,
+        lower_value=lower_value,
+        upper_value=upper_value,
+        scale=axis.scale,
+    )
     # The BFGS stage is only ever a starting point for the Newton polish: it routinely reports its
     # own `converged=False` / ConvergenceWarning even when it has landed close enough for Newton to
     # finish the job, so only the *final* (Newton) result's own convergence signal decides the
@@ -1532,7 +1657,7 @@ def _fit_generic(
             # stage already shows it, so the reason does not depend on which platform's linear
             # algebra happens to fail first.
             bfgs_params = np.asarray(bfgs_result.params, dtype=np.float64)
-            _, _, bfgs_lower, bfgs_upper = _unpack_optimizer_params(
+            _, bfgs_s_scaled, bfgs_lower, bfgs_upper = _unpack_optimizer_params(
                 bfgs_params,
                 estimate_lower=lower_is_estimate,
                 estimate_upper=upper_is_estimate,
@@ -1545,10 +1670,20 @@ def _fit_generic(
                 estimate_upper=upper_is_estimate,
                 lower=bfgs_lower,
                 upper=bfgs_upper,
-            ) or (
-                "fit_dose_response: the optimizer's Hessian was singular while fitting -- "
-                "no interior maximum was found"
             )
+            if (
+                singular_reason is None
+                and spread * bfgs_s_scaled
+                > _FLAT_SLOPE_SPAN_FACTOR * _transformed_span(severity, scale=axis.scale)
+            ):
+                singular_reason = _WRONG_SIGN_OR_FLAT_WARNING
+            if singular_reason is None:
+                singular_reason = _step_plateau_reason(float(bfgs_result.llf), step_supremum)
+            if singular_reason is None:
+                singular_reason = (
+                    "fit_dose_response: the optimizer's Hessian was singular while fitting -- "
+                    "no interior maximum was found"
+                )
             return _status_only_fit(
                 obs,
                 cells=cells,
@@ -1561,23 +1696,57 @@ def _fit_generic(
     converged_flag = bool(result.mle_retvals.get("converged", False))
     final_params = np.asarray(result.params, dtype=np.float64)
 
-    mu_scaled, s_scaled, lower, upper = _unpack_optimizer_params(
-        final_params,
+    estimate_is_finite = bool(np.all(np.isfinite(final_params))) and math.isfinite(
+        float(result.llf)
+    )
+    mu = s = lower = upper = math.nan
+    if estimate_is_finite:
+        mu_scaled, s_scaled, lower, upper = _unpack_optimizer_params(
+            final_params,
+            estimate_lower=lower_is_estimate,
+            estimate_upper=upper_is_estimate,
+            lower_value=lower_value,
+            upper_value=upper_value,
+        )
+        # mu/s from the optimizer are on the centred-and-scaled covariate; map back to natural
+        # units (the exact inverse of _centering_and_scale's reparametrisation). lower/upper are
+        # already natural -- asymptotes are untouched by the covariate rescaling.
+        mu = center + spread * mu_scaled
+        s = spread * s_scaled
+
+    # An estimated asymptote at a parameter-space boundary keeps its own reason, even on data
+    # that are a step. A non-finite Newton result is judged on the BFGS parameters instead.
+    boundary_params = (
+        final_params if estimate_is_finite else np.asarray(bfgs_result.params, dtype=np.float64)
+    )
+    _, _, boundary_lower, boundary_upper = _unpack_optimizer_params(
+        boundary_params,
         estimate_lower=lower_is_estimate,
         estimate_upper=upper_is_estimate,
         lower_value=lower_value,
         upper_value=upper_value,
     )
-    # mu/s from the optimizer are on the centred-and-scaled covariate; map back to natural
-    # units (the exact inverse of _centering_and_scale's reparametrisation). lower/upper are
-    # already natural -- asymptotes are untouched by the covariate rescaling.
-    mu = center + spread * mu_scaled
-    s = spread * s_scaled
+    boundary_message = _boundary_warning(
+        boundary_params,
+        estimate_lower=lower_is_estimate,
+        estimate_upper=upper_is_estimate,
+        lower=boundary_lower,
+        upper=boundary_upper,
+    )
+    if boundary_message is not None:
+        return _status_only_fit(
+            obs,
+            cells=cells,
+            cluster_ids=cluster_ids,
+            link=link,
+            status=Status.NOT_CONVERGED,
+            fit_warnings=_failure_warnings(boundary_message, pilot_wrong_sign=pilot_wrong_sign),
+        )
 
     # A flat curve up to rounding, checked before anything that would build a covariance from a
     # near-degenerate slope.
     span = _transformed_span(severity, scale=axis.scale)
-    if s > _FLAT_SLOPE_SPAN_FACTOR * span:
+    if estimate_is_finite and s > _FLAT_SLOPE_SPAN_FACTOR * span:
         return _status_only_fit(
             obs,
             cells=cells,
@@ -1589,21 +1758,33 @@ def _fit_generic(
             ),
         )
 
-    boundary_message = _boundary_warning(
-        final_params,
-        estimate_lower=lower_is_estimate,
-        estimate_upper=upper_is_estimate,
-        lower=lower,
-        upper=upper,
+    # The best log-likelihood any stage reached: a stage that overshot to a non-finite value
+    # does not count against the finite ones.
+    best_llf = max(
+        float(bfgs_result.llf),
+        float(result.llf) if math.isfinite(float(result.llf)) else -math.inf,
     )
-    if boundary_message is not None:
+    plateau_reason = _step_plateau_reason(best_llf, step_supremum)
+    if plateau_reason is not None:
         return _status_only_fit(
             obs,
             cells=cells,
             cluster_ids=cluster_ids,
             link=link,
             status=Status.NOT_CONVERGED,
-            fit_warnings=_failure_warnings(boundary_message, pilot_wrong_sign=pilot_wrong_sign),
+            fit_warnings=_failure_warnings(plateau_reason, pilot_wrong_sign=pilot_wrong_sign),
+        )
+
+    if not estimate_is_finite:
+        return _status_only_fit(
+            obs,
+            cells=cells,
+            cluster_ids=cluster_ids,
+            link=link,
+            status=Status.NOT_CONVERGED,
+            fit_warnings=_failure_warnings(
+                _NONFINITE_ESTIMATE_WARNING, pilot_wrong_sign=pilot_wrong_sign
+            ),
         )
 
     # Newton's own `converged` flag only bounds the last step, so the final log-likelihood must
@@ -1779,16 +1960,22 @@ def _fit_generic(
 _NEWTON_DECREMENT_TOLERANCE = 1e-6
 
 
+_STANDARD_ERROR_STEP_FRACTION = 1e-2
+
+
 def _numerical_gradient_and_hessian(
-    func: Callable[[NDArray[np.float64]], float], x: NDArray[np.float64]
+    func: Callable[[NDArray[np.float64]], float],
+    x: NDArray[np.float64],
+    step: NDArray[np.float64] | None = None,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """The gradient and Hessian of ``func`` at ``x`` by central differences with a step of
-    ``1e-4 * max(1, |x_j|)`` -- numerical differentiation of an already-fitted quantity, not a
-    fitting procedure.
+    """The gradient and Hessian of ``func`` at ``x`` by central differences, with the given
+    per-coordinate ``step`` or by default ``1e-4 * max(1, |x_j|)`` -- numerical differentiation
+    of an already-fitted quantity, not a fitting procedure.
     """
     x = np.asarray(x, dtype=np.float64)
     size = x.size
-    step = 1e-4 * np.maximum(1.0, np.abs(x))
+    if step is None:
+        step = 1e-4 * np.maximum(1.0, np.abs(x))
     f0 = func(x)
     gradient = np.zeros(size, dtype=np.float64)
     hessian = np.zeros((size, size), dtype=np.float64)
@@ -1819,6 +2006,12 @@ def _newton_decrement_half(
     """``lambda^2 / 2`` for the log-likelihood ``func`` at ``x``, with ``lambda^2 = g' (-H)^-1 g``
     from the numerical score and observed information. ``inf`` when the information is not
     finite and positive-definite, which is itself a failed optimality check.
+
+    The finite-difference steps follow the curvature: a first pass with steps proportional to
+    ``|x|`` gives the information, and the derivatives are then recomputed with each step a
+    fixed small fraction of the coordinate's standard error, so truncation error stays small
+    relative to the curvature on badly scaled functions. Steps are only ever reduced: enlarging
+    them for a weakly identified coordinate would measure curvature far from the estimate.
     """
     gradient, hessian = _numerical_gradient_and_hessian(func, x)
     information = -(hessian + hessian.T) / 2.0
@@ -1826,6 +2019,16 @@ def _newton_decrement_half(
         return math.inf
     if float(np.min(np.linalg.eigvalsh(information))) <= 0.0:
         return math.inf
+    variances = np.diag(np.linalg.inv(information))
+    if bool(np.all(np.isfinite(variances))) and bool(np.all(variances > 0.0)):
+        default_step = 1e-4 * np.maximum(1.0, np.abs(np.asarray(x, dtype=np.float64)))
+        scaled_step = np.minimum(default_step, _STANDARD_ERROR_STEP_FRACTION * np.sqrt(variances))
+        gradient, hessian = _numerical_gradient_and_hessian(func, x, step=scaled_step)
+        information = -(hessian + hessian.T) / 2.0
+        if not bool(np.all(np.isfinite(information))) or not bool(np.all(np.isfinite(gradient))):
+            return math.inf
+        if float(np.min(np.linalg.eigvalsh(information))) <= 0.0:
+            return math.inf
     return float(gradient @ np.linalg.solve(information, gradient)) / 2.0
 
 
@@ -2226,10 +2429,11 @@ def fit_dose_response(
     hand-rolled optimizer or IRLS loop -- for every other combination of fixed and estimated
     asymptotes. Both paths are checked for separation before fitting and for a non-interior maximum
     after fitting; either gives an explicit :class:`~robustmargin.Status` with no numbers, never a
-    value that merely happens to be where the optimizer stopped. One case is not yet detected: a
-    near-step curve (``s -> 0``) with an estimated asymptote, or a fixed one other than
-    ``1``/``0``, can return ``Status.OK`` with Wald standard errors that carry little
-    information. With such asymptotes the overlap check is necessary but not sufficient.
+    value that merely happens to be where the optimizer stopped. Data that are a step between
+    adjacent tested levels, with an estimated asymptote or a fixed one other than ``1``/``0``,
+    have no finite maximum (the log-likelihood rises as ``s -> 0``) and give
+    ``Status.NOT_CONVERGED``. With such asymptotes the overlap check alone is necessary but not
+    sufficient.
 
     Before any of that, :func:`robustmargin.check_monotonicity` is run on ``obs`` directly, and
     its result is attached to the returned ``Fit`` as ``monotonicity`` on *every* return path
