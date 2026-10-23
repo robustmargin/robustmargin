@@ -7,7 +7,7 @@ minor release may change the public API, and every such change carries a migrati
 
 ## [Unreleased]
 
-## [0.2.1] — undated until tagged
+## [0.2.1] — 2026-10-23
 
 ### Fixed
 - A fit with estimated asymptotes no longer raises when the optimizer steps to a point where
