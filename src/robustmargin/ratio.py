@@ -45,7 +45,7 @@ from dataclasses import dataclass, field
 from scipy.stats import norm
 
 from robustmargin.intervals import _MAX_LOG_HALF_WIDTH, _theta_variance
-from robustmargin.threshold import Threshold, _resolve_target
+from robustmargin.threshold import Threshold, _solve_inputs
 from robustmargin.types import Censoring, IntervalShape, JSONValue, Status, _check_finite_number
 
 __all__ = ["Ratio", "ratio_interval"]
@@ -144,8 +144,8 @@ class Ratio:
         particular a ``"NON_MONOTONE_DATA: "`` entry on either input threshold propagates
         through, on every path (censored/failed and the ``OK``+``NONE`` path alike).
     schema_version
-        The serialised-result schema version this object belongs to. Defaults to ``"1"``, the
-        only version ``from_dict`` reads; any other version is rejected.
+        The serialised-result schema version this object belongs to. Defaults to ``"2"``, the
+        version ``to_dict`` writes; ``from_dict`` also reads ``"1"``.
     provenance
         An opaque mapping the caller may attach to record where the inputs came from.
         robustmargin stores it and never interprets it. Empty by default.
@@ -163,7 +163,7 @@ class Ratio:
     censoring: Censoring
     status: Status
     warnings: tuple[str, ...] = ()
-    schema_version: str = "1"
+    schema_version: str = "2"
     provenance: Mapping[str, JSONValue] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -387,10 +387,11 @@ def _theta_variance_for(t: Threshold) -> float:
     ``t.hi`` -- that fails for a profile interval (whose ``lo``/``hi`` are not delta-method
     endpoints at all) and for the open- or both-sides-open cases, where one or both are ``None``.
     Clamped to ``>= 0`` against floating-point noise, mirroring
-    ``intervals.delta_interval``'s own ``max(var_theta, 0.0)``.
+    ``intervals.delta_interval``'s own ``max(var_theta, 0.0)``. An increasing threshold's
+    variance is computed on its complementary decreasing view, which gives the same ``Var(theta)``.
     """
-    target, _ = _resolve_target(t.definition, fit=t.fit)
-    return max(_theta_variance(t.fit, definition=t.definition, target=target), 0.0)
+    inputs, _ = _solve_inputs(t.definition, fit=t.fit)
+    return max(_theta_variance(inputs.fit, definition=inputs.definition, target=inputs.target), 0.0)
 
 
 def _fieller_variance(t: Threshold, *, value: float) -> float:

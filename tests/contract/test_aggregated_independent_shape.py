@@ -141,7 +141,7 @@ def test_result_round_trips_through_json_with_string_censoring_and_schema_versio
     # schema_version is package-wide, GridBreakPoint included: one schema document means one
     # version. A consumer that unpacks grid_break_point to a plain (value, max_tested) tuple never
     # serialises this dataclass, but this assertion is the contract for anyone who does.
-    assert reloaded["schema_version"] == "1"
+    assert reloaded["schema_version"] == "2"
 
 
 def test_right_censored_result_round_trips_through_json_too() -> None:
@@ -153,7 +153,7 @@ def test_right_censored_result_round_trips_through_json_too() -> None:
     reloaded = json.loads(dumped)
 
     assert reloaded["censoring"] == "RIGHT"
-    assert reloaded["schema_version"] == "1"  # package-wide, as above
+    assert reloaded["schema_version"] == "2"  # package-wide, as above
 
 
 def test_criterion_is_keyword_only_and_signed_defaults_to_false() -> None:

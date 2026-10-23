@@ -15,10 +15,16 @@ Such a fit is reported as ``Status.NOT_CONVERGED``, found by comparing the fitte
 log-likelihood with the closed-form supremum on the ``s -> 0`` boundary. The pre-fit overlap check
 is exact only for ``u = 1, l = 0``.
 
-**v1 is binomial-only.** ``model`` accepts only ``"binomial"``; a new model family (``"ll4"``,
+**Binomial only.** ``model`` accepts only ``"binomial"``; a new model family (``"ll4"``,
 ``"isotonic"``) is a later addition that requires a new ``schema_version``, not a silent
-extension of the current one. :data:`robustmargin.report.SCHEMA_VERSION` is the one version
-:func:`robustmargin.report.from_dict` reads and the single source of that number.
+extension of the current one. :data:`robustmargin.report.SCHEMA_VERSION` is the version
+:func:`robustmargin.report.to_dict` writes and the single source of that number.
+
+**Outcomes that rise with severity.** For ``Observations(direction="increasing")`` the counted
+outcome rises with severity and the curve is ``P(x) = l + (u - l) * F(z)``. It is fit as the
+decreasing curve of the complementary outcome (``trials - successes``, asymptotes ``1 - l`` and
+``1 - u``) and mapped back, so the likelihood, the optimisers and every status rule are the ones the
+decreasing case uses; no separate estimator exists. The mapping is kept in :func:`_mirror_fit`.
 
 :class:`Fit` also carries :attr:`~Fit.diagnostics` (model-only goodness of fit, dispersion and
 link comparison, filled only when ``status`` is ``OK`` -- see :func:`robustmargin.diagnose`) and
@@ -125,14 +131,17 @@ _LLF_REGRESSION_TOLERANCE = 1e-8
 # that scale that never reaches zero, so the tolerance below is always well-defined.
 _SCORE_TOLERANCE_FACTOR = 1e-4
 
+
 # Shared wording for a wrong-sign slope (the GLM path's own beta1 <= 0 check) and for the flat
 # curve it degenerates into (`_FLAT_SLOPE_SPAN_FACTOR` above) -- the same underlying phenomenon
 # (no finite (mu, s) exists once the constrained maximum is pushed to the s -> infinity
 # boundary), so one reason is used for both, on both fitting paths.
-_WRONG_SIGN_OR_FLAT_WARNING = (
-    "fit_dose_response: the fitted curve has no interior maximum for direction='decreasing' "
-    "(a wrong-sign slope, or a curve that is flat up to rounding) -- no finite (mu, s) exists"
-)
+def _wrong_sign_or_flat_warning(*, mirrored: bool) -> str:
+    direction = "increasing" if mirrored else "decreasing"
+    return (
+        f"fit_dose_response: the fitted curve has no interior maximum for direction={direction!r} "
+        "(a wrong-sign slope, or a curve that is flat up to rounding) -- no finite (mu, s) exists"
+    )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -301,11 +310,14 @@ class Prediction:
 class Fit:
     """A dose-response fit, or an explicit record of why one was not obtained.
 
-    The fitted curve is ``P(x) = u - (u - l) * F(z)``, where ``z = (log(x) - mu) / s`` on
-    a log axis or ``z = (x - mu) / s`` on a linear axis, ``s > 0``, and ``F`` is the link's CDF
+    For ``direction="decreasing"`` the fitted curve is ``P(x) = u - (u - l) * F(z)``, and for
+    ``direction="increasing"`` it is ``P(x) = l + (u - l) * F(z)``, where
+    ``z = (log(x) - mu) / s`` on a log axis or ``z = (x - mu) / s`` on a linear axis, ``s > 0``,
+    and ``F`` is the link's CDF
     (the standard normal CDF for ``probit``, the logistic CDF for ``logit``, or
     ``1 - exp(-exp(z))`` for ``cloglog``, which models the probability of *failure* rising with
-    severity and so is not symmetric the way ``probit``/``logit`` are). ``mu`` is on the
+    severity (of the counted outcome itself for an increasing curve) and so is not symmetric the
+    way ``probit``/``logit`` are). ``mu`` is on the
     transformed axis (``log x`` on a log axis, ``x`` on a linear axis), not on the original
     severity scale. At ``z = 0`` -- severity ``exp(mu)`` on a log axis, or severity ``mu`` on a
     linear axis -- ``probit`` and ``logit`` both give ``P = (u + l) / 2``: the midpoint of the
@@ -318,8 +330,10 @@ class Fit:
     range, for any asymptotes. Each entry in ``params`` records whether it was held fixed or
     estimated, and is on the **natural scale**, never the optimiser's internal
     reparametrisation (``log s``; ``upper``/``lower`` on a logit scale) -- see
-    :class:`Parameter`. ``covariance`` is on that same natural scale: when asymptotes are
-    estimated, the optimiser's own covariance (which is on its reparametrised scale) is
+    :class:`Parameter`. For an increasing outcome ``lower`` is the rate at zero severity and
+    ``upper`` the rate the curve approaches as severity grows, so ``P(0) = l`` on a log axis.
+    ``covariance`` is on that same natural scale: when asymptotes are estimated, the
+    optimiser's own covariance (which is on its reparametrised scale) is
     delta-transformed onto the natural scale before being stored here.
 
     ``status == Status.OK`` if and only if both ``params`` and ``log_likelihood`` are present;
@@ -328,10 +342,11 @@ class Fit:
     ``Status.FAILS_AT_BASELINE`` describe a *threshold*, not a fit (they depend on a ``Definition``
     a ``Fit`` does not have), and are never a ``Fit.status``.
 
-    Binomial curves are decreasing-only in this release: ``direction="increasing"`` raises.
-    The curve ``P = u - (u - l) * F(z)`` with ``s > 0`` is decreasing by construction, and
-    increasing-is-worse outcomes are not yet supported. ``Observations`` itself still accepts
-    both directions.
+    The two directions are one model seen from either side: an increasing fit has the same
+    ``mu``, ``s``, link, log-likelihood and status as the decreasing fit of the complementary
+    outcome (``trials - successes``) with asymptotes ``1 - l`` and ``1 - u``. ``params`` and
+    ``covariance`` are reported for the outcome as counted, and ``cells`` holds the counts as
+    given.
 
     ``diagnostics`` (goodness of fit, dispersion, link comparison) and ``monotonicity`` (the
     adjacent-level monotonicity check) are two fields that both default to ``None``. The schema's
@@ -347,7 +362,8 @@ class Fit:
         The outcome name this fit was made against, carried over from the
         :class:`~robustmargin.Observations` it was fit to.
     direction
-        ``"decreasing"`` only, in this release (see above).
+        ``"decreasing"`` (performance falls as severity rises) or ``"increasing"`` (the counted
+        outcome rises with severity).
     model
         The model family. Only ``"binomial"`` exists in this release; a new family such as
         ``"ll4"`` or ``"isotonic"`` is a later addition requiring a further ``schema_version``
@@ -388,10 +404,11 @@ class Fit:
         guard.
     warnings
         Free-text notes surfaced alongside the fit (for example, ``CONTROL_INCOMPATIBLE``
-        carries a message suggesting ``upper="estimate"``). Empty by default.
+        carries a message suggesting ``upper="estimate"``, or ``lower="estimate"`` for an
+        increasing outcome). Empty by default.
     schema_version
-        The serialised-result schema version this object belongs to. Defaults to ``"1"``, the
-        only version ``from_dict`` reads; any other version is rejected.
+        The serialised-result schema version this object belongs to. Defaults to ``"2"``, the
+        version ``to_dict`` writes; ``from_dict`` also reads ``"1"``.
     provenance
         An opaque mapping the caller may attach to record where the inputs came from.
         robustmargin stores it and never interprets it. Empty by default.
@@ -422,7 +439,7 @@ class Fit:
     status: Status
     cluster_ids: tuple[str | int, ...] | None = None
     warnings: tuple[str, ...] = ()
-    schema_version: str = "1"
+    schema_version: str = "2"
     provenance: Mapping[str, JSONValue] = field(default_factory=dict)
     diagnostics: Diagnostics | None = None
     monotonicity: MonotonicityCheck | None = None
@@ -443,11 +460,6 @@ class Fit:
         if self.model not in _VALID_MODELS:
             raise ValueError(
                 f"Fit.model must be one of {sorted(_VALID_MODELS)}, got {self.model!r}"
-            )
-        if self.model == "binomial" and self.direction != "decreasing":
-            raise ValueError(
-                "Fit: model='binomial' only supports direction='decreasing' in this release; "
-                "an increasing-is-worse definition is planned for a later release"
             )
         allowed_links = _VALID_LINKS[self.model]
         if self.link not in allowed_links:
@@ -529,13 +541,22 @@ class Fit:
                     f"lower={lower!r}, upper={upper!r}"
                 )
 
-            if self.axis.scale == "log" and upper == 1.0 and params["upper"].fixed:
+            if self.axis.scale == "log" and self.direction == "decreasing":
+                if upper == 1.0 and params["upper"].fixed:
+                    for cell in self.cells:
+                        if cell.severity == 0.0 and cell.successes < cell.trials:
+                            raise ValueError(
+                                "Fit: the zero-severity control has failures but 'upper' is "
+                                "fixed at exactly 1.0, so the likelihood is zero for this fit on "
+                                'a log axis; refit with upper="estimate"'
+                            )
+            elif self.axis.scale == "log" and lower == 0.0 and params["lower"].fixed:
                 for cell in self.cells:
-                    if cell.severity == 0.0 and cell.successes < cell.trials:
+                    if cell.severity == 0.0 and cell.successes > 0:
                         raise ValueError(
-                            "Fit: the zero-severity control has failures but 'upper' is fixed "
-                            "at exactly 1.0, so the likelihood is zero for this fit on a log "
-                            'axis; refit with upper="estimate"'
+                            "Fit: the zero-severity control has events but 'lower' is fixed at "
+                            "exactly 0.0, so the likelihood is zero for this fit on a log axis; "
+                            'refit with lower="estimate"'
                         )
 
         non_fixed = {name for name, param in params.items() if not param.fixed}
@@ -562,8 +583,13 @@ class Fit:
           ``(0, 1)``, but not inside ``(l, u)`` specifically, since ``l``/``u`` themselves now
           carry uncertainty.
 
+        For an increasing outcome the curve and its band are those of the complementary outcome
+        mapped back (``estimate = 1 - estimate'``, ``lo = 1 - hi'``, ``hi = 1 - lo'``), with the
+        same two band scales.
+
         On a log axis, severity ``0.0`` is always the zero-severity control: its estimate
-        is ``upper`` exactly, never computed through ``log(0)``. It is not a special case for
+        is ``upper`` exactly (``lower`` for an increasing outcome), never computed through
+        ``log(0)``. It is not a special case for
         the band, either: it goes through the same computation as every other severity (so
         ``predict(0)`` and ``predict(1e-12)`` agree), which happens to give a zero-width band
         there whenever ``upper`` is fixed (perturbing any other parameter cannot move a
@@ -613,6 +639,35 @@ class Fit:
         if bool(np.any(x < 0.0)):
             raise ValueError("Fit.predict: severity must be non-negative")
 
+        if self.direction == "increasing":
+            mirrored_band = _mirror_fit(self).predict(x, level=level)
+            estimate = 1.0 - mirrored_band.estimate
+            lo = 1.0 - mirrored_band.hi
+            hi = 1.0 - mirrored_band.lo
+            if self.axis.scale == "log":
+                # The control is exactly `lower`, not `1 - (1 - lower)`. A fixed `lower` has no
+                # uncertainty there, so its band has zero width; an estimated one keeps its band,
+                # widened if rounding left the estimate outside it.
+                assert self.params is not None
+                lower_param = self.params["lower"]
+                at_control = x == 0.0
+                estimate = np.where(at_control, lower_param.value, estimate)
+                if lower_param.fixed:
+                    lo = np.where(at_control, lower_param.value, lo)
+                    hi = np.where(at_control, lower_param.value, hi)
+                else:
+                    lo = np.where(at_control, np.minimum(lo, lower_param.value), lo)
+                    hi = np.where(at_control, np.maximum(hi, lower_param.value), hi)
+            # `np.array`: a 0-d result of the arithmetic is a numpy scalar, which cannot be
+            # frozen.
+            return Prediction(
+                severity=x,
+                estimate=np.array(estimate),
+                lo=np.array(lo),
+                hi=np.array(hi),
+                level=level,
+            )
+
         assert self.params is not None and self.covariance is not None  # status is OK
         mu = self.params["mu"].value
         s = self.params["s"].value
@@ -652,6 +707,71 @@ class Fit:
             )
 
         return Prediction(severity=x, estimate=estimate, lo=lo, hi=hi, level=level)
+
+
+# ================================================================================================
+# The mirror between the two directions
+# ================================================================================================
+
+_ASYMPTOTE_NAMES = frozenset({"upper", "lower"})
+_SWAPPED_PARAMETER_NAME = {"mu": "mu", "s": "s", "upper": "lower", "lower": "upper"}
+
+
+def _mirror_fit(fit: Fit) -> Fit:
+    """The same fit seen as the complementary outcome, with the direction flipped.
+
+    ``P' = 1 - P`` turns ``P = l + (u - l) * F(z)`` into ``P' = u' - (u' - l') * F(z)`` with
+    ``u' = 1 - l`` and ``l' = 1 - u``, so an increasing fit and the decreasing fit of the
+    complement counts share ``mu``, ``s``, the link, the log-likelihood and the status. The
+    asymptotes are swapped and complemented, each ``fixed`` flag follows its asymptote, and the
+    covariance exchanges the names ``upper`` and ``lower`` and changes the sign of every entry
+    that couples exactly one asymptote to something else (the map's Jacobian is diagonal, with
+    entries ``+1`` for ``mu`` and ``s`` and ``-1`` for the asymptotes). Cell counts are
+    complemented, so the map applied twice returns the fit it was given, up to rounding.
+    Diagnostics, monotonicity, cluster ids and warnings are carried over as they are.
+    """
+    cells = tuple(
+        Cell(severity=c.severity, successes=c.trials - c.successes, trials=c.trials)
+        for c in fit.cells
+    )
+    direction = "decreasing" if fit.direction == "increasing" else "increasing"
+    params: dict[str, Parameter] | None = None
+    covariance: Covariance | None = None
+    if fit.params is not None:
+        assert fit.covariance is not None  # status is OK
+        upper, lower = fit.params["upper"], fit.params["lower"]
+        params = {
+            "mu": fit.params["mu"],
+            "s": fit.params["s"],
+            "upper": Parameter(value=1.0 - lower.value, fixed=lower.fixed),
+            "lower": Parameter(value=1.0 - upper.value, fixed=upper.fixed),
+        }
+        names = fit.covariance.names
+        matrix = tuple(
+            tuple(
+                -entry if (a in _ASYMPTOTE_NAMES) != (b in _ASYMPTOTE_NAMES) else entry
+                for b, entry in zip(names, row, strict=True)
+            )
+            for a, row in zip(names, fit.covariance.matrix, strict=True)
+        )
+        covariance = Covariance(
+            names=tuple(_SWAPPED_PARAMETER_NAME[n] for n in names), matrix=matrix
+        )
+    return replace(fit, direction=direction, params=params, covariance=covariance, cells=cells)
+
+
+def _mirror_observations(obs: Observations) -> Observations:
+    """The complementary outcome of ``obs``, for the other direction: ``successes`` becomes
+    ``trials - successes`` on every row, with everything else (cluster ids included) unchanged."""
+    return Observations(
+        axis=obs.axis,
+        outcome=obs.outcome,
+        direction="decreasing" if obs.direction == "increasing" else "increasing",
+        severity=obs.severity,
+        successes=tuple(n - k for k, n in zip(obs.successes, obs.trials, strict=True)),
+        trials=obs.trials,
+        cluster=obs.cluster,
+    )
 
 
 # ================================================================================================
@@ -1424,6 +1544,7 @@ def _boundary_warning(
     estimate_upper: bool,
     lower: float,
     upper: float,
+    mirrored: bool = False,
 ) -> str | None:
     """An estimated asymptote pinned to a parameter-space boundary,
     checked both on the optimizer's own logit-scale parameter (``a``/``b``, ``|.| > 15``) and
@@ -1431,30 +1552,34 @@ def _boundary_warning(
     miss a boundary fit the other catches (a huge logit-scale value that still rounds to a
     natural-scale probability inside the epsilon, or vice versa via the numerics of a
     particular optimizer step), so both are checked.
+
+    With ``mirrored`` the arguments describe the complement of an increasing outcome, and the
+    message names the asymptote of the outcome as the caller supplied it: the roles of ``lower``
+    and ``upper`` are exchanged, and a probability is reported as ``1 - p``.
     """
     idx = 2
     if estimate_lower:
         a_value = float(final_params[idx])
         idx += 1
         if abs(a_value) > _ASYMPTOTE_LOGIT_BOUND:
-            return (
-                "fit_dose_response: the estimated lower asymptote reached the parameter "
-                f"boundary (logit-scale a={a_value!r}, |a| > {_ASYMPTOTE_LOGIT_BOUND}) -- no "
-                "interior maximum exists"
+            return _logit_boundary_message(
+                "upper" if mirrored else "lower", a_value, mirrored=mirrored
             )
     if estimate_upper:
         b_value = float(final_params[idx])
         if abs(b_value) > _ASYMPTOTE_LOGIT_BOUND:
-            return (
-                "fit_dose_response: the estimated upper asymptote reached the parameter "
-                f"boundary (logit-scale b={b_value!r}, |b| > {_ASYMPTOTE_LOGIT_BOUND}) -- no "
-                "interior maximum exists"
+            return _logit_boundary_message(
+                "lower" if mirrored else "upper", b_value, mirrored=mirrored
             )
     if estimate_lower and estimate_upper and lower < _ASYMPTOTE_PROBABILITY_EPS:
+        name, value, comparison = (
+            ("upper", 1.0 - lower, f"> 1 - {_ASYMPTOTE_PROBABILITY_EPS}")
+            if mirrored
+            else ("lower", lower, f"< {_ASYMPTOTE_PROBABILITY_EPS}")
+        )
         return (
-            "fit_dose_response: the estimated lower asymptote reached the probability "
-            f"boundary (lower={lower!r} < {_ASYMPTOTE_PROBABILITY_EPS}) -- no interior maximum "
-            "exists"
+            f"fit_dose_response: the estimated {name} asymptote reached the probability "
+            f"boundary ({name}={value!r} {comparison}) -- no interior maximum exists"
         )
     if estimate_lower and not estimate_upper and (upper - lower) < _ASYMPTOTE_PROBABILITY_EPS:
         # With a fixed upper, l = u * expit(a) ranges over (0, u). l -> 0 (a -> -inf) is *not*
@@ -1466,16 +1591,21 @@ def _boundary_warning(
         # dynamic range at all), which a fixed magnitude bound on `a` alone does not directly test,
         # because how large `a` needs to be for u - l to fall below eps depends on the fixed u
         # itself.
+        estimated, fixed = ("upper", "lower") if mirrored else ("lower", "upper")
         return (
-            "fit_dose_response: the estimated lower asymptote reached the probability "
-            f"boundary near the fixed upper asymptote (upper - lower = {upper - lower!r} < "
+            f"fit_dose_response: the estimated {estimated} asymptote reached the probability "
+            f"boundary near the fixed {fixed} asymptote (upper - lower = {upper - lower!r} < "
             f"{_ASYMPTOTE_PROBABILITY_EPS}) -- no interior maximum exists"
         )
     if estimate_upper and upper > 1.0 - _ASYMPTOTE_PROBABILITY_EPS:
+        name, value, comparison = (
+            ("lower", 1.0 - upper, f"< {_ASYMPTOTE_PROBABILITY_EPS}")
+            if mirrored
+            else ("upper", upper, f"> 1 - {_ASYMPTOTE_PROBABILITY_EPS}")
+        )
         return (
-            "fit_dose_response: the estimated upper asymptote reached the probability "
-            f"boundary (upper={upper!r} > 1 - {_ASYMPTOTE_PROBABILITY_EPS}) -- no interior "
-            "maximum exists"
+            f"fit_dose_response: the estimated {name} asymptote reached the probability "
+            f"boundary ({name}={value!r} {comparison}) -- no interior maximum exists"
         )
     return None
 
@@ -1508,25 +1638,47 @@ _INFORMATION_RECOVERED_WARNING = (
 )
 
 
-def _failure_warnings(reason: str, *, pilot_wrong_sign: bool) -> tuple[str, ...]:
+def _logit_boundary_message(name: str, value: float, *, mirrored: bool) -> str:
+    """The boundary warning for an asymptote whose optimizer-scale logit parameter ran past
+    ``_ASYMPTOTE_LOGIT_BOUND``. The parameter's value is on the optimizer's own scale and is
+    reported only for a fit made in the caller's own orientation: for an increasing outcome the
+    optimizer's parameter belongs to the complement and is left out."""
+    detail = (
+        f"|logit-scale parameter| > {_ASYMPTOTE_LOGIT_BOUND}"
+        if mirrored
+        else f"logit-scale {'a' if name == 'lower' else 'b'}={value!r}, "
+        f"|{'a' if name == 'lower' else 'b'}| > {_ASYMPTOTE_LOGIT_BOUND}"
+    )
+    return (
+        f"fit_dose_response: the estimated {name} asymptote reached the parameter "
+        f"boundary ({detail}) -- no interior maximum exists"
+    )
+
+
+def _failure_warnings(reason: str, *, pilot_wrong_sign: bool, mirrored: bool) -> tuple[str, ...]:
     """The ``warnings`` tuple for a ``NOT_CONVERGED`` estimated-asymptote fit: ``reason`` alone,
     or ``reason`` plus the shared wrong-sign/flat reason when a pilot GLM slope on the (rescaled)
-    data had the wrong sign for ``direction='decreasing'`` -- unless ``reason`` already *is* that
+    data had the wrong sign for the direction -- unless ``reason`` already *is* that
     shared reason, in which case it is not duplicated.
     """
-    if pilot_wrong_sign and reason != _WRONG_SIGN_OR_FLAT_WARNING:
-        return (reason, _WRONG_SIGN_OR_FLAT_WARNING)
+    wrong_sign = _wrong_sign_or_flat_warning(mirrored=mirrored)
+    if pilot_wrong_sign and reason != wrong_sign:
+        return (reason, wrong_sign)
     return (reason,)
 
 
-def _step_plateau_reason(log_likelihood: float, step: _StepSupremum) -> str | None:
+def _step_plateau_reason(
+    log_likelihood: float, step: _StepSupremum, *, mirrored: bool
+) -> str | None:
     """The reason when a fitted log-likelihood does not exceed the step supremum by more than the
     optimality tolerance, else ``None``. When the best step is the constant curve, the data are
     flat or rising and the reason is the shared wrong-sign/flat one.
     """
     if log_likelihood > step.value + _NEWTON_DECREMENT_TOLERANCE:
         return None
-    return _WRONG_SIGN_OR_FLAT_WARNING if step.degenerate else _STEP_PLATEAU_WARNING
+    return (
+        _wrong_sign_or_flat_warning(mirrored=mirrored) if step.degenerate else _STEP_PLATEAU_WARNING
+    )
 
 
 def _fit_generic(
@@ -1539,11 +1691,16 @@ def _fit_generic(
     upper_value: float,
     lower_is_estimate: bool,
     lower_value: float,
+    mirrored: bool = False,
 ) -> Fit:
     """The estimated-or-non-trivial-fixed-asymptote path: ``statsmodels``
     ``GenericLikelihoodModel`` given :class:`_GenericLogLikelihood`, fit with ``method="bfgs"``
     then a ``method="newton"`` polish -- both statsmodels optimizers,
     never a hand-rolled Newton or IRLS loop.
+
+    ``mirrored`` says that ``obs`` is the complement of an increasing outcome: it changes only
+    the wording of a failure's reason, so that it names the asymptotes and direction of the
+    outcome the caller supplied.
     """
     axis = obs.axis
 
@@ -1670,15 +1827,18 @@ def _fit_generic(
                 estimate_upper=upper_is_estimate,
                 lower=bfgs_lower,
                 upper=bfgs_upper,
+                mirrored=mirrored,
             )
             if (
                 singular_reason is None
                 and spread * bfgs_s_scaled
                 > _FLAT_SLOPE_SPAN_FACTOR * _transformed_span(severity, scale=axis.scale)
             ):
-                singular_reason = _WRONG_SIGN_OR_FLAT_WARNING
+                singular_reason = _wrong_sign_or_flat_warning(mirrored=mirrored)
             if singular_reason is None:
-                singular_reason = _step_plateau_reason(float(bfgs_result.llf), step_supremum)
+                singular_reason = _step_plateau_reason(
+                    float(bfgs_result.llf), step_supremum, mirrored=mirrored
+                )
             if singular_reason is None:
                 singular_reason = (
                     "fit_dose_response: the optimizer's Hessian was singular while fitting -- "
@@ -1690,7 +1850,9 @@ def _fit_generic(
                 cluster_ids=cluster_ids,
                 link=link,
                 status=Status.NOT_CONVERGED,
-                fit_warnings=_failure_warnings(singular_reason, pilot_wrong_sign=pilot_wrong_sign),
+                fit_warnings=_failure_warnings(
+                    singular_reason, pilot_wrong_sign=pilot_wrong_sign, mirrored=mirrored
+                ),
             )
     convergence_warned = any(issubclass(w.category, ConvergenceWarning) for w in caught)
     converged_flag = bool(result.mle_retvals.get("converged", False))
@@ -1732,6 +1894,7 @@ def _fit_generic(
         estimate_upper=upper_is_estimate,
         lower=boundary_lower,
         upper=boundary_upper,
+        mirrored=mirrored,
     )
     if boundary_message is not None:
         return _status_only_fit(
@@ -1740,7 +1903,9 @@ def _fit_generic(
             cluster_ids=cluster_ids,
             link=link,
             status=Status.NOT_CONVERGED,
-            fit_warnings=_failure_warnings(boundary_message, pilot_wrong_sign=pilot_wrong_sign),
+            fit_warnings=_failure_warnings(
+                boundary_message, pilot_wrong_sign=pilot_wrong_sign, mirrored=mirrored
+            ),
         )
 
     # A flat curve up to rounding, checked before anything that would build a covariance from a
@@ -1754,7 +1919,9 @@ def _fit_generic(
             link=link,
             status=Status.NOT_CONVERGED,
             fit_warnings=_failure_warnings(
-                _WRONG_SIGN_OR_FLAT_WARNING, pilot_wrong_sign=pilot_wrong_sign
+                _wrong_sign_or_flat_warning(mirrored=mirrored),
+                pilot_wrong_sign=pilot_wrong_sign,
+                mirrored=mirrored,
             ),
         )
 
@@ -1764,7 +1931,7 @@ def _fit_generic(
         float(bfgs_result.llf),
         float(result.llf) if math.isfinite(float(result.llf)) else -math.inf,
     )
-    plateau_reason = _step_plateau_reason(best_llf, step_supremum)
+    plateau_reason = _step_plateau_reason(best_llf, step_supremum, mirrored=mirrored)
     if plateau_reason is not None:
         return _status_only_fit(
             obs,
@@ -1772,7 +1939,9 @@ def _fit_generic(
             cluster_ids=cluster_ids,
             link=link,
             status=Status.NOT_CONVERGED,
-            fit_warnings=_failure_warnings(plateau_reason, pilot_wrong_sign=pilot_wrong_sign),
+            fit_warnings=_failure_warnings(
+                plateau_reason, pilot_wrong_sign=pilot_wrong_sign, mirrored=mirrored
+            ),
         )
 
     if not estimate_is_finite:
@@ -1783,7 +1952,7 @@ def _fit_generic(
             link=link,
             status=Status.NOT_CONVERGED,
             fit_warnings=_failure_warnings(
-                _NONFINITE_ESTIMATE_WARNING, pilot_wrong_sign=pilot_wrong_sign
+                _NONFINITE_ESTIMATE_WARNING, pilot_wrong_sign=pilot_wrong_sign, mirrored=mirrored
             ),
         )
 
@@ -1827,7 +1996,9 @@ def _fit_generic(
             cluster_ids=cluster_ids,
             link=link,
             status=Status.NOT_CONVERGED,
-            fit_warnings=_failure_warnings(not_converged_reason, pilot_wrong_sign=pilot_wrong_sign),
+            fit_warnings=_failure_warnings(
+                not_converged_reason, pilot_wrong_sign=pilot_wrong_sign, mirrored=mirrored
+            ),
         )
 
     # A non-finite Hessian entry is checked before eigvalsh ever sees it
@@ -1847,6 +2018,7 @@ def _fit_generic(
                 "fit_dose_response: the Hessian at the optimum is not finite and "
                 "positive-definite -- no interior maximum was found",
                 pilot_wrong_sign=pilot_wrong_sign,
+                mirrored=mirrored,
             ),
         )
 
@@ -1891,6 +2063,7 @@ def _fit_generic(
                 "fit_dose_response: the natural-scale covariance is not finite and "
                 "positive-definite -- no interior maximum was found",
                 pilot_wrong_sign=pilot_wrong_sign,
+                mirrored=mirrored,
             ),
         )
 
@@ -1917,7 +2090,9 @@ def _fit_generic(
             link=link,
             status=Status.NOT_CONVERGED,
             fit_warnings=_failure_warnings(
-                _NONFINITE_LOG_LIKELIHOOD_WARNING, pilot_wrong_sign=pilot_wrong_sign
+                _NONFINITE_LOG_LIKELIHOOD_WARNING,
+                pilot_wrong_sign=pilot_wrong_sign,
+                mirrored=mirrored,
             ),
         )
 
@@ -2039,6 +2214,7 @@ def _refit_by_direct_likelihood(
     cluster_ids: tuple[str | int, ...] | None,
     link: str,
     reason: str,
+    mirrored: bool,
 ) -> Fit:
     """Refit the fixed ``upper=1, lower=0`` model by direct maximisation of its likelihood
     through the estimated-asymptote path with both asymptotes fixed: the same link, the same
@@ -2055,6 +2231,7 @@ def _refit_by_direct_likelihood(
         upper_value=1.0,
         lower_is_estimate=False,
         lower_value=0.0,
+        mirrored=mirrored,
     )
     return replace(refit, warnings=(reason, *refit.warnings))
 
@@ -2065,6 +2242,7 @@ def _fit_glm(
     cells: tuple[Cell, ...],
     cluster_ids: tuple[str | int, ...] | None,
     link: str,
+    mirrored: bool = False,
 ) -> Fit:
     axis = obs.axis
     fit_cells = tuple(c for c in cells if not (axis.scale == "log" and c.severity == 0.0))
@@ -2097,6 +2275,7 @@ def _fit_glm(
             cluster_ids=cluster_ids,
             link=link,
             reason=_REFIT_NOT_CONVERGED_WARNING,
+            mirrored=mirrored,
         )
 
     beta0 = float(glm_result.params[0])
@@ -2108,7 +2287,7 @@ def _fit_glm(
             cluster_ids=cluster_ids,
             link=link,
             status=Status.NOT_CONVERGED,
-            fit_warnings=(_WRONG_SIGN_OR_FLAT_WARNING,),
+            fit_warnings=(_wrong_sign_or_flat_warning(mirrored=mirrored),),
         )
 
     # beta0/beta1 are on the centred-and-scaled covariate; map back to natural units (the exact
@@ -2129,7 +2308,7 @@ def _fit_glm(
             cluster_ids=cluster_ids,
             link=link,
             status=Status.NOT_CONVERGED,
-            fit_warnings=(_WRONG_SIGN_OR_FLAT_WARNING,),
+            fit_warnings=(_wrong_sign_or_flat_warning(mirrored=mirrored),),
         )
 
     # Optimality of the GLM estimate on the stable log-likelihood, in the GLM's own coefficients:
@@ -2159,6 +2338,7 @@ def _fit_glm(
             cluster_ids=cluster_ids,
             link=link,
             reason=_REFIT_OPTIMALITY_WARNING,
+            mirrored=mirrored,
         )
 
     # Both fitting paths report covariance from the *observed* information
@@ -2192,6 +2372,7 @@ def _fit_glm(
                 cluster_ids=cluster_ids,
                 link=link,
                 reason=_REFIT_INFORMATION_WARNING,
+                mirrored=mirrored,
             )
         ok_warnings = (_INFORMATION_RECOVERED_WARNING,)
     try:
@@ -2331,18 +2512,33 @@ def _control_cell(cells: tuple[Cell, ...]) -> Cell | None:
 
 
 def _check_control_incompatible(
-    cells: tuple[Cell, ...], *, axis: Axis, upper_is_estimate: bool, upper_value: float
+    cells: tuple[Cell, ...],
+    *,
+    axis: Axis,
+    upper_is_estimate: bool,
+    upper_value: float,
+    mirrored: bool = False,
 ) -> str | None:
     """A fixed ``upper=1.0`` with any failure at the zero-severity control
     drives the likelihood to zero on a log axis. Only meaningful on a log axis (a linear axis
     has no zero-severity control concept) and only when ``upper`` is fixed at exactly ``1.0``
     (a fixed ``upper`` at any other value does not create a zero-likelihood problem).
+
+    With ``mirrored`` the arguments describe the complement of an increasing outcome, where the
+    same condition reads as a lower asymptote fixed at ``0.0`` over a control with events, and
+    the message says so.
     """
     if axis.scale != "log" or upper_is_estimate or upper_value != 1.0:
         return None
     control = _control_cell(cells)
     if control is None or control.successes == control.trials:
         return None
+    if mirrored:
+        return (
+            "fit_dose_response: the zero-severity control has events but lower=0.0 is fixed, "
+            'which drives the likelihood to zero on a log axis; refit with lower="estimate" '
+            "instead"
+        )
     return (
         "fit_dose_response: the zero-severity control has failures but upper=1.0 is fixed, "
         'which drives the likelihood to zero on a log axis; refit with upper="estimate" '
@@ -2350,29 +2546,33 @@ def _check_control_incompatible(
     )
 
 
-def _check_separation(cells: tuple[Cell, ...], *, axis: Axis) -> str | None:
+def _check_separation(cells: tuple[Cell, ...], *, axis: Axis, mirrored: bool = False) -> str | None:
     """The pre-fit separation check: checked on
     nonzero levels on a log axis (the zero-severity control is excluded, since it carries no
     covariate information), or on every level on a linear axis (there is no special
     zero-severity control there). Triggers when no failure exists, no success exists, or the
     highest severity with a success is at or below the lowest severity with a failure (complete
     or quasi-complete separation, the latter including an exact tie at one level).
+
+    With ``mirrored`` the cells are the complement of an increasing outcome, and the message
+    swaps "success" and "failure" so that it speaks of the counted outcome.
     """
     checked = tuple(c for c in cells if not (axis.scale == "log" and c.severity == 0.0))
     if not checked:
         return None
+    success, failure = ("failure", "success") if mirrored else ("success", "failure")
     has_success = any(c.successes > 0 for c in checked)
     has_failure = any(c.successes < c.trials for c in checked)
     if not has_success:
-        return "fit_dose_response: no success was observed at any tested severity (separation)"
+        return f"fit_dose_response: no {success} was observed at any tested severity (separation)"
     if not has_failure:
-        return "fit_dose_response: no failure was observed at any tested severity (separation)"
+        return f"fit_dose_response: no {failure} was observed at any tested severity (separation)"
     max_success_severity = max(c.severity for c in checked if c.successes > 0)
     min_failure_severity = min(c.severity for c in checked if c.successes < c.trials)
     if max_success_severity <= min_failure_severity:
         return (
             "fit_dose_response: complete or quasi-complete separation -- the highest severity "
-            "with a success is at or below the lowest severity with a failure"
+            f"with a {success} is at or below the lowest severity with a {failure}"
         )
     return None
 
@@ -2435,6 +2635,15 @@ def fit_dose_response(
     ``Status.NOT_CONVERGED``. With such asymptotes the overlap check alone is necessary but not
     sufficient.
 
+    **Outcomes that rise with severity.** For ``obs.direction == "increasing"`` the counted
+    outcome rises with severity: ``upper`` is the rate the curve approaches as severity grows and
+    ``lower`` the rate at zero severity (so the control's own rate, on a log axis, is ``lower``).
+    The fit is that of the complementary outcome (``trials - successes``) with asymptotes
+    ``1 - lower`` and ``1 - upper``, mapped back; the likelihood, the optimisers and every status
+    rule are the decreasing ones, and every message names the asymptotes, counts and direction
+    of the outcome as supplied. With ``lower`` fixed at ``0`` a control that has any events is
+    ``CONTROL_INCOMPATIBLE`` (refit with ``lower="estimate"``).
+
     Before any of that, :func:`robustmargin.check_monotonicity` is run on ``obs`` directly, and
     its result is attached to the returned ``Fit`` as ``monotonicity`` on *every* return path
     below, whatever the resulting ``status`` -- the check needs only raw counts, so it is not
@@ -2453,8 +2662,9 @@ def fit_dose_response(
         ``"probit"``, ``"logit"`` or ``"cloglog"``. Fixed by the caller before the data is
         seen: this function never compares links and picks one for you.
     upper, lower
-        Each either a fixed probability in ``[0, 1]``, or the literal string ``"estimate"``.
-        Required, with no default (a wrong default would silently change what curve is fit).
+        Each either a fixed probability in ``[0, 1]``, or the literal string ``"estimate"``,
+        always on the scale of the counted outcome. Required, with no default (a wrong default
+        would silently change what curve is fit).
     dependence
         ``None`` (the default) resolves to ``"independent"`` unless ``obs.cluster`` is set, in
         which case omitting it raises -- forwarded to :func:`robustmargin.check_monotonicity`
@@ -2478,10 +2688,11 @@ def fit_dose_response(
     Raises
     ------
     ValueError
-        If ``model``/``link`` is not one of the values above, if ``obs.direction`` is not
-        ``"decreasing"`` (an increasing-is-worse curve is not yet supported; ``Fit``
-        itself rejects it), if ``upper``/``lower`` is not a valid probability or ``"estimate"``,
-        if both are fixed with ``upper <= lower``, or if ``obs.cluster`` is set and
+        If ``model``/``link`` is not one of the values above, if ``upper``/``lower`` is not a
+        valid probability or ``"estimate"``,
+        if both are fixed with ``upper <= lower``, if ``obs.direction`` is ``"increasing"`` and
+        ``lower`` is a fixed value other than 0 so small that ``1 - lower`` equals 1 in double
+        precision, or if ``obs.cluster`` is set and
         ``dependence`` is not ``"independent"`` (raised by :func:`robustmargin.check_monotonicity`).
     """
     if model != "binomial":
@@ -2489,12 +2700,6 @@ def fit_dose_response(
     if link not in _STATSMODELS_LINKS:
         raise ValueError(
             f"fit_dose_response: link must be one of {sorted(_STATSMODELS_LINKS)}, got {link!r}"
-        )
-    if obs.direction != "decreasing":
-        raise ValueError(
-            "fit_dose_response: direction='increasing' is not supported in this release "
-            "(model='binomial' only supports 'decreasing'; an increasing-is-worse definition "
-            "is planned for a later release)"
         )
 
     # Computed from the raw Observations before a fitting path is even chosen, and attached to
@@ -2508,24 +2713,85 @@ def fit_dose_response(
         raise ValueError(
             f"fit_dose_response: upper ({upper_value!r}) must exceed lower ({lower_value!r})"
         )
+    if (
+        obs.direction == "increasing"
+        and not lower_is_estimate
+        and lower_value != 0.0
+        and 1.0 - lower_value == 1.0
+    ):
+        # An increasing curve is fit as its complement, whose upper asymptote is `1 - lower`.
+        raise ValueError(
+            f"fit_dose_response: a fixed lower of {lower_value!r} is too close to 0 for an "
+            "increasing outcome: it cannot be told from 0 at double precision in the "
+            "complementary parametrisation the curve is fit in. Use lower=0.0 or a larger value"
+        )
 
+    if obs.direction == "decreasing":
+        fit = _fit_counts(
+            obs,
+            link=link,
+            upper_is_estimate=upper_is_estimate,
+            upper_value=upper_value,
+            lower_is_estimate=lower_is_estimate,
+            lower_value=lower_value,
+            mirrored=False,
+        )
+        return _finalize(fit, monotonicity=monotonicity)
+
+    # The complementary outcome is fit as a decreasing curve with the asymptotes exchanged and
+    # complemented, then mapped back.
+    complement_fit = _fit_counts(
+        _mirror_observations(obs),
+        link=link,
+        upper_is_estimate=lower_is_estimate,
+        upper_value=1.0 - lower_value,
+        lower_is_estimate=upper_is_estimate,
+        lower_value=1.0 - upper_value,
+        mirrored=True,
+    )
+    fit = _mirror_fit(_finalize(complement_fit, monotonicity=monotonicity))
+    if fit.params is None:
+        return fit
+    # A fixed asymptote is reported as the caller gave it, not as `1 - (1 - value)`.
+    params = dict(fit.params)
+    if not upper_is_estimate:
+        params["upper"] = Parameter(value=upper_value, fixed=True)
+    if not lower_is_estimate:
+        params["lower"] = Parameter(value=lower_value, fixed=True)
+    return replace(fit, params=params)
+
+
+def _fit_counts(
+    obs: Observations,
+    *,
+    link: str,
+    upper_is_estimate: bool,
+    upper_value: float,
+    lower_is_estimate: bool,
+    lower_value: float,
+    mirrored: bool,
+) -> Fit:
+    """The pre-fit checks and the choice of fitting path, for a decreasing ``obs``. ``mirrored``
+    says that ``obs`` is the complement of an increasing outcome and so only selects the
+    wording of a failure's reason."""
     cells = obs.cells()
     cluster_ids = _unique_cluster_ids(obs.cluster)
 
     control_incompatible_warning = _check_control_incompatible(
-        cells, axis=obs.axis, upper_is_estimate=upper_is_estimate, upper_value=upper_value
+        cells,
+        axis=obs.axis,
+        upper_is_estimate=upper_is_estimate,
+        upper_value=upper_value,
+        mirrored=mirrored,
     )
     if control_incompatible_warning is not None:
-        return _finalize(
-            _status_only_fit(
-                obs,
-                cells=cells,
-                cluster_ids=cluster_ids,
-                link=link,
-                status=Status.CONTROL_INCOMPATIBLE,
-                fit_warnings=(control_incompatible_warning,),
-            ),
-            monotonicity=monotonicity,
+        return _status_only_fit(
+            obs,
+            cells=cells,
+            cluster_ids=cluster_ids,
+            link=link,
+            status=Status.CONTROL_INCOMPATIBLE,
+            fit_warnings=(control_incompatible_warning,),
         )
 
     # A log-axis observation whose only severity level is the zero-severity control (the "no
@@ -2545,18 +2811,15 @@ def fit_dose_response(
             "besides the control"
         )
 
-    separation_warning = _check_separation(cells, axis=obs.axis)
+    separation_warning = _check_separation(cells, axis=obs.axis, mirrored=mirrored)
     if separation_warning is not None:
-        return _finalize(
-            _status_only_fit(
-                obs,
-                cells=cells,
-                cluster_ids=cluster_ids,
-                link=link,
-                status=Status.SEPARATION,
-                fit_warnings=(separation_warning,),
-            ),
-            monotonicity=monotonicity,
+        return _status_only_fit(
+            obs,
+            cells=cells,
+            cluster_ids=cluster_ids,
+            link=link,
+            status=Status.SEPARATION,
+            fit_warnings=(separation_warning,),
         )
 
     if (
@@ -2565,21 +2828,16 @@ def fit_dose_response(
         and upper_value == 1.0
         and lower_value == 0.0
     ):
-        return _finalize(
-            _fit_glm(obs, cells=cells, cluster_ids=cluster_ids, link=link),
-            monotonicity=monotonicity,
-        )
+        return _fit_glm(obs, cells=cells, cluster_ids=cluster_ids, link=link, mirrored=mirrored)
 
-    return _finalize(
-        _fit_generic(
-            obs,
-            cells=cells,
-            cluster_ids=cluster_ids,
-            link=link,
-            upper_is_estimate=upper_is_estimate,
-            upper_value=upper_value,
-            lower_is_estimate=lower_is_estimate,
-            lower_value=lower_value,
-        ),
-        monotonicity=monotonicity,
+    return _fit_generic(
+        obs,
+        cells=cells,
+        cluster_ids=cluster_ids,
+        link=link,
+        upper_is_estimate=upper_is_estimate,
+        upper_value=upper_value,
+        lower_is_estimate=lower_is_estimate,
+        lower_value=lower_value,
+        mirrored=mirrored,
     )

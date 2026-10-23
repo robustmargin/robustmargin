@@ -141,6 +141,64 @@ assert any(w.startswith("NON_MONOTONE_DATA: ") for w in ratio.warnings)
 Treat an overdispersed fit's intervals as too narrow. Clustered inference, which addresses this,
 is planned for `0.3`.
 
+### An outcome that rises with severity
+
+Often what you count gets *worse* as severity grows: events per trial, not successes. Declare it
+with `direction="increasing"`, and `successes` counts the outcome that rises. The curve runs from
+`lower`, the rate at zero severity, up to `upper`. An increasing fit is the decreasing fit of the
+complementary outcome (`trials - successes`) mapped back, so every status, interval and censoring
+rule is the one the decreasing case uses, and every number and message is on the scale of the
+outcome you counted.
+
+`Definition.baseline_multiple(k)` asks where the rate reaches `k` times its value at zero
+severity. It is defined on log axes only, and `threshold` raises `ValueError` on a linear axis. A
+multiple of zero is not a threshold, so `lower` must be estimated (or fixed above zero): a fixed
+`lower=0.0` over a control that has events is reported as `CONTROL_INCOMPATIBLE`, and
+`baseline_multiple` raises for a fixed `lower` of zero. It also raises `ValueError` on any failed
+fit (`SEPARATION` or `NOT_CONVERGED`), because a multiple of the control's observed rate would be
+an uncovered target. Use `Definition.absolute(a)` then, or a converged refit (for example with
+`lower` fixed above zero), and catch the `ValueError` per job in a sweep.
+
+```python
+from robustmargin import (
+    Axis,
+    Definition,
+    Observations,
+    Status,
+    fit_dose_response,
+    threshold,
+)
+
+severity = [0.0, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0]
+events = [20, 22, 35, 90, 220, 340, 380]
+
+obs = Observations.from_counts(
+    Axis(name="severity", unit="unit", scale="log"),
+    severity=severity,
+    successes=events,
+    trials=[400] * len(severity),
+    outcome="event",
+    direction="increasing",
+)
+fit = fit_dose_response(obs, model="binomial", link="probit", upper=1.0, lower="estimate")
+assert fit.status is Status.OK
+assert 0.03 < fit.params["lower"].value < 0.07  # about 5% of trials have an event at severity 0
+
+# The severity at which the event rate doubles, with a 95% profile-likelihood interval.
+doubling = threshold(
+    fit, definition=Definition.baseline_multiple(2.0), interval_method="profile", level=0.95
+)
+assert doubling.status is Status.OK
+assert 0.7 < doubling.lo < doubling.value < doubling.hi < 1.5
+assert abs(fit.predict(doubling.value).estimate - 2 * fit.params["lower"].value) < 1e-6
+```
+
+`Definition.absolute(a)` and `Definition.relative(p)` mean the same in both directions, with the
+crossing read upward. `Definition.baseline_fraction(p)` belongs to a decreasing outcome, and
+`threshold` raises if you pair it with an increasing fit (and `baseline_multiple` with a
+decreasing one). For an increasing outcome, `RIGHT` reads "still passes at the highest level
+tested": the rate is confidently below the target there.
+
 ## Grid break-point rule
 
 `grid_break_point` finds the smallest tested severity at which observed performance falls
@@ -222,9 +280,11 @@ assert from_dict(json.loads(text)) == card
 assert load_schema()["$schema"] == "https://json-schema.org/draft/2020-12/schema"
 ```
 
-The JSON follows `schema/scorecard-v1.json`, a JSON Schema shipped inside the package. It
-covers binary outcomes only, and reading is strict: a card with fields this version does not know
-is rejected, not silently trimmed. To read a stored card, use a robustmargin at least as new as the
+The JSON follows `schema/scorecard-v2.json`, a JSON Schema shipped inside the package, and
+`schema/scorecard-v1.json` is kept so that cards written by `0.1.1` and `0.2.0` still read.
+Schema `"2"` adds increasing outcomes and `baseline_multiple`. It covers binary outcomes only,
+and reading is strict: a card with fields this version does not know is rejected, not silently
+trimmed. To read a stored card, use a robustmargin at least as new as the
 one that wrote it. The card's `library_version` field records which version that was.
 
 For your own tests, `robustmargin.testing` provides `fake_fit`, `fake_threshold` and `fake_ratio`.

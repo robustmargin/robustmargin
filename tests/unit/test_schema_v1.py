@@ -56,7 +56,7 @@ from robustmargin.report import SCHEMA_VERSION, from_dict, load_schema, to_dict
 from robustmargin.testing import fake_fit, fake_ratio, fake_threshold
 
 # Versions that are not the one packaged version. "" and "0" are malformed rather than later.
-_OTHER_VERSIONS: tuple[str, ...] = ("0", "2", "3", "4", "5", "")
+_OTHER_VERSIONS: tuple[str, ...] = ("0", "3", "4", "5", "")
 _LEVEL = 0.95
 _AXIS = Axis(name="severity", unit="unit", scale="log")
 
@@ -73,7 +73,7 @@ def _dump(obj: object) -> dict[str, Any]:
 
 def _schema() -> dict[str, Any]:
     """``load_schema`` typed the same way, for the same reason."""
-    schema: dict[str, Any] = load_schema()
+    schema: dict[str, Any] = load_schema("1")
     return schema
 
 
@@ -172,18 +172,18 @@ _DEFAULT_BUILDERS: dict[str, Callable[[], Any]] = {
 }
 
 
-class TestSchemaVersionIsOne:
-    def test_schema_version_constant_is_1(self) -> None:
-        assert SCHEMA_VERSION == "1"
+class TestSchemaVersionIsTwo:
+    def test_schema_version_constant_is_2(self) -> None:
+        assert SCHEMA_VERSION == "2"
 
     @pytest.mark.parametrize("type_name", list(_DEFAULT_BUILDERS))
-    def test_a_freshly_built_result_defaults_to_schema_version_1(self, type_name: str) -> None:
-        assert _DEFAULT_BUILDERS[type_name]().schema_version == "1"
+    def test_a_freshly_built_result_defaults_to_schema_version_2(self, type_name: str) -> None:
+        assert _DEFAULT_BUILDERS[type_name]().schema_version == "2"
 
-    def test_directly_constructed_grid_break_point_defaults_to_schema_version_1(self) -> None:
-        assert GridBreakPoint(0.1, 0.2, Censoring.NONE).schema_version == "1"
+    def test_directly_constructed_grid_break_point_defaults_to_schema_version_2(self) -> None:
+        assert GridBreakPoint(0.1, 0.2, Censoring.NONE).schema_version == "2"
 
-    def test_every_schema_version_in_a_serialised_card_of_fakes_is_1(self) -> None:
+    def test_every_schema_version_in_a_serialised_card_of_fakes_is_2(self) -> None:
         card = _card(_grid_result(), fake_fit(), fake_threshold(), fake_ratio())
 
         versions = _schema_versions_in(_dump(card))
@@ -191,21 +191,21 @@ class TestSchemaVersionIsOne:
         # The card itself, four results, and the fit / thresholds / fits nested inside them:
         # a recursion that missed the nested ones would see fewer than ten.
         assert len(versions) >= 10
-        assert set(versions) == {"1"}
+        assert set(versions) == {"2"}
 
     @pytest.mark.parametrize("status", _FIT_STATUSES, ids=lambda s: s.name)
-    def test_a_fake_fit_of_every_status_is_tagged_1_throughout(self, status: Status) -> None:
+    def test_a_fake_fit_of_every_status_is_tagged_2_throughout(self, status: Status) -> None:
         fit = fake_fit(status=status)
 
-        assert fit.schema_version == "1"
-        assert set(_schema_versions_in(_dump(fit))) == {"1"}
+        assert fit.schema_version == "2"
+        assert set(_schema_versions_in(_dump(fit))) == {"2"}
 
     @pytest.mark.parametrize("status", list(Status), ids=lambda s: s.name)
-    def test_a_fake_threshold_of_every_status_is_tagged_1_throughout(self, status: Status) -> None:
+    def test_a_fake_threshold_of_every_status_is_tagged_2_throughout(self, status: Status) -> None:
         t = fake_threshold(status=status, censoring=Censoring.NONE)
 
-        assert t.schema_version == "1"
-        assert set(_schema_versions_in(_dump(t))) == {"1"}
+        assert t.schema_version == "2"
+        assert set(_schema_versions_in(_dump(t))) == {"2"}
 
 
 # ------------------------------------------------------------------------------------------
@@ -217,22 +217,23 @@ class TestLoadSchema:
     def test_default_schema_id_is_the_robustmargin_v1_urn(self) -> None:
         assert _schema()["$id"] == "urn:robustmargin:schema:scorecard-v1"
 
-    def test_load_schema_1_is_the_default(self) -> None:
-        assert load_schema("1") == _schema()
+    def test_load_schema_defaults_to_the_current_version_2(self) -> None:
+        assert load_schema() == load_schema("2")
+        assert load_schema("2") != _schema()
 
-    @pytest.mark.parametrize("version", ["2", "3", "4", "5"])
+    @pytest.mark.parametrize("version", ["3", "4", "5"])
     def test_load_schema_for_a_version_that_is_not_packaged_raises_file_not_found(
         self, version: str
     ) -> None:
         with pytest.raises(FileNotFoundError):
             load_schema(version)
 
-    def test_only_the_v1_document_is_packaged(self) -> None:
+    def test_the_v1_and_v2_documents_are_packaged(self) -> None:
         schema_dir = Path(robustmargin.__file__).resolve().parent / "schema"
 
         names = sorted(p.name for p in schema_dir.glob("scorecard-v*.json"))
 
-        assert names == ["scorecard-v1.json"]
+        assert names == ["scorecard-v1.json", "scorecard-v2.json"]
 
     def test_the_root_describes_a_scorecard(self) -> None:
         assert _schema()["properties"]["type"]["const"] == "Scorecard"
@@ -431,7 +432,7 @@ class TestUnknownSchemaVersionsAreRejected:
         self, name: str, build: Callable[[], Any], path: tuple[str, ...], version: str
     ) -> None:
         payload = _dump(_card(build()))
-        assert set(_schema_versions_in(payload)) == {"1"}
+        assert set(_schema_versions_in(payload)) == {"2"}
         _navigate(payload, ("results", 0, *path))["schema_version"] = version
 
         with pytest.raises(ValueError) as excinfo:
@@ -445,7 +446,7 @@ class TestUnknownSchemaVersionsAreRejected:
         self, name: str, build: Callable[[], Any], path: tuple[str, ...], version: str
     ) -> None:
         payload = _dump(build())
-        assert set(_schema_versions_in(payload)) == {"1"}
+        assert set(_schema_versions_in(payload)) == {"2"}
         _navigate(payload, path)["schema_version"] = version
 
         with pytest.raises(ValueError) as excinfo:
@@ -686,7 +687,7 @@ class TestARealCardIsSchemaOneThroughout:
         versions = _schema_versions_in(_dump(self._real_card()))
 
         assert len(versions) >= 12
-        assert set(versions) == {"1"}
+        assert set(versions) == {"2"}
 
     def test_the_card_validates_against_the_packaged_schema(self) -> None:
         jsonschema.Draft202012Validator(_schema()).validate(_dump(self._real_card()))

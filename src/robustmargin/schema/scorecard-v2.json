@@ -1,0 +1,780 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:robustmargin:schema:scorecard-v2",
+  "title": "robustmargin score card (v2)",
+  "description": "A robustmargin Scorecard: a collection of GridBreakPoint, Fit, Threshold and Ratio results plus provenance metadata. This is schema version \"2\", the version robustmargin writes; robustmargin also reads version \"1\", which differs only in admitting decreasing outcomes and no baseline_multiple definition. Fit.diagnostics is an object or null, set only when the fit's own status is OK (model-only goodness of fit, dispersion and link comparison -- see the Diagnostics def, which deliberately has no monotonicity entry of its own); Fit.monotonicity is an object or null, set on every fresh Fit regardless of status (a data-only adjacent-severity-level check on raw counts -- see the MonotonicityCheck and AdjacentPair defs). Neither field is required on Fit: a payload that omits either still validates and still loads through from_dict with that field None. IntervalShape.HALF_OPEN is valid; Fit.model accepts only \"binomial\", Fit.direction and Threshold.direction accept \"decreasing\" and \"increasing\" (an outcome that rises with severity), and Ratio.dependence accepts only \"independent\". Adding a result family or an enum value (for example ll4, isotonic or paired) is a schema_version change, not a silent extension of this one. Each object's `properties` keys match its dataclass's field names exactly (plus `type` for the five tagged result types). additionalProperties is false everywhere: an unrecognised field is a reader/writer version mismatch, not a safe extension, in this schema version.",
+  "type": "object",
+  "properties": {
+    "type": {
+      "const": "Scorecard"
+    },
+    "results": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/GridBreakPoint"
+          },
+          {
+            "$ref": "#/$defs/Fit"
+          },
+          {
+            "$ref": "#/$defs/Threshold"
+          },
+          {
+            "$ref": "#/$defs/Ratio"
+          }
+        ]
+      }
+    },
+    "provenance": {
+      "type": "object"
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "library_version": {
+      "type": "string"
+    },
+    "schema_version": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "type",
+    "results",
+    "created_at",
+    "library_version",
+    "schema_version"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "GridBreakPoint": {
+      "type": "object",
+      "description": "robustmargin.GridBreakPoint: the grid break-point rule's result (an observed statistic, not a fitted threshold).",
+      "properties": {
+        "type": {
+          "const": "GridBreakPoint"
+        },
+        "value": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "max_tested": {
+          "type": "number"
+        },
+        "censoring": {
+          "$ref": "#/$defs/Censoring"
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "provenance": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "type",
+        "value",
+        "max_tested",
+        "censoring"
+      ],
+      "additionalProperties": false
+    },
+    "Fit": {
+      "type": "object",
+      "description": "robustmargin.Fit: a dose-response fit, or an explicit record of why one was not obtained. This schema is binomial-only: model accepts only \"binomial\"; direction is \"decreasing\" or \"increasing\", and for an increasing outcome params and cells are on the scale of the outcome as counted. params are on the natural scale, never the optimiser's reparametrisation.",
+      "properties": {
+        "type": {
+          "const": "Fit"
+        },
+        "axis": {
+          "$ref": "#/$defs/Axis"
+        },
+        "outcome": {
+          "type": "string"
+        },
+        "direction": {
+          "enum": [
+            "decreasing",
+            "increasing"
+          ]
+        },
+        "model": {
+          "enum": [
+            "binomial"
+          ]
+        },
+        "link": {
+          "enum": [
+            "probit",
+            "logit",
+            "cloglog"
+          ]
+        },
+        "params": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "mu": {
+                  "$ref": "#/$defs/Parameter"
+                },
+                "s": {
+                  "$ref": "#/$defs/Parameter"
+                },
+                "upper": {
+                  "$ref": "#/$defs/Parameter"
+                },
+                "lower": {
+                  "$ref": "#/$defs/Parameter"
+                }
+              },
+              "required": [
+                "mu",
+                "s",
+                "upper",
+                "lower"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "covariance": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Covariance"
+            }
+          ]
+        },
+        "log_likelihood": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "cells": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Cell"
+          }
+        },
+        "status": {
+          "$ref": "#/$defs/Status"
+        },
+        "cluster_ids": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": [
+              "string",
+              "integer"
+            ]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "provenance": {
+          "type": "object"
+        },
+        "diagnostics": {
+          "description": "Model-only goodness of fit, dispersion and link comparison. Set exactly when this Fit's own status is OK; null otherwise.",
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Diagnostics"
+            }
+          ]
+        },
+        "monotonicity": {
+          "description": "A data-only adjacent-severity-level monotonicity check, computed from the raw Observations before a fitting path was chosen. Set on every freshly-built Fit regardless of status; null only when a payload omits it.",
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/MonotonicityCheck"
+            }
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "axis",
+        "outcome",
+        "direction",
+        "model",
+        "link",
+        "params",
+        "covariance",
+        "log_likelihood",
+        "cells",
+        "status"
+      ],
+      "additionalProperties": false
+    },
+    "Threshold": {
+      "type": "object",
+      "description": "robustmargin.Threshold: where a fitted curve crosses a target performance, with a confidence interval, or an explicit record of why no value is reported. direction is \"decreasing\" or \"increasing\". Per-level trial counts live on fit.cells, not on a separate field.",
+      "properties": {
+        "type": {
+          "const": "Threshold"
+        },
+        "axis": {
+          "$ref": "#/$defs/Axis"
+        },
+        "definition": {
+          "$ref": "#/$defs/Definition"
+        },
+        "direction": {
+          "enum": [
+            "decreasing",
+            "increasing"
+          ]
+        },
+        "value": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "lo": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "hi": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "level": {
+          "type": "number"
+        },
+        "interval_method": {
+          "enum": [
+            "profile",
+            "delta",
+            "exact_bound"
+          ]
+        },
+        "censoring": {
+          "$ref": "#/$defs/Censoring"
+        },
+        "status": {
+          "$ref": "#/$defs/Status"
+        },
+        "dependence": {
+          "enum": [
+            "independent"
+          ]
+        },
+        "fit": {
+          "$ref": "#/$defs/Fit"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "baseline": {
+          "description": "Set when status is FAILS_AT_BASELINE, null otherwise.",
+          "oneOf": [
+            {
+              "$ref": "#/$defs/BaselineRate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "grid": {
+          "description": "The grid break-point accompanying a SEPARATION/NOT_CONVERGED exact-bound fallback, null otherwise. It is a grid statistic at grid resolution and is never the threshold value.",
+          "oneOf": [
+            {
+              "$ref": "#/$defs/GridBreakPoint"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "provenance": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "type",
+        "axis",
+        "definition",
+        "direction",
+        "value",
+        "lo",
+        "hi",
+        "level",
+        "interval_method",
+        "censoring",
+        "status",
+        "dependence",
+        "fit"
+      ],
+      "additionalProperties": false
+    },
+    "Ratio": {
+      "type": "object",
+      "description": "robustmargin.Ratio: the ratio of two thresholds' severities, on the same axis, with a confidence interval. A failed or censored ratio (status != OK or censoring != NONE) carries shape=null, estimate=null, lo=null, hi=null -- no numbers. dependence accepts only \"independent\" (a later release adds \"paired\"). IntervalShape.HALF_OPEN means lo set, hi null, i.e. [lo, inf); EXCLUSIVE stays a valid shape (its Ratio invariants are still enforced) but is unreachable from ratio_interval() while dependence=\"independent\".",
+      "properties": {
+        "type": {
+          "const": "Ratio"
+        },
+        "threshold_a": {
+          "$ref": "#/$defs/Threshold"
+        },
+        "threshold_b": {
+          "$ref": "#/$defs/Threshold"
+        },
+        "estimate": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "lo": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "hi": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "shape": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/IntervalShape"
+            }
+          ]
+        },
+        "method": {
+          "enum": [
+            "fieller",
+            "log_delta"
+          ]
+        },
+        "dependence": {
+          "enum": [
+            "independent"
+          ]
+        },
+        "level": {
+          "type": "number"
+        },
+        "censoring": {
+          "$ref": "#/$defs/Censoring"
+        },
+        "status": {
+          "$ref": "#/$defs/Status"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "provenance": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "type",
+        "threshold_a",
+        "threshold_b",
+        "estimate",
+        "lo",
+        "hi",
+        "shape",
+        "method",
+        "dependence",
+        "level",
+        "censoring",
+        "status"
+      ],
+      "additionalProperties": false
+    },
+    "Axis": {
+      "type": "object",
+      "description": "robustmargin.Axis: the severity axis a series of observations was measured on.",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "unit": {
+          "type": "string"
+        },
+        "scale": {
+          "enum": [
+            "log",
+            "linear"
+          ]
+        },
+        "citation": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "unit",
+        "scale"
+      ],
+      "additionalProperties": false
+    },
+    "Definition": {
+      "type": "object",
+      "description": "robustmargin.Definition: which target performance a threshold solves for.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "absolute",
+            "baseline_fraction",
+            "baseline_multiple",
+            "relative"
+          ]
+        },
+        "value": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "kind",
+        "value"
+      ],
+      "additionalProperties": false
+    },
+    "Cell": {
+      "type": "object",
+      "description": "robustmargin.Cell: one pooled row of counts at a single severity.",
+      "properties": {
+        "severity": {
+          "type": "number"
+        },
+        "successes": {
+          "type": "integer"
+        },
+        "trials": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "severity",
+        "successes",
+        "trials"
+      ],
+      "additionalProperties": false
+    },
+    "Parameter": {
+      "type": "object",
+      "description": "robustmargin.Parameter: one fitted or fixed parameter value, on the natural scale (never the optimiser's log/logit reparametrisation).",
+      "properties": {
+        "value": {
+          "type": "number"
+        },
+        "fixed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "value",
+        "fixed"
+      ],
+      "additionalProperties": false
+    },
+    "Covariance": {
+      "type": "object",
+      "description": "robustmargin.Covariance: the variance-covariance matrix of a fit's estimated (non-fixed) parameters, on the natural scale. Positive semi-definite.",
+      "properties": {
+        "names": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "matrix": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          }
+        }
+      },
+      "required": [
+        "names",
+        "matrix"
+      ],
+      "additionalProperties": false
+    },
+    "Censoring": {
+      "type": "string",
+      "enum": [
+        "NONE",
+        "RIGHT",
+        "LEFT",
+        "OPEN_UPPER",
+        "OPEN_LOWER"
+      ]
+    },
+    "Status": {
+      "type": "string",
+      "enum": [
+        "OK",
+        "SEPARATION",
+        "NOT_CONVERGED",
+        "UNREACHABLE",
+        "FAILS_AT_BASELINE",
+        "CONTROL_INCOMPATIBLE"
+      ]
+    },
+    "IntervalShape": {
+      "type": "string",
+      "enum": [
+        "BOUNDED",
+        "UNBOUNDED",
+        "EXCLUSIVE",
+        "HALF_OPEN"
+      ]
+    },
+    "BaselineRate": {
+      "type": "object",
+      "description": "robustmargin.BaselineRate: the control cell's observed rate with its exact (Clopper-Pearson) interval, reported when a Threshold's status is FAILS_AT_BASELINE. An untagged helper, like Cell: it appears only as Threshold.baseline. Its lo/hi are a per-cell exact interval and are deliberately NOT a threshold interval -- a Clopper-Pearson interval is never attached to a threshold, which is why these live here and never in Threshold.lo/.hi.",
+      "properties": {
+        "severity": {
+          "type": "number"
+        },
+        "successes": {
+          "type": "integer"
+        },
+        "trials": {
+          "type": "integer"
+        },
+        "rate": {
+          "type": "number"
+        },
+        "lo": {
+          "type": "number"
+        },
+        "hi": {
+          "type": "number"
+        },
+        "level": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "exclusiveMaximum": 1
+        },
+        "method": {
+          "type": "string",
+          "const": "per_cell_clopper_pearson"
+        }
+      },
+      "required": [
+        "severity",
+        "successes",
+        "trials",
+        "rate",
+        "lo",
+        "hi"
+      ],
+      "additionalProperties": false
+    },
+    "Diagnostics": {
+      "type": "object",
+      "description": "robustmargin.Diagnostics: model-only fit diagnostics -- goodness of fit, dispersion and link comparison, reported and never acted on automatically (the monotonicity check is not part of this type: it lives on MonotonicityCheck). An untagged helper, like BaselineRate: it appears only as Fit.diagnostics, and only when that Fit's own status is OK.",
+      "properties": {
+        "deviance": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "pearson_chi2": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "df": {
+          "type": "integer"
+        },
+        "dispersion": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "link_aic": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "link_status": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Status"
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "deviance",
+        "pearson_chi2",
+        "df",
+        "dispersion",
+        "link_aic",
+        "link_status"
+      ],
+      "additionalProperties": false
+    },
+    "AdjacentPair": {
+      "type": "object",
+      "description": "robustmargin.AdjacentPair: one adjacent-severity-level pair from a MonotonicityCheck, with its raw counts, one-sided Fisher exact p-value and Holm-adjusted p-value.",
+      "properties": {
+        "severity_low": {
+          "type": "number"
+        },
+        "severity_high": {
+          "type": "number"
+        },
+        "successes_low": {
+          "type": "integer"
+        },
+        "trials_low": {
+          "type": "integer"
+        },
+        "successes_high": {
+          "type": "integer"
+        },
+        "trials_high": {
+          "type": "integer"
+        },
+        "p_value": {
+          "type": "number"
+        },
+        "holm_adjusted_p": {
+          "type": "number"
+        },
+        "flagged": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "severity_low",
+        "severity_high",
+        "successes_low",
+        "trials_low",
+        "successes_high",
+        "trials_high",
+        "p_value",
+        "holm_adjusted_p",
+        "flagged"
+      ],
+      "additionalProperties": false
+    },
+    "MonotonicityCheck": {
+      "type": "object",
+      "description": "robustmargin.MonotonicityCheck: a data-only adjacent-level monotonicity check on raw counts -- populated on every fit_dose_response return path, whatever the Status, since it needs only counts, never a fitted curve. An untagged helper, like BaselineRate: it appears only as Fit.monotonicity.",
+      "properties": {
+        "direction": {
+          "enum": [
+            "decreasing",
+            "increasing"
+          ]
+        },
+        "alpha": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "exclusiveMaximum": 1
+        },
+        "dependence": {
+          "enum": [
+            "independent"
+          ]
+        },
+        "pairs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AdjacentPair"
+          }
+        },
+        "any_flagged": {
+          "type": "boolean"
+        },
+        "method": {
+          "type": "string",
+          "const": "fisher_exact_one_sided_holm"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "direction",
+        "alpha",
+        "dependence",
+        "pairs",
+        "any_flagged"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

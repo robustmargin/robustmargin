@@ -280,11 +280,11 @@ class TestProvenanceAndSchemaVersion:
 
     def test_default_schema_version_is_the_current_package_version(self) -> None:
         """``GridBreakPoint``'s default tracks the single, package-wide ``SCHEMA_VERSION``
-        (``"1"``), since ``report.py`` versions the whole card format, not each type
+        (``"2"``), since ``report.py`` versions the whole card format, not each type
         independently. This test name does not hardcode which version that is."""
         result = grid_break_point([0.0, 5.0, 10.0], [1.0, 0.95, 0.4], criterion=0.95)
 
-        assert result.schema_version == "1"
+        assert result.schema_version == "2"
 
     def test_default_provenance_is_an_empty_mapping(self) -> None:
         import collections.abc
@@ -314,5 +314,5 @@ class TestProvenanceAndSchemaVersion:
         assert result.max_tested == 0.2
         assert result.censoring is Censoring.NONE
         # package-wide SCHEMA_VERSION
-        assert result.schema_version == "1"
+        assert result.schema_version == "2"
         assert len(result.provenance) == 0

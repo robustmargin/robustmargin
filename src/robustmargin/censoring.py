@@ -35,6 +35,10 @@ firing on the first severity past the true crossing (Hsu & Berger, 1999, *Journa
 Statistical Association* 94:468-482). The assumptions are a monotone curve, independent trials,
 and a target that is fixed or depends only on the control's counts.
 
+An increasing outcome is classified on its complement (performance ``1 - P``, target ``1 - t``),
+and :func:`classify` is given the target as the caller stated it so that warnings speak of the
+outcome as counted: "passes" then means the rate is confidently below the target.
+
 Classification order (the censoring conditions are a list of conditions, not a sequence; this is
 the sequence):
 
@@ -260,14 +264,15 @@ def _nonzero_cells(cells: tuple[Cell, ...]) -> tuple[Cell, ...]:
     return tuple(c for c in cells if c.severity > 0.0)
 
 
-def _target_out_of_range(*, target: float) -> Classification | None:
+def _target_out_of_range(*, target: float, shown_target: float) -> Classification | None:
     """``UNREACHABLE`` for a resolved target at or below 0, or at or above 1, on any fit status.
 
     A binomial performance curve takes values in ``[0, 1]``, so it never crosses a target outside
     the open interval ``(0, 1)``, and the exact one-sided tests against one are trivially true or
     false: every ``pass`` fires against a target of 0, and ``fail`` fires for any control with a
     failure against a target of 1. A claim made from them would rest on nothing, so this is decided
-    before any exact test.
+    before any exact test. ``shown_target`` is the target as the caller states it, which is what
+    the warning names.
     """
     if not (target <= 0.0 or target >= 1.0):
         return None
@@ -279,9 +284,10 @@ def _target_out_of_range(*, target: float) -> Classification | None:
         baseline=None,
         grid=None,
         warnings=(
-            f"censoring.classify: the resolved target {target!r} is outside the open interval "
-            "(0, 1), so no binomial performance curve crosses it and an exact test against it "
-            "is trivially true or false; reported as UNREACHABLE without running any exact test",
+            f"censoring.classify: the resolved target {shown_target!r} is outside the open "
+            "interval (0, 1), so no binomial performance curve crosses it and an exact test "
+            "against it is trivially true or false; reported as UNREACHABLE without running any "
+            "exact test",
         ),
     )
 
@@ -386,7 +392,22 @@ def _left(
     )
 
 
-def _grid_for(cells: tuple[Cell, ...], *, target: float) -> GridBreakPoint:
+def _grid_for(
+    cells: tuple[Cell, ...], *, target: float, original_target: float | None = None
+) -> GridBreakPoint:
+    """The grid break-point of ``cells`` against ``target``. For the complement of an increasing
+    outcome (``original_target`` given) it is read on the counts as supplied: a level breaks when
+    its event rate is strictly above ``original_target``, compared as ``events / trials``, so that
+    a rate equal to the target does not break whatever rounding ``1 - target`` carries."""
+    if original_target is not None:
+        # `events / trials > a` is `-events / trials < -a`, and float negation is exact, so the
+        # one grid rule decides it with no rounding from `1 - a`.
+        return grid_break_point(
+            [c.severity for c in cells],
+            [-((c.trials - c.successes) / c.trials) for c in cells],
+            criterion=-original_target,
+            signed=False,
+        )
     severity = [c.severity for c in cells]
     performance = [c.successes / c.trials for c in cells]
     return grid_break_point(severity, performance, criterion=target, signed=False)
@@ -395,10 +416,9 @@ def _grid_for(cells: tuple[Cell, ...], *, target: float) -> GridBreakPoint:
 def _contradiction_warning(
     *,
     lo_severity: float,
-    lo_bound: float,
+    passes_clause: str,
     hi_severity: float,
-    hi_bound: float,
-    target: float,
+    fails_clause: str,
     level: float,
     curve_exists: bool,
 ) -> str:
@@ -435,8 +455,8 @@ def _contradiction_warning(
         # behaviourally breaking change.
         "NON_MONOTONE: censoring.classify: exact one-sided tests at confidence "
         f"{level} contradict monotonicity: severity {lo_severity} confidently "
-        f"passes (lower bound {lo_bound!r} >= target {target!r}) while the lower severity "
-        f"{hi_severity} confidently fails (upper bound {hi_bound!r} < target {target!r}); "
+        f"passes ({passes_clause}) while the lower severity "
+        f"{hi_severity} confidently fails ({fails_clause}); "
         f"{exact_bounds_clause}"
     )
 
@@ -519,8 +539,49 @@ def _descending_fail_run_end(
     return end
 
 
+def _contradiction_clauses(
+    cells: tuple[Cell, ...],
+    *,
+    lo_severity: float,
+    lo_bound: float,
+    hi_severity: float,
+    hi_bound: float,
+    target: float,
+    shown_target: float,
+    level: float,
+    mirrored: bool,
+) -> tuple[str, str]:
+    """The two bound statements of a contradiction warning, in the terms of the outcome as the
+    caller counted it. On the view itself they are the bounds just computed. For the complement of
+    an increasing outcome, "passes" is a confident *upper* bound at or below the stated target and
+    "fails" a confident *lower* bound above it, taken from the original counts."""
+    if not mirrored:
+        return (
+            f"lower bound {lo_bound!r} >= target {target!r}",
+            f"upper bound {hi_bound!r} < target {target!r}",
+        )
+    by_severity = {c.severity: c for c in cells}
+    passing, failing = by_severity[lo_severity], by_severity[hi_severity]
+    upper_bound = exact_one_sided_bound(
+        passing.trials - passing.successes, passing.trials, level=level, side="upper"
+    )
+    lower_bound = exact_one_sided_bound(
+        failing.trials - failing.successes, failing.trials, level=level, side="lower"
+    )
+    return (
+        f"upper bound {upper_bound!r} <= target {shown_target!r}",
+        f"lower bound {lower_bound!r} > target {shown_target!r}",
+    )
+
+
 def _contradiction_or_none(
-    fit: Fit, cells: tuple[Cell, ...], *, target: float, level: float
+    fit: Fit,
+    cells: tuple[Cell, ...],
+    *,
+    target: float,
+    shown_target: float,
+    level: float,
+    mirrored: bool,
 ) -> Classification | None:
     """The exact-bounds-contradict-monotonicity check, applied *before* the `RIGHT`/`LEFT`
     branches rather than only inside the bracket.
@@ -541,12 +602,22 @@ def _contradiction_or_none(
     lo_severity, lo_bound, hi_severity, hi_bound = _scan_bounds(cells, target=target, level=level)
     if lo_severity is None or hi_severity is None or lo_severity < hi_severity:
         return None
-    warning = _contradiction_warning(
+    passes_clause, fails_clause = _contradiction_clauses(
+        cells,
         lo_severity=lo_severity,
         lo_bound=lo_bound,
         hi_severity=hi_severity,
         hi_bound=hi_bound,
         target=target,
+        shown_target=shown_target,
+        level=level,
+        mirrored=mirrored,
+    )
+    warning = _contradiction_warning(
+        lo_severity=lo_severity,
+        passes_clause=passes_clause,
+        hi_severity=hi_severity,
+        fails_clause=fails_clause,
         level=level,
         curve_exists=fit.status is Status.OK,
     )
@@ -575,13 +646,19 @@ def _contradiction_or_none(
         lo=None,
         hi=None,
         baseline=None,
-        grid=_grid_for(cells, target=target),
+        grid=_grid_for(cells, target=target, original_target=shown_target if mirrored else None),
         warnings=(warning,),
     )
 
 
 def _exact_bound_fallback(
-    fit: Fit, cells: tuple[Cell, ...], *, target: float, level: float
+    fit: Fit,
+    cells: tuple[Cell, ...],
+    *,
+    target: float,
+    shown_target: float,
+    level: float,
+    mirrored: bool,
 ) -> Classification:
     """The exact bracket (or one-sided bound) for a failed fit, from fixed-sequence runs.
 
@@ -609,7 +686,7 @@ def _exact_bound_fallback(
     contradiction check at ``level`` before reaching this fallback: a diagnostic that can only
     suppress a claim, never add one.
     """
-    grid = _grid_for(cells, target=target)
+    grid = _grid_for(cells, target=target, original_target=shown_target if mirrored else None)
     confidence = _exact_claim_confidence(level)
     nonzero = _nonzero_cells(cells)
 
@@ -624,8 +701,8 @@ def _exact_bound_fallback(
         warnings = (
             "censoring.classify: there is no run of confidently passing levels from the lowest "
             "nonzero severity, and neither the lowest nor the highest nonzero severity "
-            f"confidently fails, at confidence {confidence}, for the target {target!r}; no bounds "
-            "are reported",
+            f"confidently fails, at confidence {confidence}, for the target {shown_target!r}; "
+            "no bounds are reported",
         )
     elif lo_severity is None or hi_severity is None:
         # Only one side is determined, so this is not a bracket. It is reported alone, at the
@@ -639,10 +716,11 @@ def _exact_bound_fallback(
         )
         warnings = (
             f"censoring.classify: the exact-bound fallback determined only the {determined} "
-            f"side: {missing_test} at confidence {confidence}, for the target {target!r}. The "
-            f"{determined} side is reported alone, as a one-sided exact bound at confidence "
-            f"{confidence}, not a bracket. Censoring stays NONE because RIGHT and LEFT are "
-            "reserved for their own end-of-range conditions, which this result did not meet",
+            f"side: {missing_test} at confidence {confidence}, for the target "
+            f"{shown_target!r}. The {determined} side is reported alone, as a one-sided exact "
+            f"bound at confidence {confidence}, not a bracket. Censoring stays NONE because "
+            "RIGHT and LEFT are reserved for their own end-of-range conditions, which this result "
+            "did not meet",
         )
     return Classification(
         status=fit.status,
@@ -656,7 +734,12 @@ def _exact_bound_fallback(
 
 
 def _with_grid(
-    classification: Classification, fit: Fit, cells: tuple[Cell, ...], *, target: float
+    classification: Classification,
+    fit: Fit,
+    cells: tuple[Cell, ...],
+    *,
+    target: float,
+    original_target: float | None,
 ) -> Classification:
     """Attach the grid break-point when, and only when, the fit failed.
 
@@ -665,10 +748,14 @@ def _with_grid(
     """
     if fit.status not in _NONCONVERGENT_STATUSES:
         return classification
-    return replace(classification, grid=_grid_for(cells, target=target))
+    return replace(
+        classification, grid=_grid_for(cells, target=target, original_target=original_target)
+    )
 
 
-def classify(fit: Fit, *, target: float, level: float) -> Classification:
+def classify(
+    fit: Fit, *, target: float, level: float, original_target: float | None = None
+) -> Classification:
     """Classify a fit against a resolved target performance (order per the module docstring).
 
     Parameters
@@ -682,11 +769,18 @@ def classify(fit: Fit, *, target: float, level: float) -> Classification:
         is the caller's job.
     level
         The confidence level, strictly between 0 and 1.
+    original_target
+        ``None`` for a fit of the outcome as counted. Otherwise ``fit`` is the complementary
+        outcome of an increasing one, ``target`` is already complemented, and this is the target
+        as the caller stated it: warnings name it, and bounds they quote are taken from the
+        original counts. Every test and every number in the result is unchanged by it.
 
     Returns
     -------
     Classification
     """
+    mirrored = original_target is not None
+    shown_target = original_target if original_target is not None else target
     if fit.status is Status.CONTROL_INCOMPATIBLE:
         return Classification(
             status=Status.CONTROL_INCOMPATIBLE,
@@ -699,7 +793,7 @@ def classify(fit: Fit, *, target: float, level: float) -> Classification:
 
     # A target outside (0, 1) is decided before any exact test: every one of them is trivially
     # true or false against it. It follows `CONTROL_INCOMPATIBLE`, which is terminal.
-    out_of_range = _target_out_of_range(target=target)
+    out_of_range = _target_out_of_range(target=target, shown_target=shown_target)
     if out_of_range is not None:
         return out_of_range
 
@@ -722,17 +816,19 @@ def classify(fit: Fit, *, target: float, level: float) -> Classification:
     # The monotonicity-contradiction check runs before the directional branches: a
     # `RIGHT`/`LEFT` bound asserts where the threshold lies, and that assertion rests on
     # monotonicity. If the exact tests contradict monotonicity, no such bound may be reported.
-    contradiction = _contradiction_or_none(fit, cells, target=target, level=level)
+    contradiction = _contradiction_or_none(
+        fit, cells, target=target, shown_target=shown_target, level=level, mirrored=mirrored
+    )
     if contradiction is not None:
         return contradiction
 
     right = _right(fit, cells, target=target, confidence=confidence)
     if right is not None:
-        return _with_grid(right, fit, cells, target=target)
+        return _with_grid(right, fit, cells, target=target, original_target=original_target)
 
     left = _left(fit, cells, target=target, confidence=confidence)
     if left is not None:
-        return _with_grid(left, fit, cells, target=target)
+        return _with_grid(left, fit, cells, target=target, original_target=original_target)
 
     if fit.status is Status.OK:
         return Classification(
@@ -745,4 +841,6 @@ def classify(fit: Fit, *, target: float, level: float) -> Classification:
             solve=True,
         )
 
-    return _exact_bound_fallback(fit, cells, target=target, level=level)
+    return _exact_bound_fallback(
+        fit, cells, target=target, shown_target=shown_target, level=level, mirrored=mirrored
+    )

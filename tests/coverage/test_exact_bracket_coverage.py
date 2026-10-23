@@ -616,3 +616,104 @@ def test_the_target_the_simulation_judges_against_is_the_one_threshold_resolves(
         outcomes.add(observed)
 
     assert len(outcomes) >= 3, f"the target never changed the result: {outcomes}"
+
+
+# ---------------------------------------------------------------------------------------------
+# The increasing orientation of design C.
+#
+# Events are drawn from ``1 - p`` for design C's success probabilities ``p`` and solved at the
+# events-scale target ``1 - 0.9``, so the true curve crosses it between severities 3 and 4 exactly
+# as C's does, with the claims reading the other way: a ``lo`` says the rate is still *below* the
+# target there, and so on. A claim is judged by the same rule as on the decreasing curve once the
+# probabilities and the target are mirrored, which is why ``_lo_is_wrong`` and its siblings are
+# reused with ``_C.probabilities`` and ``_TARGET``. The seed is independent of C's.
+# ---------------------------------------------------------------------------------------------
+
+_SEED_INCREASING_C = 13
+
+
+@pytest.mark.slow
+def test_increasing_design_c_exact_claims_are_wrong_at_most_one_minus_level_plus_margin() -> None:
+    design = _C
+    base: Fit = fake_fit(status=Status.NOT_CONVERGED, direction="increasing", monotonicity=None)
+    event_probabilities = 1.0 - np.array(design.probabilities)
+    trials = np.full(len(event_probabilities), design.trials)
+    rng = np.random.default_rng(_SEED_INCREASING_C)
+    events_target = 1.0 - _TARGET
+
+    wrong = brackets = 0
+    for _ in range(_REPLICATES):
+        events = rng.binomial(trials, event_probabilities)
+        cells = tuple(
+            Cell(severity=float(severity), successes=int(k), trials=int(n))
+            for severity, (k, n) in enumerate(zip(events, trials, strict=True))
+        )
+        result = threshold(
+            dataclasses.replace(base, cells=cells),
+            definition=Definition.absolute(events_target),
+            interval_method="profile",
+            level=_LEVEL,
+        )
+        brackets += _claim_kind(result) == "bracket"
+        wrong += (
+            _lo_is_wrong(result, design.probabilities, _TARGET)
+            or _hi_is_wrong(result, design.probabilities, _TARGET)
+            or _other_claim_is_wrong(result, design.probabilities, _TARGET)
+        )
+
+    rate = wrong / _REPLICATES
+    print(
+        f"\nincreasing orientation of design C | level {_LEVEL}, events-scale target "
+        f"{events_target:.4f}, {_REPLICATES} replicates, seed {_SEED_INCREASING_C}\n"
+        f"  limit (1 - level + {_Z:g} SE) : {_LIMIT:.4f}\n"
+        f"  brackets          : {brackets}\n"
+        f"  all kinds wrong   : {rate:.4f}"
+    )
+    assert brackets >= _REPLICATES // 2, "the design no longer produces brackets"
+    assert rate > 0.0, "no replicate made a wrong claim; the design no longer stresses the method"
+    assert rate <= _LIMIT, (
+        f"all-kinds wrong-claim rate {rate:.4f} exceeds {_ALPHA:.2f} + {_MARGIN:.4f} on the "
+        "increasing orientation of design C; this is a method finding, not a flaky test"
+    )
+
+
+# ---------------------------------------------------------------------------------------------
+# An increasing outcome, ``baseline_multiple(k)`` on a failed fit: a refusal, not a coverage claim.
+#
+# On a failed fit the only baseline is the control's observed rate, an estimate. Exact claims read
+# against ``k`` times that estimate are about a target the caller did not ask for, and judged
+# against ``k * P(0)`` they err far above ``1 - level`` in simulation, so the definition is refused
+# on a failed fit. This draws counts from a design with a small control rate and levels around the
+# plug-in target and checks that every replicate raises, whatever the control count (zero events
+# included) and whatever the plug-in works out to. Nothing is judged about the rate of wrong claims.
+# ---------------------------------------------------------------------------------------------
+
+_SEED_INCREASING_MULTIPLE = 14
+_MULTIPLE_EVENT_PROBABILITIES = (0.04, 0.06, 0.10, 0.20, 0.40)
+
+
+@pytest.mark.slow
+def test_increasing_baseline_multiple_on_a_failed_fit_always_raises() -> None:
+    base: Fit = fake_fit(status=Status.NOT_CONVERGED, direction="increasing", monotonicity=None)
+    event_probabilities = np.array(_MULTIPLE_EVENT_PROBABILITIES)
+    trials = np.full(len(event_probabilities), 500)
+    trials[0] = 100
+    rng = np.random.default_rng(_SEED_INCREASING_MULTIPLE)
+
+    zero_controls = 0
+    for _ in range(2000):
+        events = rng.binomial(trials, event_probabilities)
+        zero_controls += events[0] == 0
+        cells = tuple(
+            Cell(severity=float(severity), successes=int(k), trials=int(n))
+            for severity, (k, n) in enumerate(zip(events, trials, strict=True))
+        )
+        with pytest.raises(ValueError, match="NOT_CONVERGED"):
+            threshold(
+                dataclasses.replace(base, cells=cells),
+                definition=Definition.baseline_multiple(2.0),
+                interval_method="profile",
+                level=_LEVEL,
+            )
+
+    assert zero_controls > 0, "the design never drew a control with no events"
