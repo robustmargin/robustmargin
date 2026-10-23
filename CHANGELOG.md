@@ -7,6 +7,63 @@ minor release may change the public API, and every such change carries a migrati
 
 ## [Unreleased]
 
+## [0.2.1] — undated until tagged
+
+### Fixed
+- A fit with estimated asymptotes no longer raises when the optimizer steps to a point where
+  the two asymptotes coincide in floating point.
+- An estimated-asymptote fit at the maximum is no longer reported `NOT_CONVERGED` because the
+  optimizer's step-size criterion stalled at rounding level. Its status is decided by the Newton
+  decrement.
+- **Behavioural change: fixed-asymptote fits (`upper=1`, `lower=0`) land on the true
+  maximum-likelihood estimate, their profile intervals are computed from the true profile
+  likelihood, and a non-finite log-likelihood no longer raises.**
+  - **Before.**
+    - The binomial log-likelihood formed each probability by subtraction, so in a tail it rounded
+      to exactly `0` and the log-likelihood was `-inf`, even at the maximum; building the `Fit`
+      then raised `ValueError`.
+    - statsmodels' GLM reports convergence at points that are not the maximum (some
+      complementary log-log fits, up to about 0.3 standard errors off in `mu`, rarely probit), and
+      reports non-convergence on data whose maximum is finite and unique (a large share of
+      complementary log-log fits with a rising tail).
+    - Its observed information is not finite when a cell's fitted probability is exactly 0 or 1,
+      which made some logit fits `NOT_CONVERGED`.
+    - The profile interval's inner offset GLM had the same defect, so some complementary log-log
+      and probit profile intervals (in 0.2.0 as well) were too narrow, or raised.
+  - **Now.**
+    - The log-likelihood is computed in log space, so it stays finite and accurate in the tails.
+    - A GLM estimate is accepted only if the Newton decrement of that likelihood,
+      `g' (-H)^-1 g / 2`, is at most `1e-6`: the log-likelihood a Newton step could still gain.
+      The criterion does not depend on the parametrisation or the sample size.
+    - When the GLM does not converge, fails that check, or has an observed information that cannot
+      be evaluated, the same model is refit by direct likelihood maximisation with a statsmodels
+      optimizer. The fit carries a warning naming which of the three happened ("the GLM did not
+      converge", "failed the optimality check", "information could not be evaluated"). If only
+      the information is non-finite and the estimate passes the check, the information is
+      computed from the stable log-likelihood and the warning says so.
+    - The profile's inner fit is checked the same way. Where it is replaced by direct constrained
+      maximisation of the same model, `Threshold.warnings` says "the profile inner fit was
+      replaced".
+    - Some complementary log-log (rarely probit) fits move to the true maximum. Some
+      `NOT_CONVERGED` fits become `OK`.
+    - A fit whose log-likelihood is still not finite is `NOT_CONVERGED` with a warning, with no
+      parameters, covariance or log-likelihood. It does not raise.
+    - `diagnose`'s link comparison uses the same fitting path, so its comparison links inherit all
+      of this: a comparison fit no longer takes down an `OK` primary fit.
+    - `threshold()` on a fit that was `NOT_CONVERGED` and is now `OK` returns a model value and
+      interval instead of the exact-bound fallback, for both interval methods.
+  - **Migration.** Re-run analyses that use the complementary log-log link, that reported
+    `NOT_CONVERGED`, or that used profile intervals on such fits. Code that caught `ValueError`
+    around `fit_dose_response` for this case should check `fit.status` instead. Results where the
+    GLM was already at the maximum are unchanged.
+
+### Documented
+- On a failed fit (`SEPARATION` or `NOT_CONVERGED`), `Definition.baseline_fraction(p)` resolves
+  its target from the control's observed rate, `p * k0 / n0`. The exact claims are tests against
+  that plug-in target and carry no coverage guarantee for `p` times the true zero-severity rate.
+  For a covered claim on a failed fit, use `Definition.absolute(a)`. The `Threshold` and
+  `baseline_fraction` docstrings say so.
+
 ## [0.2.0] — 2026-10-20
 
 ### Changed
