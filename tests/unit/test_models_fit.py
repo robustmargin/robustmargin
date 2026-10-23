@@ -340,8 +340,8 @@ class TestExactStepWithEstimatedAsymptotes:
     """An exact step -- three identical high rates, then three identical low rates, plus a
     control matching the high rate -- gives the estimated-asymptote path almost no information
     about the transition's shape (``s``) or location beyond "somewhere between the third and
-    fourth nonzero level". This must report ``NOT_CONVERGED`` and must never raise, for either
-    link.
+    fourth nonzero level". This must report ``NOT_CONVERGED`` for the step itself and must never
+    raise, for any link.
     """
 
     @staticmethod
@@ -352,26 +352,16 @@ class TestExactStepWithEstimatedAsymptotes:
             trials=[200, 200, 200, 200, 200, 200, 200],
         )
 
-    def test_probit_is_not_converged(self) -> None:
+    @pytest.mark.parametrize("link", ["probit", "logit", "cloglog"])
+    def test_is_not_converged_as_a_step_between_adjacent_levels(self, link: str) -> None:
         obs = self._obs_with_exact_step()
 
         fit = fit_dose_response(
-            obs, model="binomial", link="probit", upper="estimate", lower="estimate"
+            obs, model="binomial", link=link, upper="estimate", lower="estimate"
         )
 
         assert fit.status is Status.NOT_CONVERGED
         assert fit.params is None
         assert fit.covariance is None
         assert fit.log_likelihood is None
-
-    def test_logit_is_not_converged(self) -> None:
-        obs = self._obs_with_exact_step()
-
-        fit = fit_dose_response(
-            obs, model="binomial", link="logit", upper="estimate", lower="estimate"
-        )
-
-        assert fit.status is Status.NOT_CONVERGED
-        assert fit.params is None
-        assert fit.covariance is None
-        assert fit.log_likelihood is None
+        assert any("a step between adjacent tested levels" in w for w in fit.warnings)

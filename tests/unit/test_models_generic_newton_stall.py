@@ -2,17 +2,16 @@
 
 1. ``_curve_log_success_and_failure_probability`` took ``math.log(upper - lower)``, which raises
    ``ValueError: math domain error`` when float rounding makes ``upper == lower`` (the
-   parametrisation ``u = l + (1 - l) * expit(b)`` collapses when ``expit`` saturates). Reported
-   from CI: ``TestExactStepWithEstimatedAsymptotes`` on Linux (probit) and macOS with dependency
-   floors (logit), where BFGS's line search reached ``s = inf, upper = lower = 1.0``.
+   parametrisation ``u = l + (1 - l) * expit(b)`` collapses when ``expit`` saturates), as BFGS's
+   line search does when it reaches ``s = inf, upper = lower = 1.0`` on an exact step.
    ``u == l`` is a constant curve ``p = u``; the log-likelihood is evaluated, never raised.
 
 2. Newton's step-size criterion (``tol=1e-10``) is a coin flip at the maximum, where the numerical
-   score and Hessian carry roundoff near 1e-9. A fit sitting at the maximum was reported
-   ``NOT_CONVERGED`` on one platform (numpy 1.26 / scipy 1.11 / statsmodels 0.14.0). The stall
-   is simulated here, so the tests are deterministic on every platform: the Newton stage's result
-   is made to report ``converged=False`` and emit a ``ConvergenceWarning`` while its parameters
-   are the true maximum. Reported in PR #24 CI.
+   score and Hessian carry roundoff near 1e-9, so the optimizer can stall at the maximum and
+   report ``converged=False``. The verdict must come from the optimality of the final point, not
+   from that flag. The stall is simulated here, so the tests are deterministic on every platform:
+   the Newton stage's result is made to report ``converged=False`` and emit a
+   ``ConvergenceWarning`` while its parameters are the true maximum.
 """
 
 from __future__ import annotations
