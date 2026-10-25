@@ -20,7 +20,8 @@ range. In two of them the *whole* profile interval lies beyond a search limit, s
 walked toward the wrong-side limit would meet a sign change and report the other endpoint as this
 side's bound; each checks the bound it does report against a profile likelihood computed here with
 ``scipy`` alone. In the third only the estimate is beyond the limit, and the interval's lower
-endpoint is not reached by the search (a limitation, recorded as an expected failure).
+endpoint is inside it: the lower walk overshoots the point where the inner fit fails, backs off to
+a shorter stride, and still finds that endpoint.
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ import numpy as np
 import pytest
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
-from scipy.optimize import brentq, minimize_scalar
+from scipy.optimize import brentq, minimize, minimize_scalar
 from scipy.stats import chi2, norm
 
 from robustmargin import (
@@ -435,9 +436,11 @@ class TestARealFitWhoseEstimateIsFarPastTheTestedRange:
 
     Only the estimate is out there: the profile's lower endpoint is at severity 161 (``theta``
     5.08), inside the upper limit, so the walk to the upper limit finds no sign change whether or
-    not the limit is on the right side of the estimate. This input therefore pins the behaviour
-    below, and does not tell a search that checks the limit's side from one that does not; the two
-    classes above are the inputs that do.
+    not the limit is on the right side of the estimate. This input therefore does not tell a search
+    that checks the limit's side from one that does not; the two classes above are the inputs that
+    do. It exercises the lower walk instead: a stride from ``theta`` 7.5 lands near -0.5, past the
+    point (``theta`` about 2.1) where the inner fit fails, so the walk must shorten the stride to
+    reach the endpoint at 5.08.
     """
 
     @staticmethod
@@ -472,9 +475,8 @@ class TestARealFitWhoseEstimateIsFarPastTheTestedRange:
         assert math.log(t.value) > 2.0 * math.log(100.0)
 
     def test_the_upper_side_is_open_and_no_reported_bound_crosses_the_value(self) -> None:
-        """What the search returns today. ``hi`` is open (the estimate is beyond the upper limit);
-        ``lo`` is whatever the lower walk finds, which must lie below the value if it is reported
-        at all."""
+        """``hi`` is open (the estimate is beyond the upper limit); ``lo`` is whatever the lower
+        walk finds, which must lie below the value if it is reported at all."""
         t = self._threshold()
 
         assert t.value is not None
@@ -487,20 +489,123 @@ class TestARealFitWhoseEstimateIsFarPastTheTestedRange:
         deviance crosses the chi-square critical value."""
         assert self._profile_lower_endpoint() == pytest.approx(161.0, rel=5e-3)
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=AssertionError,
-        reason=(
-            "The lower walk steps outward in growing strides and stops at the first stride that "
-            "lands where the inner fit fails, without trying a shorter stride. Here the stride "
-            "from theta 7.5 lands near -0.5, past the point (theta about 2.1) where the inner "
-            "fit fails, so a real lower endpoint at theta 5.08 is never reached and the lower "
-            "side is reported open. This is a known limitation, and conservative: a missing "
-            "bound is never a wrong one."
-        ),
-    )
     def test_the_lower_bound_is_found_near_severity_161(self) -> None:
         t = self._threshold()
 
         assert t.lo is not None, "the lower side was left open"
         assert t.lo == pytest.approx(self._profile_lower_endpoint(), rel=1e-3)
+
+    def test_the_increasing_mirror_gives_the_same_interval(self) -> None:
+        """The complement counts fit as an increasing outcome, against ``absolute(0.2)``, are the
+        same problem as the decreasing fit against ``absolute(0.8)``."""
+        events = [n - k for k, n in zip([100, 90, 89, 88], [100] * 4, strict=True)]
+        obs = Observations.from_counts(
+            _LOG_AXIS,
+            severity=[0.0, 1.0, 10.0, 100.0],
+            successes=events,
+            trials=[100] * 4,
+            outcome="event",
+            direction="increasing",
+        )
+        inc_fit = fit_dose_response(obs, model="binomial", link="probit", upper=1.0, lower=0.0)
+        assert inc_fit.status is Status.OK
+        t_inc = threshold(
+            inc_fit, definition=Definition.absolute(0.2), interval_method="profile", level=0.95
+        )
+        t_dec = self._threshold()
+
+        assert t_inc.status is t_dec.status
+        assert t_inc.censoring is t_dec.censoring
+        for name in ("value", "lo", "hi"):
+            a, b = getattr(t_inc, name), getattr(t_dec, name)
+            if b is None:
+                assert a is None, name
+            else:
+                assert a == pytest.approx(b, rel=1e-9), name
+        assert t_inc.lo is not None, "the lower side was left open"
+
+
+def _two_level_deviance_excess(*, theta: float) -> float:
+    """``2 * (llf_hat - llf_profile(theta)) - chi2.ppf(0.95, 1)`` for severities ``[1, 2]`` with 5
+    and 4 successes of 20 (no control cell), crossing ``absolute(0.5)`` at ``theta`` (log axis).
+
+    The probit likelihood is written out here, independently of ``intervals``. Crossing 0.5 means
+    ``z* = 0``, so ``mu = theta`` and the profile likelihood is the likelihood maximised over the
+    slope scale ``s > 0`` alone. The unconstrained maximum is found the same way over ``(mu, s)``.
+    """
+    log_x = np.log([1.0, 2.0])
+    k = np.array([5.0, 4.0])
+    n = np.array([20.0, 20.0])
+
+    def log_likelihood(mu: float, s: float) -> float:
+        z = (log_x - mu) / s
+        return float(np.sum(k * norm.logsf(z) + (n - k) * norm.logcdf(z)))
+
+    full = minimize(
+        lambda p: -log_likelihood(p[0], math.exp(p[1])),
+        x0=np.array([-2.8, 1.4]),
+        method="Nelder-Mead",
+        options={"xatol": 1.0e-10, "fatol": 1.0e-14, "maxiter": 5000},
+    )
+    profile = minimize_scalar(
+        lambda log_s: -log_likelihood(theta, math.exp(log_s)),
+        bounds=(-10.0, 15.0),
+        method="bounded",
+        options={"xatol": 1.0e-10},
+    )
+    return 2.0 * (float(profile.fun) - float(full.fun)) - float(chi2.ppf(0.95, 1))
+
+
+class TestAStrideIntoAFailingInnerFitDoesNotOpenAnIntervalThatCloses:
+    """Severities ``[1, 2]`` with 5 and 4 successes of 20, log axis, probit, ``absolute(0.5)``: the
+    estimate (0.061) is below the tested range and the profile closes on the upper side at 0.92016,
+    while the lower side genuinely does not cross before the search limit.
+
+    A long outward stride from the estimate lands where the inner fit fails; the search must
+    shorten the stride back toward the last good ``theta`` and find the crossing, not report that
+    side open. The expected endpoint is a root of the independent profile above: its excess is
+    negative at the estimate, negative up to the root, and positive past it.
+    """
+
+    @staticmethod
+    def _threshold() -> Threshold:
+        obs = Observations.from_counts(
+            _LOG_AXIS,
+            severity=[1.0, 2.0],
+            successes=[5, 4],
+            trials=[20, 20],
+            outcome="success",
+            direction="decreasing",
+        )
+        fit = fit_dose_response(obs, model="binomial", link="probit", upper=1.0, lower=0.0)
+        assert fit.status is Status.OK
+        return threshold(
+            fit, definition=Definition.absolute(0.5), interval_method="profile", level=_LEVEL
+        )
+
+    def test_the_upper_bound_is_found_and_the_lower_side_is_open(self) -> None:
+        t = self._threshold()
+
+        assert t.status is Status.OK
+        assert t.censoring is Censoring.OPEN_LOWER
+        assert t.lo is None
+        assert t.hi is not None
+
+    def test_the_upper_bound_matches_the_independent_profile_root(self) -> None:
+        t = self._threshold()
+        assert t.value is not None and t.hi is not None
+        theta_hat = math.log(t.value)
+
+        assert _two_level_deviance_excess(theta=theta_hat) < 0.0
+        assert _two_level_deviance_excess(theta=-0.1) < 0.0 < _two_level_deviance_excess(theta=0.0)
+        root = math.exp(
+            brentq(lambda th: _two_level_deviance_excess(theta=th), -0.1, 0.0, xtol=1e-12)
+        )
+
+        assert root == pytest.approx(0.920159, rel=1e-4)
+        assert t.hi == pytest.approx(root, rel=1e-4)
+
+    def test_no_side_is_reported_open_because_an_inner_fit_failed(self) -> None:
+        t = self._threshold()
+
+        assert not any("inner fit failed" in w for w in t.warnings), t.warnings

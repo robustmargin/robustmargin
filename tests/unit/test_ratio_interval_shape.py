@@ -47,8 +47,8 @@ exists.
 **``g >= 1`` is also reachable through a real fit, confirmed by search, not assumed impossible.**
 It needs a denominator threshold whose relative log-scale uncertainty exceeds ``1/z`` (about 51%
 at ``level=0.95``), which turns out to need a design sitting right at the edge of separation: two
-adjacent severity levels, a small ``n`` (20), and a near-flat, barely-decreasing success pattern
-(``5/20`` then ``4/20``) that barely constrains the slope at all.
+severity levels, a small ``n`` (20), and a near-flat, barely-decreasing success pattern
+(``11/20`` then ``9/20``) that barely constrains the slope at all.
 ``TestHalfOpenAndUnboundedFromRealFits`` below reproduces both ``HALF_OPEN`` and ``UNBOUNDED``
 this way (same poorly-determined denominator fit paired with a tightly- or loosely-determined
 numerator respectively), confirming the constructed cases above are not testing a mathematical
@@ -269,29 +269,32 @@ class TestBoundedShapeFromARealFit:
 
 class TestHalfOpenAndUnboundedFromRealFits:
     """``g >= 1`` reached through real ``fit_dose_response`` calls (module docstring), found by
-    search rather than assumed unreachable: two adjacent severity levels, ``n=20``, and a near-flat
-    success pattern (``5/20`` then ``4/20``) barely constrain the fitted slope at all, giving a
-    denominator threshold with an enormous log-scale standard error (``sigma_log ~= 8.3``,
-    ``g ~= 265`` at ``level=0.95`` -- far past the ``g=1`` boundary). Pairing that same denominator
-    with a *tightly*-determined numerator (a five-fold, ``n=200`` design with a clear gradient)
-    gives a positive discriminant and ``K > 0`` (``HALF_OPEN``); pairing it with an equally
-    poorly-determined numerator (the same two-level, ``n=20`` shape, a different near-flat pattern)
-    makes the discriminant non-positive instead (``UNBOUNDED``, since there are no real roots to
-    intersect at all) -- exactly the discriminant-sign distinction the constructed cases above make
-    with hand-picked numbers, now from data. Every fit here is ``Status.OK`` with ``Censoring.NONE``
+    search rather than assumed unreachable: two severity levels (``1`` and ``4``), ``n=20``, and a
+    near-flat success pattern (``11/20`` then ``9/20``) barely constrain the fitted slope at all,
+    giving a denominator threshold with a large log-scale standard error (``sigma_log ~= 1.10``,
+    ``g ~= 4.6`` at ``level=0.95`` -- well past the ``g=1`` boundary). Pairing that same
+    denominator with a *tightly*-determined numerator (a four-level, ``n=200`` design with a clear
+    gradient) gives a positive discriminant and ``K > 0`` (``HALF_OPEN``); pairing it with an
+    equally poorly-determined numerator (severities ``1`` and ``2``, the same ``11/20`` then
+    ``9/20`` pattern, ``sigma_log ~= 0.55``, ``g ~= 1.15``) makes the discriminant non-positive
+    instead (``UNBOUNDED``, since there are no real roots to intersect at all) -- exactly the
+    discriminant-sign distinction the constructed cases above make with hand-picked numbers, now
+    from data. Every fit here is ``Status.OK`` with ``Censoring.NONE``
     (confirmed empirically, mirroring ``tests/unit/test_threshold_status_coverage.py``'s own
-    convention for search-found fixtures): the profile interval happens to come back open on both
-    sides for the two poorly-determined fits (no ``Censoring`` member exists for that in v1, so it
-    is reported as ``NONE`` with ``lo=hi=None`` -- ``intervals.py``'s own documented "open on both
-    sides" outcome), which does not affect ``ratio_interval()``, since that reads each fit's own
-    covariance directly rather than the input ``Threshold``'s ``lo``/``hi``.
+    convention for search-found fixtures): the profile interval comes back open on both
+    sides for the two poorly-determined fits because the deviance does not reach the chi-square
+    target before either search limit (no ``Censoring`` member exists for that, so it is reported
+    as ``NONE`` with ``lo=hi=None`` -- ``intervals.py``'s own documented "open on both sides"
+    outcome), never because an inner fit failed. That does not affect ``ratio_interval()``, since
+    that reads each fit's own covariance directly rather than the input ``Threshold``'s
+    ``lo``/``hi``.
     """
 
     def _poorly_determined_denominator(self) -> Threshold:
         obs = Observations.from_counts(
             _AXIS,
-            severity=[1.0, 2.0],
-            successes=[5, 4],
+            severity=[1.0, 4.0],
+            successes=[11, 9],
             trials=[20, 20],
             outcome="success",
             direction="decreasing",
@@ -302,6 +305,8 @@ class TestHalfOpenAndUnboundedFromRealFits:
             fit, definition=Definition.absolute(0.5), interval_method="profile", level=_LEVEL
         )
         assert t.censoring is Censoring.NONE
+        assert t.lo is None and t.hi is None
+        assert not any("inner fit failed" in w for w in t.warnings)
         return t
 
     def _tightly_determined_numerator(self) -> Threshold:
@@ -336,6 +341,8 @@ class TestHalfOpenAndUnboundedFromRealFits:
             fit, definition=Definition.absolute(0.5), interval_method="profile", level=_LEVEL
         )
         assert t.censoring is Censoring.NONE
+        assert t.lo is None and t.hi is None
+        assert not any("inner fit failed" in w for w in t.warnings)
         return t
 
     def test_shape_is_half_open_with_a_tight_numerator(self) -> None:
@@ -538,14 +545,15 @@ class TestNegativeLowerRootIsClippedToZero:
 
     def test_negative_lower_root_from_a_real_fit_is_also_clipped(self) -> None:
         """The same ``K <= 0`` condition, from real ``fit_dose_response`` calls: the same
-        poorly-determined two-level, ``n=20`` design ``TestExclusiveAndUnboundedFromRealFits``
-        uses (there, as the *denominator*, to reach ``g >= 1``) reaches ``K <= 0`` instead when
-        used as the *numerator* against a tightly-determined denominator, since ``K`` depends
-        on the numerator's own uncertainty, not the denominator's."""
+        poorly-determined two-level, ``n=20`` design ``TestHalfOpenAndUnboundedFromRealFits``
+        uses (there, as the *denominator*, to reach ``g >= 1``; here severities ``1`` and ``4``,
+        ``sigma_log ~= 1.10``) reaches ``K <= 0`` instead when used as the *numerator* against a
+        tightly-determined denominator, since ``K`` depends on the numerator's own uncertainty,
+        not the denominator's. The unclipped lower root is about ``-1.6``."""
         numerator_obs = Observations.from_counts(
             _AXIS,
-            severity=[1.0, 2.0],
-            successes=[5, 4],
+            severity=[1.0, 4.0],
+            successes=[11, 9],
             trials=[20, 20],
             outcome="success",
             direction="decreasing",
@@ -590,8 +598,9 @@ class TestOpenBothSidesInputWarns:
     log-delta variance from, but the caller should be told the input it started from was itself
     unbounded on both ends -- so the ``Ratio`` carries a ``warnings`` entry saying so.
 
-    Built from a real fit whose profile does not cross on either side (confirmed empirically,
-    the same poorly-determined two-level ``n=20`` design used elsewhere in this file): not
+    Built from a real fit whose profile does not cross on either side before the search limits
+    (confirmed empirically: severities ``1`` and ``4``, ``11/20`` then ``9/20``, the same
+    poorly-determined two-level ``n=20`` design used elsewhere in this file): not
     constructed, since this exact input shape already turned up naturally while building the
     other real-fit tests in this file, so building it again by hand would be redundant.
     """
@@ -599,8 +608,8 @@ class TestOpenBothSidesInputWarns:
     def test_open_both_sides_input_produces_a_warning(self) -> None:
         obs = Observations.from_counts(
             _AXIS,
-            severity=[1.0, 2.0],
-            successes=[5, 4],
+            severity=[1.0, 4.0],
+            successes=[11, 9],
             trials=[20, 20],
             outcome="success",
             direction="decreasing",
@@ -613,6 +622,7 @@ class TestOpenBothSidesInputWarns:
         assert t_a.status is Status.OK
         assert t_a.censoring is Censoring.NONE
         assert t_a.lo is None and t_a.hi is None, "this input must itself be open on both sides"
+        assert not any("inner fit failed" in w for w in t_a.warnings)
 
         t_b = _threshold_with_known_natural_variance(value=1.0, variance=0.01)
 

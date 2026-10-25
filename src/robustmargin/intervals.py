@@ -76,6 +76,9 @@ _SEARCH_MULTIPLE = 100.0
 # it is reported as no bounds rather than as a number that happens to fit in a float.
 _MAX_LOG_HALF_WIDTH = 700.0
 _MAX_BRACKET_STEPS = 200
+# Bisections of a stride whose end point the inner fit fails at, so the search can still bracket a
+# root lying before the failure.
+_MAX_BACKOFF_HALVINGS = 30
 _UNREACHABLE_LOGLIKELIHOOD = -1.0e12
 
 
@@ -293,6 +296,14 @@ def _search_limits(fit: Fit) -> tuple[float, float]:
 # ------------------------------------------------------------------------------------------
 
 
+class _InnerFitFailed(Exception):
+    """The inner constrained fit failed at ``theta`` inside a root solve."""
+
+    def __init__(self, theta: float) -> None:
+        super().__init__(theta)
+        self.theta = theta
+
+
 def _bracket_root(
     g: Callable[[float], float | None], theta_hat: float, limit: float, direction: float
 ) -> tuple[str, float] | tuple[str, float, float]:
@@ -300,8 +311,18 @@ def _bracket_root(
     looking for ``g``'s sign change (``g(theta_hat) < 0``, by the caller's own precondition).
 
     Returns ``("bracket", a, b)`` with ``g(a) < 0 <= g(b)``, ``("open_failed", last_theta)`` if
-    the inner fit failed at some ``theta`` before a sign change was found, or
-    ``("open_limit", limit)`` if the search limit was reached with no sign change.
+    the inner fit failed and no sign change was found before it, or ``("open_limit", limit)`` if
+    the search limit was reached with no sign change.
+
+    When the inner fit fails at the end of a stride, the stride is shortened: its interval
+    between the last good ``theta`` and the failed one is bisected, at most
+    ``_MAX_BACKOFF_HALVINGS`` times. A midpoint where the fit fails becomes the new failed end, a
+    midpoint with a sign change closes the bracket, and any other midpoint becomes the new good
+    end. If the halvings run out, ``last_theta`` is the last good ``theta``.
+
+    The search never evaluates past an observed failure, and the endpoint is the first crossing
+    it observes walking out from ``theta_hat``. A failure region that is never observed, or two
+    crossings inside one stride, can still be stepped over, as with the plain stride rule.
     """
     g0 = g(theta_hat)
     if g0 is None:
@@ -320,7 +341,17 @@ def _bracket_root(
             theta = limit
         g_theta = g(theta)
         if g_theta is None:
-            return ("open_failed", prev_theta)
+            good, failed = prev_theta, theta
+            for _ in range(_MAX_BACKOFF_HALVINGS):
+                mid = 0.5 * (good + failed)
+                g_mid = g(mid)
+                if g_mid is None:
+                    failed = mid
+                elif prev_g < 0.0 <= g_mid:
+                    return ("bracket", good, mid)
+                else:
+                    good, prev_g = mid, g_mid
+            return ("open_failed", good)
         if prev_g < 0.0 <= g_theta:
             return ("bracket", prev_theta, theta)
         if reached_limit:
@@ -377,7 +408,22 @@ def _solve_profile_bracket(
         if len(outcome) != 3:  # pragma: no cover - narrowed by the checks above
             raise AssertionError(f"unexpected bracket outcome {outcome!r}")
         _, a, b = outcome
-        root = brentq(g, a, b, xtol=1.0e-10, rtol=1.0e-12, maxiter=200)
+
+        def _g_or_raise(theta: float) -> float:
+            value = g(theta)
+            if value is None:
+                raise _InnerFitFailed(theta)
+            return value
+
+        try:
+            root = brentq(_g_or_raise, a, b, xtol=1.0e-10, rtol=1.0e-12, maxiter=200)
+        except _InnerFitFailed as failure:
+            collected_warnings.append(
+                f"intervals.profile_interval: the inner fit failed inside the {label} bracket "
+                f"[{a!r}, {b!r}] while solving for the root (theta={failure.theta!r}); "
+                f"{label} side left open"
+            )
+            return None
         return _to_natural(root, scale=scale)
 
     hi = _side(1.0, upper_limit, "upper")
