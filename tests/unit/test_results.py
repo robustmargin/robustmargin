@@ -52,6 +52,12 @@ _CELLS = (
 # an all-success 100/100, matching _CELLS's: _params()'s default fixes upper=1.0, and a *failing*
 # control combined with a fixed upper=1.0 on a log axis is CONTROL_INCOMPATIBLE territory, which
 # would raise here for an unrelated reason.
+# A control with no events, for an increasing fit with ``lower`` fixed at 0.0: the mirror of
+# _CELLS's all-success control under a fixed upper=1.0.
+_CELLS_INCREASING = (
+    Cell(severity=0.0, successes=0, trials=100),
+    Cell(severity=1.0, successes=60, trials=100),
+)
 _CELLS_B = (
     Cell(severity=0.0, successes=100, trials=100),
     Cell(severity=1.0, successes=35, trials=100),
@@ -476,9 +482,9 @@ class TestFitDefaults:
         fit = _ok_fit()
 
         assert fit.warnings == ()
-        # One package-wide SCHEMA_VERSION, currently "1" -- Fit's own default tracks the same
+        # One package-wide SCHEMA_VERSION, currently "2" -- Fit's own default tracks the same
         # constant, since report.py versions the whole card format, not each type independently.
-        assert fit.schema_version == "1"
+        assert fit.schema_version == "2"
         assert fit.provenance == {}
 
 
@@ -567,11 +573,31 @@ class TestFitOutcomeAndDirection:
                 status=Status.OK,
             )
 
-    def test_increasing_direction_on_a_binomial_model_raises_value_error(self) -> None:
-        """Binomial curves are decreasing only. ``Observations`` still accepts
-        both directions (``tests/unit/test_types.py::TestDirectionAndOutcome``); this
-        restriction is specific to ``Fit`` (and, transitively, ``Threshold``)."""
-        with pytest.raises(ValueError):
+    def test_increasing_direction_on_a_binomial_model_is_accepted(self) -> None:
+        """Binomial curves run in either direction: an increasing fit is the mirror of a
+        decreasing one, so ``Fit`` accepts both."""
+        fit = Fit(
+            axis=_AXIS,
+            outcome="success",
+            direction="increasing",
+            model="binomial",
+            link="probit",
+            params=_params(),
+            covariance=_covariance(),
+            log_likelihood=-1.0,
+            cells=_CELLS_INCREASING,
+            status=Status.OK,
+        )
+
+        assert fit.direction == "increasing"
+
+    def test_increasing_fit_with_fixed_zero_lower_and_control_events_raises_naming_lower(
+        self,
+    ) -> None:
+        """The mirror of a fixed ``upper=1`` over a failing control: a fixed ``lower=0`` over a
+        control with events, on a log axis, is rejected, and the message says to estimate
+        ``lower``."""
+        with pytest.raises(ValueError, match='lower="estimate"'):
             Fit(
                 axis=_AXIS,
                 outcome="success",
@@ -1457,15 +1483,19 @@ class TestThresholdDirectionMatchesFitDirection:
 
         assert threshold.direction == threshold.fit.direction
 
-    def test_increasing_direction_on_the_underlying_fit_is_rejected(self) -> None:
-        """A binomial ``Fit`` can never have ``direction="increasing"``, so a
-        ``Threshold.direction`` != ``Fit.direction`` mismatch (a ``"decreasing"`` threshold on an
-        ``"increasing"`` fit) cannot even be constructed for the binomial-only model: there is
-        no second valid direction value to mismatch against, since neither side may
-        legitimately be ``"increasing"``. Both ``direction`` fields are set to ``"increasing"``
-        here (matching each other, so the mismatch check alone would not fire) to isolate the
-        direction rejection.
-        """
+    def test_increasing_direction_matching_the_underlying_fit_is_accepted(self) -> None:
+        threshold = _threshold(
+            value=0.05,
+            lo=0.03,
+            hi=0.08,
+            interval_method="profile",
+            direction="increasing",
+            fit=_fit_with_axis(_AXIS, direction="increasing", cells=_CELLS_INCREASING),
+        )
+
+        assert threshold.direction == threshold.fit.direction == "increasing"
+
+    def test_a_direction_that_differs_from_the_underlying_fits_is_rejected(self) -> None:
         with pytest.raises(ValueError):
             _threshold(
                 value=0.05,
@@ -1473,7 +1503,7 @@ class TestThresholdDirectionMatchesFitDirection:
                 hi=0.08,
                 interval_method="profile",
                 direction="increasing",
-                fit=_fit_with_axis(_AXIS, direction="increasing"),
+                fit=_fit_with_axis(_AXIS, direction="decreasing"),
             )
 
 
@@ -1496,8 +1526,8 @@ class TestThresholdDefaultsAndFrozen:
         threshold = _threshold(value=0.05, lo=0.03, hi=0.08, interval_method="profile")
 
         assert threshold.warnings == ()
-        # See TestFitDefaults's own comment -- one package-wide SCHEMA_VERSION, currently "1".
-        assert threshold.schema_version == "1"
+        # See TestFitDefaults's own comment -- one package-wide SCHEMA_VERSION, currently "2".
+        assert threshold.schema_version == "2"
         assert threshold.provenance == {}
 
     def test_is_frozen(self) -> None:
@@ -2543,8 +2573,8 @@ class TestRatioDefaultsAndFrozen:
         ratio = _ratio(estimate=1.0, lo=0.5, hi=2.0, shape=IntervalShape.BOUNDED)
 
         assert ratio.warnings == ()
-        # The package-wide SCHEMA_VERSION, currently "1".
-        assert ratio.schema_version == "1"
+        # The package-wide SCHEMA_VERSION, currently "2".
+        assert ratio.schema_version == "2"
         assert ratio.provenance == {}
 
     def test_is_frozen(self) -> None:

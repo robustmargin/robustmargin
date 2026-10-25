@@ -223,8 +223,8 @@ class TestSeparation:
         assert fit.params is not None
 
 
-class TestDirectionIncreasingRaises:
-    def test_direction_increasing_raises_value_error(self) -> None:
+class TestDirectionIncreasingIsAccepted:
+    def test_direction_increasing_returns_an_increasing_fit(self) -> None:
         obs = _obs(
             severity=[0.1, 1.0, 10.0],
             successes=[90, 50, 10],
@@ -232,8 +232,9 @@ class TestDirectionIncreasingRaises:
             direction="increasing",
         )
 
-        with pytest.raises(ValueError):
-            fit_dose_response(obs, model="binomial", link="probit", upper=1.0, lower=0.0)
+        fit = fit_dose_response(obs, model="binomial", link="probit", upper=1.0, lower=0.0)
+
+        assert fit.direction == "increasing"
 
 
 class TestClusterIdsPassthrough:

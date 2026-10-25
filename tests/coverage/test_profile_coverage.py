@@ -179,3 +179,94 @@ def test_interval_coverage(design: _Design, definition_name: str, method: str) -
             f"profile coverage {result['coverage']:.4f} outside [0.93, 0.97] on the rich design "
             f"for {definition_name}; this is a method finding, not a flaky test"
         )
+
+
+# ---------------------------------------------------------------------------------------------
+# The increasing orientation: the same two designs, with the outcome that rises with severity.
+#
+# The events are drawn from ``1 - P_success`` with an independent seed per design (the decreasing
+# seed plus ``_SEED_INCREASING_OFFSET``), not the complement of the decreasing draws, so this is a
+# second piece of evidence rather than the first one restated. A target ``a`` on the events scale
+# is the success-scale target ``1 - a`` of the truth above. Only the rich design's profile
+# coverage is asserted, on the same interval as for the decreasing orientation.
+# ---------------------------------------------------------------------------------------------
+
+_SEED_INCREASING_OFFSET = 1000
+
+# events-scale definition -> the success-scale target the truth is solved at
+_INCREASING_DEFINITIONS = {
+    "absolute(0.5)": (Definition.absolute(0.5), 0.5),
+    "absolute(0.2)": (Definition.absolute(0.2), 0.8),
+}
+
+
+def _coverage_increasing(
+    design: _Design, definition: Definition, success_target: float, method: str
+) -> dict[str, float]:
+    rng = np.random.default_rng(design.seed + _SEED_INCREASING_OFFSET)
+    truth = _true_threshold(success_target)
+    event_probability = 1.0 - _true_success_probability(design.severity)
+
+    covered = usable = censored = unbounded = failed = 0
+    for _ in range(_REPLICATES):
+        events = rng.binomial(design.trials, event_probability)
+        obs = Observations.from_counts(
+            _AXIS,
+            severity=design.severity.tolist(),
+            successes=events.tolist(),
+            trials=design.trials.tolist(),
+            outcome="events",
+            direction="increasing",
+        )
+        fit = fit_dose_response(obs, model="binomial", link="probit", upper=1.0, lower=0.0)
+        if fit.status is not Status.OK:
+            failed += 1
+            continue
+        t = threshold(fit, definition=definition, interval_method=method, level=_LEVEL)
+        if t.status is not Status.OK:
+            failed += 1
+            continue
+        if t.censoring is not Censoring.NONE:
+            censored += 1
+            continue
+        if t.lo is None or t.hi is None:
+            unbounded += 1
+            continue
+        usable += 1
+        covered += t.lo <= truth <= t.hi
+
+    return {
+        "coverage": covered / usable if usable else float("nan"),
+        "usable": usable,
+        "censored": censored,
+        "unbounded": unbounded,
+        "failed": failed,
+        "truth": truth,
+    }
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("design", [_COARSE, _RICH], ids=lambda d: d.name)
+@pytest.mark.parametrize("definition_name", sorted(_INCREASING_DEFINITIONS))
+@pytest.mark.parametrize("method", ["profile", "delta"])
+def test_increasing_interval_coverage(design: _Design, definition_name: str, method: str) -> None:
+    definition, success_target = _INCREASING_DEFINITIONS[definition_name]
+    result = _coverage_increasing(design, definition, success_target, method)
+
+    print(
+        f"\nincreasing | {design.name} | {definition_name} | {method}\n"
+        f"  true threshold : {result['truth']:.6f}\n"
+        f"  coverage       : {result['coverage']:.4f} of {int(result['usable'])} usable "
+        f"replicates (nominal {_LEVEL})\n"
+        f"  censored       : {int(result['censored'])}\n"
+        f"  unbounded      : {int(result['unbounded'])}\n"
+        f"  failed         : {int(result['failed'])}\n"
+        f"  seed           : {design.seed + _SEED_INCREASING_OFFSET}, replicates {_REPLICATES}"
+    )
+
+    if design.asserted and method == "profile":
+        assert 0.93 <= result["coverage"] <= 0.97, (
+            f"increasing-orientation profile coverage {result['coverage']:.4f} outside "
+            f"[0.93, 0.97] on the rich design for {definition_name}; this is a method finding, "
+            "not a flaky test"
+        )

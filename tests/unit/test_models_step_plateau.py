@@ -556,7 +556,7 @@ def test_wrong_sign_or_flat_data_keeps_its_reason_not_the_step_reason(
     fit = fit_dose_response(obs, model="binomial", link=link, upper="estimate", lower="estimate")
 
     assert fit.status is Status.NOT_CONVERGED
-    assert fit.warnings[0] == models_module._WRONG_SIGN_OR_FLAT_WARNING
+    assert fit.warnings[0] == models_module._wrong_sign_or_flat_warning(mirrored=False)
     assert not any(_STEP_REASON in w for w in fit.warnings), fit.warnings
 
 
@@ -570,7 +570,7 @@ def test_nearly_flat_data_with_a_tiny_real_step_is_flat_or_step_not_converged() 
 
     assert fit.status is Status.NOT_CONVERGED
     assert (
-        fit.warnings[0] == models_module._WRONG_SIGN_OR_FLAT_WARNING
+        fit.warnings[0] == models_module._wrong_sign_or_flat_warning(mirrored=False)
         or _STEP_REASON in (fit.warnings[0])
     )
 

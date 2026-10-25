@@ -90,7 +90,8 @@ class Diagnostics:
         (see ``df`` below) -- not a failed fit, just no goodness-of-fit statistic to report. A
         cell is excluded from this sum only when it is *structurally* deterministic under the
         model -- a log-axis cell at severity exactly ``0.0`` when ``upper`` is *fixed* at exactly
-        ``1.0`` (``direction="decreasing"``); that cell has zero variance and zero deviance by
+        ``1.0`` (``direction="decreasing"``, or the equivalent ``lower`` fixed at exactly ``0.0``
+        for an increasing outcome); that cell has zero variance and zero deviance by
         construction. Every other cell counts, including one whose fitted probability happens to
         round to exactly ``0`` or ``1`` in double precision: probabilities are computed to avoid
         needless cancellation and clamped to ``[eps, 1 - eps]`` (``eps`` the machine epsilon,
@@ -505,7 +506,7 @@ def _success_and_failure_probabilities(fit: Fit) -> tuple[np.ndarray, np.ndarray
     )
 
 
-def _refit_link(fit: Fit, link: str) -> Fit:
+def _refit_link(fit: Fit, link: str, *, mirrored: bool = False) -> Fit:
     """Refit ``fit``'s data under ``link``, holding the same ``upper``/``lower`` specification
     (both fixed/estimate flags and, when fixed, the same value). Goes through the existing
     private statsmodels fitting paths in ``robustmargin.models`` (no new optimizer or IRLS) --
@@ -518,6 +519,9 @@ def _refit_link(fit: Fit, link: str) -> Fit:
     ``upper``/``lower`` configuration, not of the link, and ``fit`` already reached
     :data:`~robustmargin.Status.OK` under the very same data and configuration, so a different link
     cannot newly trigger either one.
+
+    ``mirrored`` says that ``fit`` is the complement of an increasing fit; it changes only the
+    wording of the refit's warnings.
     """
     from robustmargin.models import _fit_generic, _fit_glm  # local: see docstring above
 
@@ -544,7 +548,7 @@ def _refit_link(fit: Fit, link: str) -> Fit:
         and upper_value == 1.0
         and lower_value == 0.0
     ):
-        return _fit_glm(obs, cells=fit.cells, cluster_ids=None, link=link)
+        return _fit_glm(obs, cells=fit.cells, cluster_ids=None, link=link, mirrored=mirrored)
     return _fit_generic(
         obs,
         cells=fit.cells,
@@ -554,10 +558,13 @@ def _refit_link(fit: Fit, link: str) -> Fit:
         upper_value=upper_value,
         lower_is_estimate=lower_is_estimate,
         lower_value=lower_value,
+        mirrored=mirrored,
     )
 
 
-def _link_comparison(fit: Fit) -> tuple[dict[str, float | None], dict[str, Status]]:
+def _link_comparison(
+    fit: Fit, *, mirrored: bool = False
+) -> tuple[dict[str, float | None], dict[str, Status]]:
     """AIC and status for each of ``_COMPARISON_LINKS``: the diagnosed fit's own link reuses its
     own ``log_likelihood``/parameter count directly (exact, no refit); the other two are refit
     via :func:`_refit_link` (so each call does two extra fits).
@@ -572,7 +579,7 @@ def _link_comparison(fit: Fit) -> tuple[dict[str, float | None], dict[str, Statu
             link_aic[link] = -2.0 * fit.log_likelihood + 2.0 * k
             link_status[link] = Status.OK
             continue
-        refit = _refit_link(fit, link)
+        refit = _refit_link(fit, link, mirrored=mirrored)
         if refit.status is Status.OK:
             assert refit.params is not None and refit.log_likelihood is not None
             k = sum(1 for p in refit.params.values() if not p.fixed)
@@ -589,10 +596,11 @@ def _is_structural_zero_control(fit: Fit, cell: Cell) -> bool:
     happens to round to a boundary (a value-based rule would make ``df`` depend on the link).
 
     The only case that is structurally deterministic in this release: a log-axis cell at severity
-    exactly ``0.0``, under ``direction="decreasing"`` (the only direction ``Fit`` accepts for
-    ``model="binomial"``), when ``upper`` is *fixed* at exactly ``1.0`` -- the ``P(0) = upper``
-    rule for a zero-severity control then pins that cell's fitted probability to exactly ``1.0``
-    with zero variance, for every possible ``mu``/``s``. An *estimated* ``upper`` is never
+    exactly ``0.0``, under ``direction="decreasing"`` (an increasing outcome is diagnosed as its
+    complement, which is decreasing), when ``upper`` is *fixed* at exactly ``1.0`` -- the
+    ``P(0) = upper`` rule for a zero-severity control then pins that cell's fitted probability to
+    exactly ``1.0`` with zero variance, for every possible ``mu``/``s``. An *estimated* ``upper``
+    is never
     exempt, even when its fitted value happens to equal ``1.0``: the control still identifies
     ``u`` in that case, so it is not deterministic *by construction* and is counted.
     """
@@ -630,6 +638,14 @@ def diagnose(fit: Fit) -> Diagnostics:
             f"diagnose: fit.status must be Status.OK (a failed fit carries no model-derived "
             f"diagnostics), got {fit.status!r}"
         )
+    mirrored = fit.direction == "increasing"
+    if mirrored:
+        # The goodness-of-fit sums, the sparse-cell screen and the link refits all run on the
+        # complementary outcome, which is the decreasing model they are written for. Deviance,
+        # Pearson chi-square, degrees of freedom and AIC are the same for both views.
+        from robustmargin.models import _mirror_fit  # local: see _refit_link
+
+        fit = _mirror_fit(fit)
     assert fit.params is not None and fit.log_likelihood is not None
 
     k = sum(1 for p in fit.params.values() if not p.fixed)
@@ -709,7 +725,7 @@ def diagnose(fit: Fit) -> Diagnostics:
             "there; no number here is changed as a result"
         )
 
-    link_aic, link_status = _link_comparison(fit)
+    link_aic, link_status = _link_comparison(fit, mirrored=mirrored)
 
     return Diagnostics(
         deviance=deviance,

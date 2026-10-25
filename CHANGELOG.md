@@ -7,6 +7,80 @@ minor release may change the public API, and every such change carries a migrati
 
 ## [Unreleased]
 
+### Added
+- **Outcomes that rise with severity.** `Observations(direction="increasing")` now fits and
+  thresholds like any other. `successes` counts an outcome that rises with severity, such as an
+  event rate: `lower` is the rate at zero severity and `upper` the rate it approaches. It is fit
+  as the decreasing curve of the complementary outcome (`trials - successes`, asymptotes
+  `1 - lower` and `1 - upper`) and mapped back, so the likelihood, the optimisers, the censoring
+  and exact-bound rules and both interval methods are the ones the decreasing case uses.
+  - `Fit.params`, `Fit.covariance`, `Fit.predict` and its band, `Threshold.baseline`, and every
+    warning and error message are on the scale of the outcome as counted. `Fit.cells` holds the
+    counts as given, and `Fit.monotonicity` is the check on them.
+  - `CONTROL_INCOMPATIBLE` for an increasing outcome is a `lower` fixed at `0` over a control with
+    events, and its message suggests `lower="estimate"`.
+  - For an increasing fit, `RIGHT` reads "still passes at the highest level tested" (the rate is
+    confidently below the target there), and `LEFT` and `FAILS_AT_BASELINE` read the same way
+    round. `absolute(a)` crosses `a` upward and `relative(p)` is unchanged.
+- **`Definition.baseline_multiple(k)`**, for increasing outcomes: the severity at which the rate
+  reaches `k` times its value at zero severity (`k > 1`).
+  - `baseline_fraction(p)` raises for an increasing fit, and `baseline_multiple(k)` for a
+    decreasing one.
+  - A baseline at or below zero raises `ValueError` (a multiple of zero is not a threshold): a
+    converged fit whose `lower` is fixed at `0`. Estimate `lower` or fix it above zero.
+  - It raises `ValueError` on any failed fit (`SEPARATION`, `NOT_CONVERGED`), naming the fit
+    status and pointing to `absolute(a)`: a multiple of the control's observed rate is an
+    estimate treated as fixed, and its exact claims would carry no coverage guarantee.
+  - It is defined on log axes only: on a linear axis the lower asymptote is not the performance at
+    zero severity, so `threshold` raises `ValueError`, and a `Threshold` built or read back with
+    `baseline_multiple` on a linear axis is rejected.
+  - `fit_dose_response` raises `ValueError` for an increasing outcome with a fixed `lower` that is
+    not zero but so small that `1 - lower` equals 1 in double precision (for example `1e-17`).
+  - `Threshold` itself refuses a `baseline_multiple` definition with a decreasing direction and a
+    `baseline_fraction` definition with an increasing one, whether built directly, by
+    `dataclasses.replace` or read back through `from_dict`.
+- **Score-card schema `"2"`** (`schema/scorecard-v2.json`), which differs from `"1"` only in
+  admitting `"increasing"` for `Fit.direction` and `Threshold.direction` and
+  `"baseline_multiple"` for `Definition.kind`. `schema/scorecard-v1.json` is unchanged and
+  `load_schema("1")` still loads it. `from_dict` reads both versions, and rejects a result tagged
+  `"1"` that carries an increasing direction or a `baseline_multiple` definition. The check is per
+  object: it looks at each `Fit` or `Threshold` and its own `schema_version`, not at the card as a
+  whole.
+- `robustmargin.testing.fake_fit` and `fake_threshold` take a keyword-only `direction`
+  (`"decreasing"` by default, so existing calls are unchanged); `"increasing"` builds a schema-valid
+  increasing-outcome result.
+- `ratio_interval` accepts two thresholds of different directions on the same axis and definition;
+  the ratio of severities does not depend on which way each outcome runs.
+
+### Changed
+- **Behavioural change: `direction="increasing"` no longer raises.** `fit_dose_response`, `Fit` and
+  `Threshold` used to refuse an increasing binomial outcome; a call that raised now returns a
+  result. Code that caught the `ValueError` to detect an unsupported direction no longer sees it.
+- **Breaking change: `schema_version` is `"2"` on every result.** The default of
+  `schema_version` on `Fit`, `Threshold`, `Ratio`, `GridBreakPoint` and `Scorecard` is now `"2"`,
+  `report.SCHEMA_VERSION` is `"2"`, and `to_dict` writes `"2"` at every nesting level of a
+  freshly built result, including one that uses nothing new. A result read back from a `"1"` card
+  keeps `"1"` and writes `"1"` again. `report.load_schema()` defaults to `"2"`, so its `$id` and
+  title are now the v2 document's.
+  - **Migration: upgrade readers before writers.** 0.1.1 and 0.2.0 read schema `"1"` only. They
+    reject every card this release writes with a `ValueError` naming the unknown version, even a
+    card with nothing new in it and even a bare `GridBreakPoint`. Upgrade every reader of a shared
+    card store before anything writes to it with this release. Cards written by 0.1.1 or 0.2.0
+    stay readable. Validating against `scorecard-v1.json` does not catch the mismatch, because the
+    schema does not constrain `schema_version`.
+  - **Migration: branch on direction and definition.** Code that reads stored results must branch
+    on `Fit.direction` and `Threshold.direction`, and handle `Definition.kind ==
+    "baseline_multiple"`. For `"increasing"`: `params["lower"]` is the zero-severity rate; `RIGHT`
+    means the rate is confidently *below* the target at the highest level; `BaselineRate.successes`
+    counts events; and `CONTROL_INCOMPATIBLE` means `lower` is fixed at 0 over a control with
+    events.
+  - **Compare `schema_version` with care.** Code that compares it literally against `"1"`
+    (for example `result.schema_version == "1"` or a check on `asdict(grid_break_point(...))`)
+    now sees `"2"`, and must accept both or compare against `report.SCHEMA_VERSION`. Reading a
+    `"1"` card still yields objects whose `schema_version` is `"1"`.
+  - A nested or bare result that omits `schema_version` is now read as `"2"`; only the
+    `Scorecard` root requires the tag.
+
 ## [0.2.1] — 2026-10-23
 
 ### Fixed

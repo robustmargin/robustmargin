@@ -70,6 +70,14 @@ _CELLS: tuple[Cell, ...] = (
     Cell(severity=1.0, successes=60, trials=100),
     Cell(severity=2.0, successes=20, trials=100),
 )
+# The increasing counterpart: events rise with severity from a control with none, so a lower
+# asymptote fixed at exactly 0.0 is compatible with it.
+_CELLS_INCREASING: tuple[Cell, ...] = (
+    Cell(severity=0.0, successes=0, trials=100),
+    Cell(severity=1.0, successes=40, trials=100),
+    Cell(severity=2.0, successes=80, trials=100),
+)
+_VALID_DIRECTIONS = frozenset({"decreasing", "increasing"})
 # fake_ratio builds its two thresholds from two separate fits on disjoint data (different
 # severities entirely), not the same _CELLS reused twice, so a consumer's test never mistakes
 # the pair for a ratio computed from one dataset against itself.
@@ -114,6 +122,13 @@ _FIT_STATUS_FOR_THRESHOLD_STATUS: dict[Status, Status] = {
 }
 
 
+def _check_direction(direction: str, *, function: str) -> None:
+    if direction not in _VALID_DIRECTIONS:
+        raise ValueError(
+            f"{function}: direction must be one of {sorted(_VALID_DIRECTIONS)}, got {direction!r}"
+        )
+
+
 def _fake_provenance(provenance: Mapping[str, JSONValue] | None) -> dict[str, JSONValue]:
     return dict(provenance) if provenance is not None else {}
 
@@ -132,6 +147,7 @@ def _fake_ok_params_and_covariance() -> tuple[dict[str, Parameter], Covariance]:
 def _fake_ok_fit(
     cells: tuple[Cell, ...],
     *,
+    direction: str = "decreasing",
     provenance: Mapping[str, JSONValue] | None = None,
     diagnostics: Diagnostics | None | _Unset = _UNSET,
     monotonicity: MonotonicityCheck | None | _Unset = _UNSET,
@@ -140,7 +156,7 @@ def _fake_ok_fit(
     base = Fit(
         axis=_AXIS,
         outcome="success",
-        direction="decreasing",
+        direction=direction,
         model="binomial",
         link="probit",
         params=params,
@@ -169,6 +185,7 @@ def _fake_ok_fit(
 def fake_fit(
     *,
     status: Status = Status.OK,
+    direction: str = "decreasing",
     provenance: Mapping[str, JSONValue] | None = None,
     diagnostics: Diagnostics | None | _Unset = _UNSET,
     monotonicity: MonotonicityCheck | None | _Unset = _UNSET,
@@ -183,6 +200,10 @@ def fake_fit(
         :class:`~robustmargin.Fit` itself rejects them). When ``status`` is not ``OK``, ``params``,
         ``covariance`` and ``log_likelihood`` are all ``None``, matching
         :class:`~robustmargin.Fit`'s own invariant.
+    direction
+        ``"decreasing"`` (the default) or ``"increasing"``. An increasing fit counts an outcome
+        that rises with severity, from a control with none to most trials at the highest
+        severity.
     provenance
         Stored on the result as given, or ``{}`` if not provided.
     diagnostics
@@ -202,22 +223,33 @@ def fake_fit(
     Fit
         A binomial-probit fit on a neutral ``severity`` axis, with ``cluster_ids=None`` and
         ``warnings`` naming it a fake.
+
+    Raises
+    ------
+    ValueError
+        If ``direction`` is not ``"decreasing"`` or ``"increasing"``.
     """
+    _check_direction(direction, function="fake_fit")
+    cells = _CELLS if direction == "decreasing" else _CELLS_INCREASING
     if status is Status.OK:
         return _fake_ok_fit(
-            _CELLS, provenance=provenance, diagnostics=diagnostics, monotonicity=monotonicity
+            cells,
+            direction=direction,
+            provenance=provenance,
+            diagnostics=diagnostics,
+            monotonicity=monotonicity,
         )
 
     base = Fit(
         axis=_AXIS,
         outcome="success",
-        direction="decreasing",
+        direction=direction,
         model="binomial",
         link="probit",
         params=None,
         covariance=None,
         log_likelihood=None,
-        cells=_CELLS,
+        cells=cells,
         status=status,
         cluster_ids=None,
         warnings=(_FAKE_WARNING,),
@@ -238,6 +270,7 @@ def fake_threshold(
     *,
     status: Status = Status.OK,
     censoring: Censoring = Censoring.NONE,
+    direction: str = "decreasing",
     provenance: Mapping[str, JSONValue] | None = None,
 ) -> Threshold:
     """Build a deterministic, schema-valid :class:`~robustmargin.Threshold`.
@@ -248,6 +281,9 @@ def fake_threshold(
         The :class:`~robustmargin.Status` to build.
     censoring
         The :class:`~robustmargin.Censoring` to build.
+    direction
+        ``"decreasing"`` (the default) or ``"increasing"``; the threshold's fit has the same
+        direction (see :func:`fake_fit`).
     provenance
         Stored on the result as given, or ``{}`` if not provided.
 
@@ -261,15 +297,16 @@ def fake_threshold(
     ------
     ValueError
         If ``(status, censoring)`` is not one of the fourteen combinations a ``Threshold``
-        allows.
+        allows, or ``direction`` is not ``"decreasing"`` or ``"increasing"``.
     """
+    _check_direction(direction, function="fake_threshold")
     if (status, censoring) not in _ALLOWED_THRESHOLD_COMBINATIONS:
         raise ValueError(
             f"fake_threshold: status={status!r} with censoring={censoring!r} is not a "
             "combination Threshold allows"
         )
 
-    fit = fake_fit(status=_FIT_STATUS_FOR_THRESHOLD_STATUS[status])
+    fit = fake_fit(status=_FIT_STATUS_FOR_THRESHOLD_STATUS[status], direction=direction)
 
     value: float | None
     lo: float | None
@@ -325,8 +362,8 @@ def fake_threshold(
 
     return Threshold(
         axis=_AXIS,
-        definition=Definition.absolute(0.95),
-        direction="decreasing",
+        definition=Definition.absolute(0.95 if direction == "decreasing" else 0.05),
+        direction=direction,
         value=value,
         lo=lo,
         hi=hi,

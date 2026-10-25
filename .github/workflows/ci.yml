@@ -86,8 +86,18 @@ jobs:
           retention-days: 7
 
   coverage-simulations:
-    name: coverage simulations
+    name: coverage simulations (${{ matrix.direction }})
     runs-on: ubuntu-latest
+    # Split by outcome direction into two parallel shards, so that each one fits the timeout.
+    # The `-k` expressions are complements, so together they select every slow test once.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - direction: decreasing
+            select: not increasing
+          - direction: increasing
+            select: increasing
     # The coverage simulations are 2,000 replicates per design. They are excluded from
     # the `test` matrix by pyproject.toml's `-m "not slow"`, and run here once, on one
     # interpreter, rather than four times. `pull_request` only: they guard a statistical
@@ -110,7 +120,7 @@ jobs:
       # point of this job is the coverage table these tests print, and pytest captures stdout
       # for passing tests, so without it the job burns half an hour and logs nothing but
       # PASSED.
-      - run: pytest -m slow --no-cov -s
+      - run: pytest -m slow --no-cov -s -k "${{ matrix.select }}"
 
   package:
     name: packaging shape

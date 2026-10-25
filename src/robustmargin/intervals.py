@@ -140,17 +140,25 @@ def _target_for(definition: Definition, *, upper: float, lower: float) -> float:
     """The target performance, as a function of a *candidate* ``(upper, lower)`` -- used by
     the estimated-asymptote profile path, where the candidate asymptotes move at every inner
     evaluation. ``absolute`` does not depend on them at all.
+
+    ``baseline_multiple(k)`` belongs to an increasing outcome, which is solved on its mirror image
+    (performance ``1 - P``, asymptotes ``1 - lower`` and ``1 - upper``). ``upper`` and ``lower``
+    here are those mirrored asymptotes, so the baseline ``P(0) = lower`` of the outcome as
+    reported is ``1 - upper`` and the mirrored target is ``1 - k * (1 - upper)``.
     """
     if definition.kind == "absolute":
         return definition.value
     if definition.kind == "baseline_fraction":
         return definition.value * upper
+    if definition.kind == "baseline_multiple":
+        return 1.0 - definition.value * (1.0 - upper)
     return upper - definition.value * (upper - lower)  # relative
 
 
 def _dq_du_dl(definition: Definition, *, upper: float, lower: float) -> tuple[float, float]:
     """``d(q)/d(upper)`` and ``d(q)/d(lower)`` for ``q = (upper - P*) / (upper - lower)``, per
-    definition kind (this module's docstring)."""
+    definition kind (this module's docstring). For ``baseline_multiple(k)`` the asymptotes are the
+    mirrored ones (:func:`_target_for`), where ``upper - P* = (k - 1) * (1 - upper)``."""
     spread = upper - lower
     if definition.kind == "absolute":
         a = definition.value
@@ -158,6 +166,9 @@ def _dq_du_dl(definition: Definition, *, upper: float, lower: float) -> tuple[fl
     if definition.kind == "baseline_fraction":
         p = definition.value
         return -(1.0 - p) * lower / spread**2, (1.0 - p) * upper / spread**2
+    if definition.kind == "baseline_multiple":
+        k = definition.value
+        return -(k - 1.0) * (1.0 - lower) / spread**2, (k - 1.0) * (1.0 - upper) / spread**2
     return 0.0, 0.0  # relative: q = p, independent of (upper, lower)
 
 

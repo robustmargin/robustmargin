@@ -182,7 +182,7 @@ def test_the_scan_itself_catches_a_known_bad_literal() -> None:
 def _wrong_sign_fit() -> Fit:
     """The wrong-sign case: success rate rises with severity, the opposite of
     ``direction="decreasing"``, with overlap at every level (no separation) -- ``NOT_CONVERGED``
-    with ``_WRONG_SIGN_OR_FLAT_WARNING``."""
+    with the wrong-sign wording."""
     obs = Observations.from_counts(
         _LOG_AXIS,
         severity=[0.1, 1.0, 10.0],
@@ -378,7 +378,7 @@ def _collect_dynamic_messages() -> list[str]:
     # card, once nested inside a current one. The message is read by a person holding a card from
     # elsewhere, which is exactly the reader who cannot look up a document, so it is held to the
     # same rule as every other message here.
-    for unrecognised_version in ("0", "2", "999"):
+    for unrecognised_version in ("0", "3", "999"):
         unrecognised = to_dict(fake_threshold())
         unrecognised["schema_version"] = unrecognised_version
         with pytest.raises(ValueError) as excinfo_unrecognised:

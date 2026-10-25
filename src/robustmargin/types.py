@@ -3,8 +3,8 @@
 ``Censoring`` is the model-based and grid-rule censoring classification (documented on the
 class itself). Everything else here is new to robustmargin: ``Axis`` describes the
 severity axis a series of observations was measured on; ``Observations`` holds the raw
-aggregated-or-per-observation data a fit is built from; ``Definition`` names which of three
-target-performance definitions a threshold solves for; ``Cell`` is one pooled row of counts at
+aggregated-or-per-observation data a fit is built from; ``Definition`` names which
+target-performance definition a threshold solves for; ``Cell`` is one pooled row of counts at
 a single severity; ``Status`` and ``IntervalShape`` are the enums results report through.
 """
 
@@ -110,9 +110,11 @@ class Status(StrEnum):
         confidently passes it: the threshold does not exist because the system was never
         passing to begin with.
     CONTROL_INCOMPATIBLE
-        The upper asymptote is fixed (commonly at 1) but the zero-severity control has
-        failures, which drives the likelihood to zero for that fixed value. Refit with
-        ``upper="estimate"``.
+        The asymptote that the zero-severity control would have to equal is fixed at its
+        extreme but the control disagrees, which drives the likelihood to zero. For a decreasing
+        outcome that is the upper asymptote fixed at 1 with failures at the control: refit with
+        ``upper="estimate"``. For an increasing outcome it is the lower asymptote fixed at 0 with
+        events at the control: refit with ``lower="estimate"``.
     """
 
     OK = "OK"
@@ -168,7 +170,9 @@ class IntervalShape(StrEnum):
 
 _VALID_SCALES = frozenset({"log", "linear"})
 _VALID_DIRECTIONS = frozenset({"decreasing", "increasing"})
-_VALID_DEFINITION_KINDS = frozenset({"absolute", "baseline_fraction", "relative"})
+_VALID_DEFINITION_KINDS = frozenset(
+    {"absolute", "baseline_fraction", "baseline_multiple", "relative"}
+)
 
 
 def _check_finite_number(value: float, *, label: str) -> None:
@@ -239,26 +243,44 @@ class Axis:
 class Definition:
     """Which target performance a threshold solves for.
 
-    Three definitions are in play, and they coincide only when the fitted curve's asymptotes
-    are exactly 1 and 0:
+    The definitions coincide only when the fitted curve's asymptotes are exactly 1 and 0:
 
-    - ``absolute(a)``: performance crosses a fixed level ``a``.
+    - ``absolute(a)``: performance crosses a fixed level ``a``, downward for a decreasing outcome
+      and upward for an increasing one.
       Whether ``a`` is reachable given the fitted asymptotes is decided at threshold-solving
       time (:data:`Status.UNREACHABLE`), not at construction time, so any finite ``a`` --
       including one that looks out of range, such as 1.5 -- constructs successfully. An ``a``
       at or below 0 or at or above 1 is :data:`Status.UNREACHABLE` on every fit.
     - ``baseline_fraction(p)``: performance falls to ``p`` times the performance at zero
-      severity. Requires ``0 < p < 1``.
+      severity. Requires ``0 < p < 1``. For a decreasing outcome only. On a linear axis,
+      "performance at zero severity" is the fitted upper asymptote on a converged fit and the
+      control's observed rate on a failed fit; it is not the fitted curve at severity 0. On a
+      failed fit the exact claims are about the plug-in target ``p * k0 / n0`` (the control's
+      observed rate), with no coverage guarantee for ``p`` times the true zero-severity rate; use
+      ``absolute(a)`` for a covered claim.
+    - ``baseline_multiple(k)``: performance rises to ``k`` times the performance at zero
+      severity. Requires ``k > 1``. For an increasing outcome on a log axis only, where the
+      performance at zero severity is the lower asymptote; ``threshold`` raises on a linear axis.
+      A baseline of zero has no multiple, so this needs a lower asymptote that is estimated or
+      fixed above zero, and a converged fit: ``threshold`` raises on a failed fit.
     - ``relative(p)``: a fraction ``p`` of the fitted dynamic range (upper minus lower
-      asymptote) is lost (R ``drc``'s ``type = "relative"``). Requires ``0 < p < 1``.
+      asymptote) is traversed from the zero-severity end (R ``drc``'s ``type = "relative"``).
+      Requires ``0 < p < 1``. It means the same for both directions.
 
     Attributes
     ----------
     kind
-        One of ``"absolute"``, ``"baseline_fraction"``, ``"relative"``.
+        One of ``"absolute"``, ``"baseline_fraction"``, ``"baseline_multiple"``, ``"relative"``.
     value
-        The threshold parameter: ``a`` for ``absolute``, ``p`` for the other two. Must be
-        finite.
+        The threshold parameter: ``a`` for ``absolute``, ``k`` for ``baseline_multiple`` and ``p``
+        for the other two. Must be finite.
+
+    Raises
+    ------
+    ValueError
+        If ``kind`` is unknown, ``value`` is not a finite number, a ``baseline_fraction`` or
+        ``relative`` ``value`` is not strictly between 0 and 1, or a ``baseline_multiple``
+        ``value`` is not greater than 1.
     """
 
     kind: str
@@ -274,6 +296,11 @@ class Definition:
         if self.kind in ("baseline_fraction", "relative") and not (0.0 < self.value < 1.0):
             raise ValueError(
                 f"Definition.value for kind={self.kind!r} must satisfy 0 < value < 1, "
+                f"got {self.value!r}"
+            )
+        if self.kind == "baseline_multiple" and not self.value > 1.0:
+            raise ValueError(
+                f"Definition.value for kind='baseline_multiple' must be greater than 1, "
                 f"got {self.value!r}"
             )
 
@@ -293,6 +320,12 @@ class Definition:
         rate. For a covered claim on a failed fit, use ``absolute(a)``.
         """
         return cls(kind="baseline_fraction", value=p)
+
+    @classmethod
+    def baseline_multiple(cls, k: float, /) -> Definition:
+        """Build a ``baseline_multiple(k)`` definition: performance rises to ``k`` times the
+        zero-severity performance. Requires ``k > 1``."""
+        return cls(kind="baseline_multiple", value=k)
 
     @classmethod
     def relative(cls, p: float, /) -> Definition:
@@ -380,7 +413,8 @@ class Observations:
         ``"success"`` or ``"consistent"``). Required, with no default: a wrong default would
         silently flip a threshold.
     direction
-        Either ``"decreasing"`` (performance falls as severity rises) or ``"increasing"``.
+        Either ``"decreasing"`` (performance falls as severity rises) or ``"increasing"``
+        (``successes`` counts an outcome that rises with severity, such as an event rate).
         Required, with no default, for the same reason as ``outcome``.
     severity
         One entry per row, non-negative and finite. Must not be a ``bool``.

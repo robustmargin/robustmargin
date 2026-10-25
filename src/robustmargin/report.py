@@ -23,17 +23,23 @@ the field, the enclosing card's ``library_version``, and this reader's version; 
 A key that a tagged type's schema ``required`` list requires but the dict omits raises; a key
 the schema does not require, if omitted, is filled from the dataclass's own default. This
 required-key set is read from the packaged schema (:data:`load_schema`), not duplicated as a
-literal list, so it cannot drift from ``schema/scorecard-v1.json``.
+literal list, so it cannot drift from ``schema/scorecard-v2.json``.
 
-``SCHEMA_VERSION`` is ``"1"``, and ``from_dict`` reads ``"1"`` only. A ``schema_version`` of
-anything else, on any typed object, raises a ``ValueError`` that names the version found and the
-version this reader reads. Only the ``Scorecard`` root requires the tag; a nested or bare result
-that omits it is read as ``"1"``. A freshly-constructed result carries ``"1"``.
+``SCHEMA_VERSION`` is ``"2"``, which is what every result carries by default and what
+``to_dict`` writes for a freshly built result, and ``from_dict`` reads ``"1"`` and ``"2"``. A
+``schema_version`` of anything else, on any typed object, raises a ``ValueError`` that names the
+version found and the versions this reader reads. Version ``"2"`` adds the ``"increasing"``
+direction and the ``"baseline_multiple"`` definition to version ``"1"``; a ``Fit`` or
+``Threshold`` tagged ``"1"`` that carries either raises, since no ``"1"`` writer could have
+produced it (the check is per object, not per card). Only the ``Scorecard`` root requires the tag;
+a nested or bare result that omits it is read as ``"2"``. A reader older than this release reads
+``"1"`` only and rejects every card written now, so upgrade readers before writers; a result read
+from a ``"1"`` card keeps ``"1"`` when written back.
 
 ``load_schema`` reads the packaged ``schema/scorecard-v{version}.json`` with
-:mod:`importlib.resources`; only ``scorecard-v1.json`` is packaged. Nothing under ``src/``
-imports ``jsonschema``; it stays a dev-only dependency used by consumers' own validators and by
-this package's own tests.
+:mod:`importlib.resources`; ``scorecard-v1.json`` and ``scorecard-v2.json`` are packaged.
+Nothing under ``src/`` imports ``jsonschema``; it stays a dev-only dependency used by
+consumers' own validators and by this package's own tests.
 """
 
 from __future__ import annotations
@@ -57,10 +63,14 @@ from robustmargin.validation import AdjacentPair, Diagnostics, MonotonicityCheck
 
 __all__ = ["SCHEMA_VERSION", "Scorecard", "from_dict", "load_schema", "to_dict"]
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 
-# `from_dict` reads schema "1" only.
-_SUPPORTED_SCHEMA_VERSIONS: frozenset[str] = frozenset({"1"})
+# `from_dict` reads schemas "1" and "2".
+_SUPPORTED_SCHEMA_VERSIONS: frozenset[str] = frozenset({"1", "2"})
+
+# What schema "2" added to "1": a "1" payload carrying either is not one a "1" writer produced.
+_VERSION_2_DIRECTIONS = frozenset({"increasing"})
+_VERSION_2_DEFINITION_KINDS = frozenset({"baseline_multiple"})
 
 
 def _default_created_at() -> str:
@@ -97,15 +107,15 @@ class Scorecard:
         The version of robustmargin that produced this scorecard. Defaults to
         :data:`robustmargin.__version__` at construction time.
     schema_version
-        The serialised-result schema version this object belongs to. Defaults to ``"1"``, the
-        only version ``from_dict`` reads; any other version is rejected.
+        The serialised-result schema version this object belongs to. Defaults to ``"2"``, the
+        version ``to_dict`` writes; ``from_dict`` also reads ``"1"``.
     """
 
     results: tuple[GridBreakPoint | Fit | Threshold | Ratio, ...]
     provenance: Mapping[str, JSONValue] = field(default_factory=dict)
     created_at: str = field(default_factory=_default_created_at)
     library_version: str = field(default_factory=_default_library_version)
-    schema_version: str = "1"
+    schema_version: str = "2"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "results", tuple(self.results))
@@ -473,8 +483,27 @@ def _diagnostics_from_dict(data: object, card_version: str | None) -> Diagnostic
     return Diagnostics(**fields)
 
 
+def _reject_version_2_content(
+    fields: dict[str, Any], *, type_name: str, definition: object = None
+) -> None:
+    """Refuse a payload that says it is schema ``"1"`` but carries what only ``"2"`` has."""
+    if fields.get("schema_version", SCHEMA_VERSION) != "1":
+        return
+    if fields.get("direction") in _VERSION_2_DIRECTIONS:
+        raise ValueError(
+            f"from_dict: {type_name} has schema_version '1' but direction "
+            f"{fields['direction']!r}, which only schema_version '2' has"
+        )
+    if isinstance(definition, Mapping) and definition.get("kind") in _VERSION_2_DEFINITION_KINDS:
+        raise ValueError(
+            f"from_dict: {type_name} has schema_version '1' but definition kind "
+            f"{definition['kind']!r}, which only schema_version '2' has"
+        )
+
+
 def _fit_from_dict(data: object, card_version: str | None) -> Fit:
     fields = _validated_fields(Fit, data, tagged=True, card_version=card_version)
+    _reject_version_2_content(fields, type_name="Fit")
     fields["axis"] = _axis_from_dict(fields["axis"], card_version)
     fields["cells"] = tuple(_cell_from_dict(c, card_version) for c in fields["cells"])
     fields["status"] = Status(fields["status"])
@@ -508,6 +537,7 @@ def _baseline_rate_from_dict(data: object, card_version: str | None) -> Baseline
 
 def _threshold_from_dict(data: object, card_version: str | None) -> Threshold:
     fields = _validated_fields(Threshold, data, tagged=True, card_version=card_version)
+    _reject_version_2_content(fields, type_name="Threshold", definition=fields.get("definition"))
     fields["axis"] = _axis_from_dict(fields["axis"], card_version)
     fields["definition"] = _definition_from_dict(fields["definition"], card_version)
     fields["censoring"] = Censoring(fields["censoring"])
@@ -597,17 +627,20 @@ def from_dict(data: object) -> object:
     -------
     object
         An instance of the type named by ``data["type"]``. ``from_dict(to_dict(x)) == x`` for
-        every ``x`` of these five types whose ``schema_version`` is ``"1"``, which is every
-        result this package builds. Only ``schema_version`` ``"1"`` is read. Constructors do
-        not check the tag, so an object built with any other ``schema_version`` serialises but
-        does not read back.
+        every ``x`` of these five types whose ``schema_version`` is ``"2"``, which is every
+        result this package builds. ``schema_version`` ``"1"`` is read too: a
+        ``Fit`` or ``Threshold`` tagged ``"1"`` carries no increasing outcome and no
+        ``baseline_multiple`` definition, and one that does is rejected (checked per object, not
+        per card). Constructors do not check the tag, so an object built with any other
+        ``schema_version`` serialises but does not read back.
 
     Raises
     ------
     ValueError
         If ``"type"`` is missing or unrecognised; if ``schema_version`` (at any nesting level)
-        is not ``"1"``; if a field (at any nesting level) is not recognised; or if a required
-        field is missing.
+        is not ``"1"`` or ``"2"``, or is ``"1"`` on a ``Fit`` or ``Threshold`` carrying what only
+        ``"2"`` has (an ``"increasing"`` direction or a ``"baseline_multiple"`` definition); if a
+        field (at any nesting level) is not recognised; or if a required field is missing.
     """
     return _from_dict_impl(data, card_version=None)
 
@@ -628,8 +661,8 @@ def load_schema(version: str = SCHEMA_VERSION) -> dict[str, object]:
     Parameters
     ----------
     version
-        Which packaged schema version to load. Defaults to :data:`SCHEMA_VERSION`, ``"1"``,
-        which is the only version packaged.
+        Which packaged schema version to load. Defaults to :data:`SCHEMA_VERSION`, ``"2"``.
+        ``"1"`` is packaged too, for reading cards written by earlier releases.
 
     Returns
     -------
@@ -639,7 +672,7 @@ def load_schema(version: str = SCHEMA_VERSION) -> dict[str, object]:
     Raises
     ------
     FileNotFoundError
-        If ``version`` names a schema that is not packaged. Only ``"1"`` is.
+        If ``version`` names a schema that is not packaged. Only ``"1"`` and ``"2"`` are.
     """
     text = (
         resources.files("robustmargin")
