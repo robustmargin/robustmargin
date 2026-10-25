@@ -80,6 +80,15 @@ minor release may change the public API, and every such change carries a migrati
     `"1"` card still yields objects whose `schema_version` is `"1"`.
   - A nested or bare result that omits `schema_version` is now read as `"2"`; only the
     `Scorecard` root requires the tag.
+- **The profile interval's search shortens its stride when the inner fit fails.** When a stride
+  lands where the inner constrained fit fails, the search now bisects that stride (at most 30
+  times) instead of leaving the side open, so it finds an endpoint that lies before the failure.
+  - Migration: a profile bound previously reported open with the "inner fit failed" warning may
+    now be finite. `censoring` then goes from `OPEN_LOWER`/`OPEN_UPPER` to `NONE`, or, for an
+    interval that was open on both sides (`NONE` with no bounds), to `OPEN_LOWER`/`OPEN_UPPER`.
+    In that second case a `ratio_interval` built on the threshold now comes back censored with no
+    numbers, as it does for any one-sided input. Results whose search never met a failed inner
+    fit are unchanged.
 
 ## [0.2.1] — 2026-10-23
 

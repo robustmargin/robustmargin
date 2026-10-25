@@ -613,8 +613,8 @@ def _real_half_open_ratio() -> Ratio:
     numerator = _real_threshold()
     obs = Observations.from_counts(
         _AXIS,
-        severity=[1.0, 2.0],
-        successes=[5, 4],
+        severity=[1.0, 4.0],
+        successes=[11, 9],
         trials=[20, 20],
         outcome="success",
         direction="decreasing",
