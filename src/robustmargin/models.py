@@ -40,7 +40,7 @@ import math
 import warnings
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
-from typing import Literal, NamedTuple
+from typing import Any, Literal, NamedTuple
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -1376,6 +1376,62 @@ def _binomial_group_log_likelihood(
     return float(np.sum(xlogy(successes, p) + xlog1py(trials - successes, -p)))
 
 
+def _flat_supremum_log_likelihood(
+    severity: NDArray[np.float64],
+    successes: NDArray[np.float64],
+    trials: NDArray[np.float64],
+    *,
+    estimate_lower: bool,
+    estimate_upper: bool,
+    lower_value: float,
+    upper_value: float,
+    scale: str,
+) -> float:
+    """The supremum of the full binomial log-likelihood (binomial coefficients included) on the
+    ``s -> infinity`` boundary, where the curve is flat at a single probability ``p``.
+
+    Without a zero-severity control, or on a linear axis, ``p`` is the pooled rate clipped to the
+    feasible constants: ``[l, u]`` with both asymptotes fixed, ``[l, 1]`` with ``upper`` estimated,
+    ``[0, u]`` with ``lower`` estimated and ``[0, 1]`` with both estimated.
+
+    On a log axis the zero-severity control is pinned at the upper asymptote ``u`` for every
+    parameter value, so only the nonzero levels share ``p``. Write ``low`` for ``l`` when ``lower``
+    is fixed and 0 when it is estimated. With ``u`` fixed, the control contributes its
+    log-likelihood at ``u`` and the nonzero levels sit at their pooled rate clipped to
+    ``[low, u]``. With ``u`` estimated, ``p`` is the pooled nonzero rate floored at ``low``; if the
+    control's rate is at least ``p`` then ``u`` is the control's rate, and otherwise
+    ``u = p`` is the pooled rate of all levels floored at ``low``.
+    """
+    low = 0.0 if estimate_lower else lower_value
+    coefficients = float(
+        np.sum(gammaln(trials + 1.0) - gammaln(successes + 1.0) - gammaln(trials - successes + 1.0))
+    )
+    control = (severity == 0.0) if scale == "log" else np.zeros(severity.shape, dtype=bool)
+    if not bool(np.any(control)):
+        high = 1.0 if estimate_upper else upper_value
+        p = min(max(_pooled_rate(successes, trials), low), high)
+        return coefficients + _binomial_group_log_likelihood(successes, trials, p)
+
+    control_k, control_n = successes[control], trials[control]
+    other_k, other_n = successes[~control], trials[~control]
+    if other_k.size == 0:
+        u = _pooled_rate(control_k, control_n) if estimate_upper else upper_value
+        return coefficients + _binomial_group_log_likelihood(control_k, control_n, u)
+    if estimate_upper:
+        p = max(_pooled_rate(other_k, other_n), low)
+        u = _pooled_rate(control_k, control_n)
+        if u < p:
+            u = p = max(_pooled_rate(successes, trials), low)
+    else:
+        u = upper_value
+        p = min(max(_pooled_rate(other_k, other_n), low), u)
+    return (
+        coefficients
+        + _binomial_group_log_likelihood(control_k, control_n, u)
+        + _binomial_group_log_likelihood(other_k, other_n, p)
+    )
+
+
 class _StepSupremum(NamedTuple):
     """The step supremum and whether its best configuration is the constant curve (``u == l``)."""
 
@@ -1681,6 +1737,17 @@ def _step_plateau_reason(
     )
 
 
+# Starting (mu, s) on the centred-and-scaled covariate for the extra BFGS runs of `_fit_generic`;
+# each keeps the pilot's asymptote starts. Deterministic and independent of severity units.
+_ALTERNATIVE_STARTS: tuple[tuple[float, float], ...] = (
+    (0.0, 1.0),
+    (-1.0, 0.25),
+    (1.0, 0.25),
+    (-1.0, 4.0),
+    (1.0, 4.0),
+)
+
+
 def _fit_generic(
     obs: Observations,
     *,
@@ -1697,6 +1764,16 @@ def _fit_generic(
     ``GenericLikelihoodModel`` given :class:`_GenericLogLikelihood`, fit with ``method="bfgs"``
     then a ``method="newton"`` polish -- both statsmodels optimizers,
     never a hand-rolled Newton or IRLS loop.
+
+    BFGS runs from the pilot start and from each of ``_ALTERNATIVE_STARTS`` (fixed starting
+    points on the centred-and-scaled covariate, no random numbers), unless both asymptotes are
+    fixed at exactly 1 and 0. There the log-likelihood is concave in ``(-mu/s, 1/s)`` for the
+    probit, logit and complementary log-log links, and ``(mu, log s)`` is a one-to-one
+    reparametrisation of the slope ``1/s > 0``, so every local maximum is global.
+    The pilot run is polished by Newton's method; an alternative start replaces it only when its
+    BFGS log-likelihood beats the pilot's best by more than the optimality tolerance, and is then
+    polished and checked in its place. A fit whose log-likelihood does not exceed the supremum on
+    either boundary (a step as ``s -> 0``, a flat curve as ``s -> infinity``) is ``NOT_CONVERGED``.
 
     ``mirrored`` says that ``obs`` is the complement of an increasing outcome: it changes only
     the wording of a failure's reason, so that it names the asymptotes and direction of the
@@ -1788,72 +1865,138 @@ def _fit_generic(
         upper_value=upper_value,
         scale=axis.scale,
     )
+    flat_supremum = _flat_supremum_log_likelihood(
+        severity,
+        successes,
+        trials,
+        estimate_lower=lower_is_estimate,
+        estimate_upper=upper_is_estimate,
+        lower_value=lower_value,
+        upper_value=upper_value,
+        scale=axis.scale,
+    )
+
     # The BFGS stage is only ever a starting point for the Newton polish: it routinely reports its
     # own `converged=False` / ConvergenceWarning even when it has landed close enough for Newton to
     # finish the job, so only the *final* (Newton) result's own convergence signal decides the
     # status below -- checking a warning merged across both stages would treat that expected
     # intermediate state as a failure.
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        bfgs_result = model.fit(
-            start_params=start_params, method="bfgs", disp=False, maxiter=2000, gtol=1e-10
-        )
+    def _bfgs(from_params: NDArray[np.float64]) -> Any:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            return model.fit(
+                start_params=from_params, method="bfgs", disp=False, maxiter=2000, gtol=1e-10
+            )
+
+    def _polish(from_bfgs: Any) -> tuple[Any, list[warnings.WarningMessage]]:
+        # A singular Hessian makes the Newton step raise; that is reported as `None`.
         try:
-            with warnings.catch_warnings(record=True) as caught:
+            with warnings.catch_warnings(record=True) as record:
                 warnings.simplefilter("always")
-                result = model.fit(
-                    start_params=np.asarray(bfgs_result.params, dtype=np.float64),
+                polished = model.fit(
+                    start_params=np.asarray(from_bfgs.params, dtype=np.float64),
                     method="newton",
                     disp=False,
                     maxiter=200,
                     tol=1e-10,
                 )
         except np.linalg.LinAlgError:
-            # A singular Hessian during the Newton polish is usually the symptom of an estimated
-            # asymptote drifting to its boundary; name that cause when the BFGS
-            # stage already shows it, so the reason does not depend on which platform's linear
-            # algebra happens to fail first.
-            bfgs_params = np.asarray(bfgs_result.params, dtype=np.float64)
-            _, bfgs_s_scaled, bfgs_lower, bfgs_upper = _unpack_optimizer_params(
-                bfgs_params,
-                estimate_lower=lower_is_estimate,
-                estimate_upper=upper_is_estimate,
-                lower_value=lower_value,
-                upper_value=upper_value,
+            return None, []
+        return polished, record
+
+    def _finite_llf(fitted: Any) -> float:
+        value = float(fitted.llf)
+        return value if math.isfinite(value) else -math.inf
+
+    bfgs_result = _bfgs(start_params)
+    result, caught = _polish(bfgs_result)
+    pilot_best = _finite_llf(bfgs_result)
+    if result is not None:
+        pilot_best = max(pilot_best, _finite_llf(result))
+
+    # The log-likelihood can have more than one interior local maximum once an asymptote is
+    # estimated or fixed away from (1, 0), and BFGS from the pilot start can settle in a basin that
+    # is not the global one. BFGS is therefore also run from fixed alternative starts on the
+    # centred-and-scaled covariate. Only if the best of them beats the pilot's best log-likelihood
+    # by more than the optimality tolerance does that start replace the pilot (after its own Newton
+    # polish); every check below then judges it, and a failure of those checks is reported, never
+    # replaced by the lower pilot maximum. With both asymptotes fixed at (1, 0) the
+    # log-likelihood is concave in (b0, b1) = (-mu/s, 1/s) for the probit, logit and cloglog links
+    # (F and 1 - F are log-concave), and (mu, log s) is a one-to-one reparametrisation of b1 > 0,
+    # so every local maximum is global.
+    concave = (
+        not lower_is_estimate
+        and not upper_is_estimate
+        and upper_value == 1.0
+        and (lower_value == 0.0)
+    )
+    if not concave:
+        best_alternative: Any = None
+        best_alternative_llf = -math.inf
+        for alt_mu, alt_s in _ALTERNATIVE_STARTS:
+            alt_start = start_params.copy()
+            alt_start[0] = alt_mu
+            alt_start[1] = math.log(alt_s)
+            alt_bfgs = _bfgs(alt_start)
+            if _finite_llf(alt_bfgs) > best_alternative_llf:
+                best_alternative, best_alternative_llf = alt_bfgs, _finite_llf(alt_bfgs)
+        if best_alternative is not None and best_alternative_llf > (
+            pilot_best + _NEWTON_DECREMENT_TOLERANCE
+        ):
+            bfgs_result = best_alternative
+            result, caught = _polish(bfgs_result)
+
+    if result is None:
+        # A singular Hessian during the Newton polish is usually the symptom of an estimated
+        # asymptote drifting to its boundary; name that cause when the BFGS
+        # stage already shows it, so the reason does not depend on which platform's linear
+        # algebra happens to fail first.
+        bfgs_params = np.asarray(bfgs_result.params, dtype=np.float64)
+        _, bfgs_s_scaled, bfgs_lower, bfgs_upper = _unpack_optimizer_params(
+            bfgs_params,
+            estimate_lower=lower_is_estimate,
+            estimate_upper=upper_is_estimate,
+            lower_value=lower_value,
+            upper_value=upper_value,
+        )
+        singular_reason = _boundary_warning(
+            bfgs_params,
+            estimate_lower=lower_is_estimate,
+            estimate_upper=upper_is_estimate,
+            lower=bfgs_lower,
+            upper=bfgs_upper,
+            mirrored=mirrored,
+        )
+        if (
+            singular_reason is None
+            and spread * bfgs_s_scaled
+            > _FLAT_SLOPE_SPAN_FACTOR * _transformed_span(severity, scale=axis.scale)
+        ):
+            singular_reason = _wrong_sign_or_flat_warning(mirrored=mirrored)
+        if singular_reason is None:
+            singular_reason = _step_plateau_reason(
+                float(bfgs_result.llf), step_supremum, mirrored=mirrored
             )
-            singular_reason = _boundary_warning(
-                bfgs_params,
-                estimate_lower=lower_is_estimate,
-                estimate_upper=upper_is_estimate,
-                lower=bfgs_lower,
-                upper=bfgs_upper,
-                mirrored=mirrored,
+        if (
+            singular_reason is None
+            and float(bfgs_result.llf) <= flat_supremum + _NEWTON_DECREMENT_TOLERANCE
+        ):
+            singular_reason = _wrong_sign_or_flat_warning(mirrored=mirrored)
+        if singular_reason is None:
+            singular_reason = (
+                "fit_dose_response: the optimizer's Hessian was singular while fitting -- "
+                "no interior maximum was found"
             )
-            if (
-                singular_reason is None
-                and spread * bfgs_s_scaled
-                > _FLAT_SLOPE_SPAN_FACTOR * _transformed_span(severity, scale=axis.scale)
-            ):
-                singular_reason = _wrong_sign_or_flat_warning(mirrored=mirrored)
-            if singular_reason is None:
-                singular_reason = _step_plateau_reason(
-                    float(bfgs_result.llf), step_supremum, mirrored=mirrored
-                )
-            if singular_reason is None:
-                singular_reason = (
-                    "fit_dose_response: the optimizer's Hessian was singular while fitting -- "
-                    "no interior maximum was found"
-                )
-            return _status_only_fit(
-                obs,
-                cells=cells,
-                cluster_ids=cluster_ids,
-                link=link,
-                status=Status.NOT_CONVERGED,
-                fit_warnings=_failure_warnings(
-                    singular_reason, pilot_wrong_sign=pilot_wrong_sign, mirrored=mirrored
-                ),
-            )
+        return _status_only_fit(
+            obs,
+            cells=cells,
+            cluster_ids=cluster_ids,
+            link=link,
+            status=Status.NOT_CONVERGED,
+            fit_warnings=_failure_warnings(
+                singular_reason, pilot_wrong_sign=pilot_wrong_sign, mirrored=mirrored
+            ),
+        )
     convergence_warned = any(issubclass(w.category, ConvergenceWarning) for w in caught)
     converged_flag = bool(result.mle_retvals.get("converged", False))
     final_params = np.asarray(result.params, dtype=np.float64)
@@ -1932,6 +2075,10 @@ def _fit_generic(
         float(result.llf) if math.isfinite(float(result.llf)) else -math.inf,
     )
     plateau_reason = _step_plateau_reason(best_llf, step_supremum, mirrored=mirrored)
+    if plateau_reason is None and best_llf <= flat_supremum + _NEWTON_DECREMENT_TOLERANCE:
+        # The other boundary: a fit that has not exceeded the flat curve's best log-likelihood is
+        # not an interior maximum.
+        plateau_reason = _wrong_sign_or_flat_warning(mirrored=mirrored)
     if plateau_reason is not None:
         return _status_only_fit(
             obs,

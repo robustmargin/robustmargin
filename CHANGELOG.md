@@ -90,6 +90,28 @@ minor release may change the public API, and every such change carries a migrati
     numbers, as it does for any one-sided input. Results whose search never met a failed inner
     fit are unchanged.
 
+### Fixed
+- **Direct-likelihood fits could stop at a local maximum.** In 0.2.x this affects
+  `fit_dose_response` with an estimated asymptote, or with a fixed one other than `upper=1`,
+  `lower=0`. The optimiser ran from a single start, so it could return `OK` at a local maximum
+  of the likelihood. In one reported design, a curve with log-likelihood −16.59 was reported
+  `OK` while the maximum was −6.56. Every threshold, interval and ratio built on such a fit was
+  wrong.
+  - It could also report `NOT_CONVERGED` for data that do have a maximum.
+  - The optimiser now also starts from five fixed points on the centred, scaled severity axis.
+    It keeps a better start only when that start beats the original one's log-likelihood, and
+    every convergence check then runs on that start. The method is deterministic.
+  - A fit whose log-likelihood does not exceed that of the best constant curve (`s → ∞`) is now
+    `NOT_CONVERGED`, with the wrong-sign/flat reason. On a log axis a zero-severity control stays
+    at `upper` on that curve.
+  - Migration: a direct-likelihood fit may now report a higher log-likelihood with different
+    parameters, turn from `NOT_CONVERGED` to `OK`, or turn from `OK` to `NOT_CONVERGED` when its
+    supremum lies on a boundary. A `NOT_CONVERGED` fit's first warning may name a different
+    reason. `diagnose`'s per-link refits use the same path, so their AIC and status can change
+    too. Fits with both asymptotes fixed at `1` and `0` are unaffected, since that likelihood has
+    a single maximum. The exception is a direct-likelihood refit that does not beat the
+    constant-curve log-likelihood, which is now `NOT_CONVERGED`.
+
 ## [0.2.1] — 2026-10-23
 
 ### Fixed
