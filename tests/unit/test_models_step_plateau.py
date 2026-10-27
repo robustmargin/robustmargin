@@ -516,14 +516,6 @@ def test_step_reason_is_worded_as_an_observation() -> None:
     ("link", "scale", "severity", "successes", "trials"),
     [
         pytest.param(
-            "probit",
-            "log",
-            [1.0, 3.453, 11.9232, 41.1709, 142.1631, 490.8894],
-            [0, 2, 3, 1, 3, 1],
-            [5] * 6,
-            id="probit_noise_around_a_low_rate",
-        ),
-        pytest.param(
             "logit",
             "linear",
             [1.0, 2.0, 3.0, 4.0, 5.0],
@@ -558,6 +550,46 @@ def test_wrong_sign_or_flat_data_keeps_its_reason_not_the_step_reason(
     assert fit.status is Status.NOT_CONVERGED
     assert fit.warnings[0] == models_module._wrong_sign_or_flat_warning(mirrored=False)
     assert not any(_STEP_REASON in w for w in fit.warnings), fit.warnings
+
+
+def test_probit_noise_around_a_low_rate_is_not_the_wrong_sign_or_flat_reason() -> None:
+    """The old wrong-sign/flat reason on this design was an artefact of a single start.
+
+    With the alternative starts the fit is still NOT_CONVERGED, but the step supremum, -8.7108,
+    beats the flat supremum, -8.9688, so the flat reason is not the true one: the reason is the
+    step, or the lower asymptote reaching the parameter boundary.
+    """
+    severity = [1.0, 3.453, 11.9232, 41.1709, 142.1631, 490.8894]
+    successes = [0, 2, 3, 1, 3, 1]
+    trials = [5] * 6
+    obs = _obs(severity, successes, trials)
+
+    fit = fit_dose_response(
+        obs, model="binomial", link="probit", upper="estimate", lower="estimate"
+    )
+
+    assert fit.status is Status.NOT_CONVERGED
+    assert fit.params is None
+    assert fit.warnings[0] != models_module._wrong_sign_or_flat_warning(mirrored=False)
+    assert _STEP_REASON in fit.warnings[0] or fit.warnings[0].startswith(
+        "fit_dose_response: the estimated lower asymptote reached the parameter boundary"
+    ), fit.warnings
+    step = _supremum(severity, successes, trials, estimate_lower=True, estimate_upper=True)
+    flat = float(
+        models_module._flat_supremum_log_likelihood(
+            np.asarray(severity, dtype=np.float64),
+            np.asarray(successes, dtype=np.float64),
+            np.asarray(trials, dtype=np.float64),
+            estimate_lower=True,
+            estimate_upper=True,
+            lower_value=0.0,
+            upper_value=1.0,
+            scale="log",
+        )
+    )
+    assert step == pytest.approx(-8.7108, abs=1e-4)
+    assert flat == pytest.approx(-8.9688, abs=1e-4)
+    assert step > flat
 
 
 def test_nearly_flat_data_with_a_tiny_real_step_is_flat_or_step_not_converged() -> None:

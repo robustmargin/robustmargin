@@ -30,11 +30,17 @@ the same strategy to that path, asserting status equality unconditionally (never
 
 from __future__ import annotations
 
+import itertools
 import math
+from typing import Any
 
+import numpy as np
 import pytest
 from hypothesis import assume, example, given, settings
 from hypothesis import strategies as st
+from scipy.optimize import minimize
+from scipy.special import expit, gammaln
+from scipy.stats import norm
 
 from robustmargin import Axis, Fit, Observations, Status, fit_dose_response
 
@@ -290,3 +296,244 @@ def test_adding_an_all_success_control_to_the_generic_path_leaves_status_unchang
                 fit_without.params[name].value, rel=1e-6
             )
         assert fit_with.log_likelihood == pytest.approx(fit_without.log_likelihood, rel=1e-6)
+
+
+# --- an OK fit on the direct-likelihood path is at least as good as an independent oracle ---------
+#
+# Property: whenever ``fit_dose_response`` reports ``OK`` on the estimated-asymptote path, or a
+# fixed-asymptote path other than (1, 0), its full-binomial log-likelihood is at least that of a
+# test-side multi-start Nelder-Mead maximisation (own likelihood, no code from ``robustmargin``),
+# less a small tolerance. The oracle can only under-estimate the maximum, so the bound is
+# one-sided: an ``OK`` fit at a local maximum fails it, a conservative ``NOT_CONVERGED`` does not.
+
+_ORACLE_TOLERANCE = 1e-6
+_ASYMPTOTE_CONFIGS: list[tuple[Any, Any]] = [
+    ("estimate", "estimate"),  # (upper, lower)
+    ("estimate", 0.0),
+    (1.0, "estimate"),
+    (0.95, 0.05),
+    (0.9, 0.3),
+    (0.95, "estimate"),
+]
+
+
+def _oracle_llf(
+    severity: np.ndarray,
+    k: np.ndarray,
+    n: np.ndarray,
+    scale: str,
+    link: str,
+    upper: Any,
+    lower: Any,
+    *,
+    interior_only: bool = False,
+) -> float:
+    """The maximum full binomial log-likelihood over (mu, s, asymptotes) found by Nelder-Mead
+    from a grid of starts on the standardised covariate.
+
+    On a log axis a severity-0 control is pinned at ``P(0) = u`` (the package's control rule) and
+    excluded from the covariate's centring and spread. With ``interior_only`` the search is
+    confined to s' in [e^-8, e^8] and asymptote logits within +-15, the region an interior maximum
+    must lie in.
+    """
+    estimate_upper = upper == "estimate"
+    estimate_lower = lower == "estimate"
+    upper_value = 1.0 if estimate_upper else float(upper)
+    lower_value = 0.0 if estimate_lower else float(lower)
+    control = (severity == 0.0) if scale == "log" else np.zeros(severity.shape, dtype=bool)
+    t = np.where(
+        control, 0.0, np.log(np.where(control, 1.0, severity)) if scale == "log" else severity
+    )
+    free_t = t[~control]
+    z_t = (t - free_t.mean()) / free_t.std()
+    lchoose = gammaln(n + 1) - gammaln(k + 1) - gammaln(n - k + 1)
+    log_s_bound = 8.0 if interior_only else 25.0
+    logit_bound = 15.0 if interior_only else math.inf
+
+    def cdf(z: np.ndarray) -> np.ndarray:
+        if link == "probit":
+            return np.asarray(norm.cdf(z))
+        if link == "logit":
+            return np.asarray(expit(z))
+        return np.asarray(-np.expm1(-np.exp(z)))
+
+    def unpack(x: np.ndarray) -> tuple[float, float, float, float]:
+        mu, s, i = float(x[0]), float(np.exp(np.clip(x[1], -log_s_bound, log_s_bound))), 2
+        lo = lower_value
+        if estimate_lower:
+            a = float(np.clip(x[i], -logit_bound, logit_bound))
+            lo = float(expit(a)) if estimate_upper else upper_value * float(expit(a))
+            i += 1
+        up = upper_value
+        if estimate_upper:
+            b = float(np.clip(x[i], -logit_bound, logit_bound))
+            up = lo + (1.0 - lo) * float(expit(b))
+        return mu, s, lo, up
+
+    def negative(x: np.ndarray) -> float:
+        mu, s, lo, up = unpack(x)
+        p = up - (up - lo) * cdf((z_t - mu) / s)
+        p = np.where(control, up, p)
+        p = np.clip(p, 1e-300, 1.0 - 1e-16)
+        value = float(np.sum(lchoose + k * np.log(p) + (n - k) * np.log1p(-p)))
+        return -value if math.isfinite(value) else 1e12
+
+    n_asymptotes = int(estimate_lower) + int(estimate_upper)
+    options = {"xatol": 1e-9, "fatol": 1e-11, "maxiter": 1500, "maxfev": 1500}
+    best_value, best_x = math.inf, None
+    for mu0, log_s0 in itertools.product((-1.0, 0.0, 1.0), (-2.0, 0.0, 2.0)):
+        for logits in itertools.product((-2.0, 2.0), repeat=n_asymptotes):
+            result = minimize(
+                negative, np.array([mu0, log_s0, *logits]), method="Nelder-Mead", options=options
+            )
+            if result.fun < best_value:
+                best_value, best_x = float(result.fun), result.x
+    assert best_x is not None
+    polished = minimize(negative, best_x, method="Nelder-Mead", options=options)
+    return -min(best_value, float(polished.fun))
+
+
+_Design = tuple[str, str, tuple[Any, Any], list[float], list[int], list[int]]
+
+
+@st.composite
+def _generic_path_designs(draw: st.DrawFn) -> _Design:
+    scale = draw(st.sampled_from(["linear", "log"]))
+    link = draw(st.sampled_from(["probit", "logit", "cloglog"]))
+    config = draw(st.sampled_from(_ASYMPTOTE_CONFIGS))
+    n = draw(st.integers(min_value=3, max_value=6))
+    severities = sorted(
+        draw(
+            st.lists(
+                st.floats(min_value=0.5, max_value=100.0, allow_nan=False, allow_infinity=False),
+                min_size=n,
+                max_size=n,
+                unique=True,
+            )
+        )
+    )
+    if scale == "log" and draw(st.booleans()):
+        severities = [0.0, *severities]  # a zero-severity control, pinned at u
+    trials = draw(
+        st.lists(
+            st.integers(min_value=10, max_value=60),
+            min_size=len(severities),
+            max_size=len(severities),
+        )
+    )
+    successes = [draw(st.integers(min_value=1, max_value=t - 1)) for t in trials]
+    return scale, link, config, severities, successes, trials
+
+
+_R21_EXAMPLE: _Design = (
+    "linear",
+    "logit",
+    (0.95, 0.05),
+    [54.966, 84.166, 95.205, 95.73],
+    [6, 6, 6, 3],
+    [10] * 4,
+)
+_R19_EXAMPLE: _Design = (
+    "log",
+    "probit",
+    (0.95, 0.3),
+    [3.4479, 29.4978, 320.0891, 2859.2341, 6797.8529, 15781.2882],
+    [47, 16, 19, 15, 15, 11],
+    [50] * 6,
+)
+_CONTROL_EXAMPLE: _Design = (
+    "log",
+    "logit",
+    (0.9, 0.05),
+    [0.0, 1.0, 3.0, 10.0, 30.0, 100.0, 300.0],
+    [50, 45, 42, 40, 37, 34, 30],
+    [100] * 7,
+)
+
+
+def _fit_design(design: _Design) -> tuple[Fit, np.ndarray, np.ndarray, np.ndarray]:
+    scale, link, (upper, lower), severity, successes, trials = design
+    obs = Observations.from_counts(
+        Axis(name="severity", unit="unit", scale=scale),
+        severity=severity,
+        successes=successes,
+        trials=trials,
+        outcome="success",
+        direction="decreasing",
+    )
+    fit = fit_dose_response(obs, model="binomial", link=link, upper=upper, lower=lower)  # type: ignore[arg-type]
+    return (
+        fit,
+        np.asarray(severity, dtype=float),
+        np.asarray(successes, dtype=float),
+        np.asarray(trials, dtype=float),
+    )
+
+
+@example(_R21_EXAMPLE)
+@example(_R19_EXAMPLE)
+@example(_CONTROL_EXAMPLE)
+@given(_generic_path_designs())
+@settings(max_examples=15, deadline=None)
+def test_an_ok_generic_path_fit_is_not_below_an_independent_multi_start_oracle(
+    design: _Design,
+) -> None:
+    scale, link, (upper, lower), *_ = design
+    fit, severity, successes, trials = _fit_design(design)
+
+    if fit.status is not Status.OK:
+        return
+    assert fit.log_likelihood is not None
+    oracle = _oracle_llf(severity, successes, trials, scale, link, upper, lower)
+    assert fit.log_likelihood >= oracle - _ORACLE_TOLERANCE
+
+
+_FLAT_OR_STEP_FRAGMENT = "a step between adjacent tested levels"
+
+
+@example(_R21_EXAMPLE)
+@example(_R19_EXAMPLE)
+@example(_CONTROL_EXAMPLE)
+@given(_generic_path_designs())
+@settings(max_examples=15, deadline=None)
+def test_a_flat_or_step_not_converged_fit_has_no_interior_maximum_above_the_suprema(
+    design: _Design,
+) -> None:
+    """Converse of the oracle property: a NOT_CONVERGED fit that blames the flat or step boundary
+    must be right. No interior point (s' in [e^-8, e^8], asymptote logits within +-15) may beat the
+    larger of the two closed-form suprema."""
+    scale, link, (upper, lower), *_ = design
+    fit, severity, successes, trials = _fit_design(design)
+
+    if fit.status is not Status.NOT_CONVERGED or not fit.warnings:
+        return
+    from robustmargin import models
+
+    first = fit.warnings[0]
+    if not (
+        first == models._wrong_sign_or_flat_warning(mirrored=False)
+        or _FLAT_OR_STEP_FRAGMENT in first
+    ):
+        return
+    kwargs: dict[str, Any] = {
+        "estimate_lower": lower == "estimate",
+        "estimate_upper": upper == "estimate",
+        "lower_value": 0.0 if lower == "estimate" else float(lower),
+        "upper_value": 1.0 if upper == "estimate" else float(upper),
+        "scale": scale,
+    }
+    step = models._step_supremum_log_likelihood(severity, successes, trials, **kwargs)
+    flat = models._flat_supremum_log_likelihood(severity, successes, trials, **kwargs)
+    oracle = _oracle_llf(severity, successes, trials, scale, link, upper, lower, interior_only=True)
+    assert oracle <= max(step.value, flat) + 1e-6
+
+    # Reason consistency, as far as it holds by construction. A degenerate step supremum (u == l)
+    # is a constant curve, so the flat supremum is at least as large, and its reason is the
+    # wrong-sign/flat one; the step reason is only ever given for a non-degenerate step. Beyond
+    # that the suprema are not ordered by the reason: the wrong-sign/flat reason is also given by
+    # slope-span and pilot checks that compare no log-likelihood, and the step check runs before
+    # the flat one, so neither supremum need be the larger.
+    if step.degenerate:
+        assert flat >= step.value - 1e-6
+    if first != models._wrong_sign_or_flat_warning(mirrored=False):
+        assert not step.degenerate
