@@ -1414,9 +1414,6 @@ def _flat_supremum_log_likelihood(
 
     control_k, control_n = successes[control], trials[control]
     other_k, other_n = successes[~control], trials[~control]
-    if other_k.size == 0:
-        u = _pooled_rate(control_k, control_n) if estimate_upper else upper_value
-        return coefficients + _binomial_group_log_likelihood(control_k, control_n, u)
     if estimate_upper:
         p = max(_pooled_rate(other_k, other_n), low)
         u = _pooled_rate(control_k, control_n)

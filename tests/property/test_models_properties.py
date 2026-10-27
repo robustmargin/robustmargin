@@ -522,7 +522,18 @@ def test_a_flat_or_step_not_converged_fit_has_no_interior_maximum_above_the_supr
         "upper_value": 1.0 if upper == "estimate" else float(upper),
         "scale": scale,
     }
-    step = models._step_supremum_log_likelihood(severity, successes, trials, **kwargs).value
+    step = models._step_supremum_log_likelihood(severity, successes, trials, **kwargs)
     flat = models._flat_supremum_log_likelihood(severity, successes, trials, **kwargs)
     oracle = _oracle_llf(severity, successes, trials, scale, link, upper, lower, interior_only=True)
-    assert oracle <= max(step, flat) + 1e-6
+    assert oracle <= max(step.value, flat) + 1e-6
+
+    # Reason consistency, as far as it holds by construction. A degenerate step supremum (u == l)
+    # is a constant curve, so the flat supremum is at least as large, and its reason is the
+    # wrong-sign/flat one; the step reason is only ever given for a non-degenerate step. Beyond
+    # that the suprema are not ordered by the reason: the wrong-sign/flat reason is also given by
+    # slope-span and pilot checks that compare no log-likelihood, and the step check runs before
+    # the flat one, so neither supremum need be the larger.
+    if step.degenerate:
+        assert flat >= step.value - 1e-6
+    if first != models._wrong_sign_or_flat_warning(mirrored=False):
+        assert not step.degenerate
