@@ -111,6 +111,30 @@ minor release may change the public API, and every such change carries a migrati
     too. Fits with both asymptotes fixed at `1` and `0` are unaffected, since that likelihood has
     a single maximum. The exception is a direct-likelihood refit that does not beat the
     constant-curve log-likelihood, which is now `NOT_CONVERGED`.
+- **Profile intervals with an estimated asymptote could be too narrow.** This affects
+  `threshold(..., interval_method="profile")` for a fit with an estimated asymptote, or a fixed
+  one other than `upper=1`, `lower=0`. At each candidate severity the constrained fit ran from a
+  single start. Where it stopped short of the constrained maximum, the
+  deviance jumped above the chi-square target and the jump was reported as the bound, still `OK`.
+  The same data could also give different bounds for an increasing outcome and its mirrored
+  decreasing form.
+  - The constrained fit now also starts from points chosen by deterministic scans of the
+    log-likelihood: over the log scale crossed with the curve's position against the target, the
+    free asymptote, and, where the target pins an asymptote at 0 or 1, that boundary. A start is
+    kept only when it beats the original start's log-likelihood. Where the original start
+    already puts the deviance below the target, the extra starts are skipped, since they cannot
+    change which side of the target that point is on.
+  - Once a sign change is bracketed, the profile is evaluated at interior points and the bound is
+    solved in the first sub-interval that changes sign.
+  - The inner fits may still miss the maximum in rare cases. In a perturbation search about 0.3%
+    of bounds with an estimated asymptote were still too narrow, mostly upper bounds far beyond
+    the largest tested severity.
+  - `threshold` now raises `ValueError` when the constrained fit at the point estimate beats the
+    fit's log-likelihood, which means the fit itself is not at its maximum.
+  - Migration: a profile bound may move outward, may become open, and in rare cases moves inward.
+    `censoring` can change from `NONE` to `OPEN_LOWER`/`OPEN_UPPER`. Point estimates are
+    unchanged, and so are profile intervals with both asymptotes fixed at `1` and `0`. Profile
+    intervals on the affected fits take about two to three times as long.
 
 ## [0.2.1] — 2026-10-23
 

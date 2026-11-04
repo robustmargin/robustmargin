@@ -317,25 +317,18 @@ class TestUpperEstimatedLowerFixedAtZero:
         assert profile.hi == pytest.approx(delta.hi, rel=1e-2)
 
 
-class TestSparseEstimatedFitStillClosesItsProfile:
-    """A regression test on the estimated-asymptote path: a sparse design still closes its
-    profile on both sides.
+class TestSparseEstimatedFitOpensItsLowerSide:
+    """A verified ``OPEN_LOWER`` on the estimated-asymptote path, on a sparse design.
 
-    An ``OPEN_LOWER`` outcome here would be an **artefact of a defect**, not a property of the
-    design. The inner profile fit runs BFGS and then a Newton polish. Taking Newton's
-    log-likelihood unconditionally would be wrong: when Newton raises
-    ``LinAlgError("Singular matrix")`` at an outlying theta, the whole inner evaluation would
-    return ``None`` and the side would be opened -- discarding a perfectly usable BFGS profile
-    value underneath it. The implementation takes ``max(bfgs.llf, newton.llf)`` and lets a
-    Newton failure fall back to the BFGS value.
-
-    So this design closes on both sides, and the test pins that. Subsampling the
-    committed 11-level simulation to ``n=12`` per level (successes rounded proportionally from
-    the ``n=400`` counts -- deterministic, no random draw, reproducible bit-for-bit) is kept
-    because it is a genuinely sparse design that exercises the failure-prone inner fit.
-
-    **A verified ``OPEN_UPPER``/``OPEN_LOWER`` case on the estimated-asymptote path is therefore
-    still outstanding.** Do not treat this class as covering it.
+    Subsampling the committed 11-level simulation to ``n=12`` per level (successes rounded
+    proportionally from the ``n=400`` counts -- deterministic, no random draw, reproducible
+    bit-for-bit) gives a genuinely sparse design. Under ``absolute(0.85)`` the upper asymptote
+    can fall to the target, so the constrained maximum on the lower side tends to the
+    log-likelihood of the fit with the upper asymptote fixed at 0.85 (the wall). The wall
+    deviance 2 * (llf_hat - llf_wall) is 1.026, inside the chi-square(1) target of 3.84. That is
+    necessary for the lower side to be open, not sufficient on its own: it shows the limit the
+    profile tends to stays below the target. That the side is open is what the profile test
+    asserts. The upper side still closes.
     """
 
     @staticmethod
@@ -354,11 +347,14 @@ class TestSparseEstimatedFitStillClosesItsProfile:
         assert fit.status is Status.OK
         return fit
 
-    def test_absolute_0_85_profile_closes_both_sides(self) -> None:
-        """A singular Hessian in the Newton polish must not discard the BFGS profile value
-        (which would return ``OPEN_LOWER`` with `lo=None`). A too-low ``ell_p`` inflates
-        ``2 * (llf_hat - ell_p)``, so the defect's other face is a silently *narrowed* interval;
-        here it would cost a bound outright.
+    def test_absolute_0_85_profile_opens_the_lower_side_and_closes_the_upper_side(self) -> None:
+        """The estimated-asymptote profile reports ``OPEN_LOWER`` with ``lo is None`` and a
+        closed ``hi`` above the point estimate.
+
+        Oracle: ``fit_dose_response`` with the upper asymptote fixed at the target (0.85), a
+        different fit path from the profile code, has llf -13.052007 against -12.538999 for the
+        full fit. The deviance, twice that difference, is 1.026, below the chi-square(1) 0.95
+        quantile (3.841), so the profile never reaches the target on the lower side.
         """
         fit = self._sparse_fit()
 
@@ -367,18 +363,43 @@ class TestSparseEstimatedFitStillClosesItsProfile:
         )
 
         assert t.status is Status.OK
-        assert t.censoring is Censoring.NONE
+        assert t.censoring is Censoring.OPEN_LOWER
+        assert t.lo is None
         assert t.value is not None
-        assert t.lo is not None
         assert t.hi is not None
-        assert t.lo < t.value < t.hi
+        assert t.value < t.hi
+
+    def test_wall_fit_deviance_is_inside_the_chi_square_target(self) -> None:
+        """Oracle behind the open lower side: the fit with the upper asymptote fixed at 0.85
+        loses 1.026 (twice the llf difference) against the full fit, below the 3.841 target.
+        Necessary for the lower side to be open, not sufficient on its own: it shows the wall
+        limit the profile tends to stays below the target. The open side itself is asserted by
+        the profile test above."""
+        fit = self._sparse_fit()
+        sim = _load_simulation()
+        n = 12
+        successes = [round(s * n / t) for s, t in zip(sim["successes"], sim["trials"], strict=True)]
+        wall = fit_dose_response(
+            _observations(sim["severity"], successes, [n] * len(successes)),
+            model="binomial",
+            link="probit",
+            upper=0.85,
+            lower="estimate",
+        )
+
+        assert fit.log_likelihood is not None and wall.log_likelihood is not None
+        assert fit.log_likelihood == pytest.approx(-12.538999, abs=1e-5)
+        assert wall.log_likelihood == pytest.approx(-13.052007, abs=1e-5)
+        deviance = 2.0 * (fit.log_likelihood - wall.log_likelihood)
+        assert deviance == pytest.approx(1.026, abs=1e-3)
+        assert deviance < 3.841
 
     def test_delta_still_gives_a_closed_interval_on_the_identical_fit_and_definition(
         self,
     ) -> None:
         """``IntervalResult``'s own docstring: the delta method has no open-sided outcome.
-        Cross-checked on the same sparse fit and definition as the profile above. Both now
-        close; the profile's lower side is the wider of the two, which is the expected shape at
+        Cross-checked on the same sparse fit and definition as the profile above: the delta
+        method closes both sides where the profile opens the lower one, the expected shape at
         small ``n`` where a Wald-type interval is the less trustworthy one."""
         fit = self._sparse_fit()
 
