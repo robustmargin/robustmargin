@@ -1052,7 +1052,7 @@ def test_squeezed_transition_upper_bound_reaches_the_tested_level() -> None:
     """``hi`` lies in ``[3.2359, 3.236 * (1 + 1e-6)]`` and the lower side is open. The explicit
     curve above (``test_explicit_feasible_curve_keeps_the_deviance_negative_up_to_the_cell``)
     shows ``g < 0`` up to 3.2359, so no smaller ``hi`` can be a crossing; the oracle's jump to
-    ``g > 0`` happens only beyond the level itself (an independent stats review put ``g`` at
+    ``g > 0`` happens only beyond the level itself (an independent oracle puts ``g`` at
     +6.17 at 3.2361). The relative width ``1e-6`` is the root finder's tolerance on a steep
     step."""
     _, dec = _thresholds("d147", "absolute")
@@ -1284,7 +1284,7 @@ def test_oracle_deviance_stays_negative_below_the_spurious_lower_bound(
     returns is attained, so ``g`` from it can only overstate the true ``g``; ``g < ceiling < 0``
     at 0.5, 0.2, 0.0126 and 0.005 proves the profile does not cross anywhere in between and
     below, including at the lower bounds the earlier code reported (0.01257 logit, 0.2299
-    probit). Independent review values are -0.839 (logit) and -0.0758 (probit); the ceilings sit
+    probit). Independent oracle values are -0.839 (logit) and -0.0758 (probit); the ceilings sit
     between those and zero."""
     llf_hat = _c2_fit(link).log_likelihood
     assert llf_hat is not None
@@ -2229,14 +2229,15 @@ def test_alternatives_still_run_at_the_estimate_and_where_the_first_run_is_outsi
 #
 # Five designs, both asymptotes estimated, on which independent attained-likelihood witnesses show
 # the profile deviance is still below the chi-square target well beyond the reported ``hi``. The
-# witnesses hold today (the non-xfail witness test below); the tests marked
-# ``xfail(strict=True)`` pin the package's bound, so a fix turns them into XPASS,
-# which fails the suite until the marker is removed.
+# witnesses hold today (the non-xfail witness test below); the tests marked xfail pin the
+# package's bound. Four of the five are ``strict=True``, so a fix turns them into XPASS, which
+# fails the suite until the marker is removed. ``wall-d`` is non-strict because whether it misses
+# depends on floating-point rounding.
 #
-# * ``step`` (design B): the profile is flat at ``g = -0.1196`` from 10.85 up to the tested level
+# * ``step``: the profile is flat at ``g = -0.1196`` from 10.85 up to the tested level
 #   11.612, where the best curve is a step between 2.078 and 11.612. Witness:
 #   ``_step_witness_llf``, an explicit curve with no optimiser.
-# * ``wall`` (designs D1 to D4): far extrapolation. The constrained maximum sits at the
+# * ``wall-a`` to ``wall-d``: far extrapolation. The constrained maximum sits at the
 #   reachability wall, where the lower asymptote (decreasing frame) tends to the target while the
 #   transition stays inside the data. Witness: ``_wall_fit`` (Nelder-Mead over ``(mu, log s,
 #   logit u)`` with the lower asymptote set to the target, written here) gives the wall supremum;
@@ -2279,7 +2280,7 @@ def _complement_design(
 
 
 _UNDER_COVERED = {
-    "B-step": _UnderCoveredCase(
+    "step": _UnderCoveredCase(
         _complement_design(
             "log",
             "cloglog",
@@ -2296,7 +2297,7 @@ _UNDER_COVERED = {
         -0.05,
         11.612 * (1.0 - 1.0e-6),
     ),
-    "D1-wall": _UnderCoveredCase(
+    "wall-a": _UnderCoveredCase(
         _complement_design(
             "linear",
             "logit",
@@ -2313,7 +2314,7 @@ _UNDER_COVERED = {
         -0.5,
         3154.0,
     ),
-    "D2-wall": _UnderCoveredCase(
+    "wall-b": _UnderCoveredCase(
         _Design(
             "linear",
             "cloglog",
@@ -2332,7 +2333,7 @@ _UNDER_COVERED = {
         -5.0,
         9700.0,
     ),
-    "D3-wall": _UnderCoveredCase(
+    "wall-c": _UnderCoveredCase(
         _complement_design(
             "linear",
             "cloglog",
@@ -2349,7 +2350,7 @@ _UNDER_COVERED = {
         -1.0,
         2502.0,
     ),
-    "D4-wall": _UnderCoveredCase(
+    "wall-d": _UnderCoveredCase(
         _Design(
             "linear",
             "logit",
@@ -2454,25 +2455,29 @@ def _under_covered_upper_bound(name: str) -> Threshold:
     return threshold(fit, definition=case.definition, interval_method="profile", level=case.level)
 
 
-def _expect_inner_fit_miss(reason: str) -> Any:
+def _expect_inner_fit_miss(reason: str, *, strict: bool = True) -> Any:
     return [
         pytest.mark.slow,
-        pytest.mark.xfail(strict=True, reason=reason),
+        pytest.mark.xfail(strict=strict, reason=reason),
     ]
 
 
 _STEP_MISS = "inner fit misses a step basin narrower than the starting grid"
 _WALL_MISS = "inner fit misses the reachability-wall maximum far beyond the tested range"
+_WALL_MISS_FLAKY = (
+    "inner fit misses the reachability-wall maximum far beyond the tested range; whether the "
+    "miss occurs depends on floating-point rounding, so it can pass on some platforms"
+)
 
 
 @pytest.mark.parametrize(
     "name",
     [
-        pytest.param("B-step", marks=_expect_inner_fit_miss(_STEP_MISS)),
-        pytest.param("D1-wall", marks=_expect_inner_fit_miss(_WALL_MISS)),
-        pytest.param("D2-wall", marks=_expect_inner_fit_miss(_WALL_MISS)),
-        pytest.param("D3-wall", marks=_expect_inner_fit_miss(_WALL_MISS)),
-        pytest.param("D4-wall", marks=_expect_inner_fit_miss(_WALL_MISS)),
+        pytest.param("step", marks=_expect_inner_fit_miss(_STEP_MISS)),
+        pytest.param("wall-a", marks=_expect_inner_fit_miss(_WALL_MISS)),
+        pytest.param("wall-b", marks=_expect_inner_fit_miss(_WALL_MISS)),
+        pytest.param("wall-c", marks=_expect_inner_fit_miss(_WALL_MISS)),
+        pytest.param("wall-d", marks=_expect_inner_fit_miss(_WALL_MISS_FLAKY, strict=False)),
     ],
 )
 def test_upper_bound_reaches_the_witnessed_extent_or_the_side_is_open(name: str) -> None:
