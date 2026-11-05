@@ -29,6 +29,11 @@ The statistics are dose-response threshold estimation, the method toxicology and
 use to find the dose at which a response crosses a given level. That is why the worked example
 below uses a classic toxicology dataset: the code is the same whatever the system under test.
 
+robustmargin is designed to sit under evaluation harnesses. A harness applies graded degradations
+to an AI policy, records the pass/fail outcome of each run, and hands severities and counts to
+robustmargin for the threshold statistics. To compare two checkpoints, for example before and
+after post-training, `ratio_interval` gives a confidence interval for the ratio of their margins.
+
 ## Install
 
 Requires Python 3.11 or later.
