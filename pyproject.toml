@@ -10,13 +10,23 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "robustmargin"
-description = "Robustness margins with confidence intervals, via dose-response threshold estimation."
+description = "Robustness margins for AI safety evaluation: how much stress an AI system takes before it fails, with a confidence interval."
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
 authors = [{ name = "robustmargin contributors" }]
 dynamic = ["version"]
+keywords = [
+    "ai-safety",
+    "ai-evaluation",
+    "robustness",
+    "stress-testing",
+    "autonomous-systems",
+    "dose-response",
+    "confidence-intervals",
+    "statistics",
+]
 
 # PyPI discovery facets. No `License ::` classifier: PEP 639 makes the SPDX `license` field
 # above canonical, and declaring both can conflict.
@@ -28,6 +38,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Scientific/Engineering :: Mathematics",
     "Typing :: Typed",
 ]

@@ -1,7 +1,14 @@
 # robustmargin
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23585829.svg)](https://doi.org/10.5281/zenodo.23585829)
 
-Robustness margins with confidence intervals, via dose-response threshold estimation. Model-agnostic — no GPU, no ML framework required
+**Robustness margins for AI safety evaluation: how much stress an AI system takes before it
+fails, with a confidence interval.**
+
+AI systems are usually evaluated by a success rate under nominal conditions. A safety case needs
+a different number: how far conditions can degrade before the system starts to fail, and how
+sure we are of that point. robustmargin estimates that robustness margin from pass/fail stress
+tests, for any AI model or autonomous system you can test at increasing severity. It is
+model-agnostic: it sees only severities and counts, and needs no GPU and no ML framework.
 
 > **Status: latest release `0.2.1`.** Binomial dose-response fits, thresholds with profile-likelihood or delta
 > confidence intervals, censoring, ratios of two thresholds with Fieller or log-delta intervals,
@@ -11,11 +18,21 @@ Robustness margins with confidence intervals, via dose-response threshold estima
 
 ## What it does
 
-You test a system at increasing levels of some stress (the *severity*) and count successes at
-each level. robustmargin fits a dose-response curve to those counts and reports the severity at
-which performance crosses a level you choose, with a confidence interval. When the data cannot
-support a number, it says so: a threshold beyond the tested range is censored and reported as a
-bound, and a failed fit carries a status flag and no estimate.
+You test a system at increasing levels of some stress (the *severity*), such as input noise, a
+perturbation, a disturbance or a distribution shift, and count successes at each level.
+robustmargin fits a dose-response curve to those counts and reports the severity at which
+performance crosses a level you choose, with a confidence interval. When the data cannot support
+a number, it says so: a threshold beyond the tested range is censored and reported as a bound,
+and a failed fit carries a status flag and no estimate.
+
+The statistics are dose-response threshold estimation, the method toxicology and psychophysics
+use to find the dose at which a response crosses a given level. That is why the worked example
+below uses a classic toxicology dataset: the code is the same whatever the system under test.
+
+robustmargin is designed to sit under evaluation harnesses. A harness applies graded degradations
+to an AI policy, records the pass/fail outcome of each run, and hands severities and counts to
+robustmargin for the threshold statistics. To compare two checkpoints, for example before and
+after post-training, `ratio_interval` gives a confidence interval for the ratio of their margins.
 
 ## Install
 
