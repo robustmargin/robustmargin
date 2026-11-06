@@ -98,16 +98,24 @@ minor release may change the public API, and every such change carries a migrati
   `OK` while the maximum was −6.56. Every threshold, interval and ratio built on such a fit was
   wrong.
   - It could also report `NOT_CONVERGED` for data that do have a maximum.
-  - The optimiser now also starts from five fixed points on the centred, scaled severity axis.
-    It keeps a better start only when that start beats the original one's log-likelihood, and
-    every convergence check then runs on that start. The method is deterministic.
+  - The optimiser now also starts from five fixed points on the centred, scaled severity axis,
+    and then from the best points of a deterministic scan of the log-likelihood. The scan covers
+    the log scale from far below to far above the span of the tested levels; the curve's position
+    at, between and beyond the tested levels, including the gap between a zero-severity control
+    and the first nonzero level; and a grid of each estimated asymptote's range, which includes
+    the asymptotes of the best step between tested levels. It keeps a better start only when
+    that start beats the best log-likelihood found so far, and every convergence check then runs
+    once on the start it kept. The method is deterministic, and a fit already at its maximum is
+    unchanged by the extra starts. Direct-likelihood fits take about one and a half times as long
+    as with the five fixed starts alone.
   - A fit whose log-likelihood does not exceed that of the best constant curve (`s → ∞`) is now
     `NOT_CONVERGED`, with the wrong-sign/flat reason. On a log axis a zero-severity control stays
     at `upper` on that curve.
   - Migration: a direct-likelihood fit may now report a higher log-likelihood with different
     parameters, turn from `NOT_CONVERGED` to `OK`, or turn from `OK` to `NOT_CONVERGED` when its
     supremum lies on a boundary. A `NOT_CONVERGED` fit's first warning may name a different
-    reason. `diagnose`'s per-link refits use the same path, so their AIC and status can change
+    reason; for example, a boundary refusal can become a step refusal when the scan finds a higher
+    point on the step plateau. `diagnose`'s per-link refits use the same path, so their AIC and status can change
     too. Fits with both asymptotes fixed at `1` and `0` are unaffected, since that likelihood has
     a single maximum. The exception is a direct-likelihood refit that does not beat the
     constant-curve log-likelihood, which is now `NOT_CONVERGED`.

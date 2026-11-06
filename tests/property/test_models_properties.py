@@ -441,6 +441,21 @@ _R19_EXAMPLE: _Design = (
     [47, 16, 19, 15, 15, 11],
     [50] * 6,
 )
+_LOCAL_MAXIMUM_EXAMPLE: _Design = (
+    "linear",
+    "probit",
+    (0.95, "estimate"),
+    [
+        14.299959791393428,
+        15.464441152713276,
+        21.936092912297216,
+        36.82439493273207,
+        62.07312890366481,
+        75.0685043940403,
+    ],
+    [24, 30, 1, 40, 1, 11],
+    [39, 39, 34, 49, 46, 13],
+)
 _CONTROL_EXAMPLE: _Design = (
     "log",
     "logit",
@@ -448,6 +463,26 @@ _CONTROL_EXAMPLE: _Design = (
     [0.0, 1.0, 3.0, 10.0, 30.0, 100.0, 300.0],
     [50, 45, 42, 40, 37, 34, 30],
     [100] * 7,
+)
+# Refused as flat on a search that never reaches the gap between the pinned control and the first
+# nonzero level, where the interior maximum (llf -47.545652) lies.
+_GAP_MAXIMUM_EXAMPLE: _Design = (
+    "log",
+    "cloglog",
+    (0.95, "estimate"),
+    [0.0, 15.0, 37.7879274206032, 58.9841931089883, 59.3788140504317, 84.39271170536418],
+    [1, 26, 14, 27, 1, 12],
+    [10, 49, 26, 47, 20, 14],
+)
+# Refused as flat or step although the interior maximum (llf -23.405629) lies above the step
+# supremum (-23.405738); it sits at the lower asymptote's share of the step configuration.
+_SHALLOW_MAXIMUM_EXAMPLE: _Design = (
+    "log",
+    "cloglog",
+    (0.95, "estimate"),
+    [0.0, 15.0, 37.7879274206032, 58.9841931089883, 59.3788140504317, 84.39271170536418],
+    [8, 26, 14, 28, 2, 12],
+    [10, 49, 26, 47, 20, 14],
 )
 
 
@@ -473,6 +508,7 @@ def _fit_design(design: _Design) -> tuple[Fit, np.ndarray, np.ndarray, np.ndarra
 @example(_R21_EXAMPLE)
 @example(_R19_EXAMPLE)
 @example(_CONTROL_EXAMPLE)
+@example(_LOCAL_MAXIMUM_EXAMPLE)
 @given(_generic_path_designs())
 @settings(max_examples=15, deadline=None)
 def test_an_ok_generic_path_fit_is_not_below_an_independent_multi_start_oracle(
@@ -494,6 +530,8 @@ _FLAT_OR_STEP_FRAGMENT = "a step between adjacent tested levels"
 @example(_R21_EXAMPLE)
 @example(_R19_EXAMPLE)
 @example(_CONTROL_EXAMPLE)
+@example(_GAP_MAXIMUM_EXAMPLE)
+@example(_SHALLOW_MAXIMUM_EXAMPLE)
 @given(_generic_path_designs())
 @settings(max_examples=15, deadline=None)
 def test_a_flat_or_step_not_converged_fit_has_no_interior_maximum_above_the_suprema(

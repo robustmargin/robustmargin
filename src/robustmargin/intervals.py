@@ -87,8 +87,11 @@ from robustmargin.models import (
     _f_log_survival,
     _full_binomial_log_likelihood,
     _newton_decrement_half,
+    _scan_log_s_grid,
+    _share_logits,
     _transform,
 )
+from robustmargin.models import _top_local_maxima as _top_maxima
 from robustmargin.types import Censoring, Definition, _check_finite_number
 
 __all__ = ["IntervalResult", "delta_interval", "profile_interval", "solve_value"]
@@ -125,14 +128,10 @@ _UNREACHABLE_LOGLIKELIHOOD = -1.0e12
 # ``_FIT_SHARE_EDGE`` of both ends. The scan is reduced to its profile in ``log(s)`` (the best
 # value over the other coordinates at each ``log(s)``), and the optimiser starts from the scan
 # points that attain the ``_MAX_ALTERNATIVE_STARTS`` highest local maxima of that profile.
-_SCAN_LOG_S_BELOW = math.log(1.0e8)
-_SCAN_LOG_S_ABOVE = math.log(1.0e3)
-_SCAN_LOG_S_STEP = 0.1
 _SCAN_Z_STAR_STEP = 0.2
 _SCAN_Z_STAR_RANGE = 8.0
 _SCAN_Z_STAR_FAR = (10.0, 20.0, 40.0)
 _SCAN_END_INSET = 0.05
-_SCAN_SHARES = (0.01, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.99)
 _SCAN_ASYMPTOTE_SHARES = (
     1.0e-6,
     0.01,
@@ -146,7 +145,6 @@ _SCAN_ASYMPTOTE_SHARES = (
     0.99,
     1.0 - 1.0e-6,
 )
-_FIT_SHARE_EDGE = 1.0e-6
 _MAX_ALTERNATIVE_STARTS = 4
 # Interior points at which ``g`` is evaluated once a stride has bracketed a sign change on the
 # estimated-asymptote path, so the root solved for is the first crossing seen from the estimate.
@@ -1225,13 +1223,6 @@ def _tested_span(fit: Fit) -> float:
     return span if span > 0.0 else 1.0
 
 
-def _share_logits(fit_share: float) -> list[float]:
-    """The logits of the scanned shares of a free coordinate's range: :data:`_SCAN_SHARES` and the
-    fit's own share, kept :data:`_FIT_SHARE_EDGE` from the ends of the range."""
-    fit_value = float(np.clip(fit_share, _FIT_SHARE_EDGE, 1.0 - _FIT_SHARE_EDGE))
-    return [float(_logit(share)) for share in dict.fromkeys((fit_value, *_SCAN_SHARES))]
-
-
 def _scan_extra_values(
     fit: Fit, chart: _ZStarLogLikelihood, z_star: float, link: str
 ) -> list[tuple[float, ...]]:
@@ -1258,36 +1249,10 @@ def _scan_extra_values(
     return [(logit,) for logit in _share_logits(hat)]
 
 
-def _scan_log_s_grid(span: float) -> NDArray[np.float64]:
-    low = math.log(span) - _SCAN_LOG_S_BELOW
-    high = math.log(span) + _SCAN_LOG_S_ABOVE
-    count = math.floor((high - low) / _SCAN_LOG_S_STEP) + 1
-    return low + _SCAN_LOG_S_STEP * np.arange(count, dtype=np.float64)
-
-
 def _top_local_maxima(profile: NDArray[np.float64]) -> list[int]:
     """Indices into ``profile`` of its highest local maxima, best first, at most
-    :data:`_MAX_ALTERNATIVE_STARTS`.
-
-    A non-finite entry counts as ``-inf``, and the two ends of the array have a neighbour of
-    ``-inf`` beyond them. A local maximum is a maximal run of equal consecutive values, finite and
-    strictly higher than the entry before it and the entry after it; the run is represented by
-    its first (lowest) index, so a plateau is one maximum and an end point can be one. Ties in
-    value are ordered by index."""
-    values = np.where(np.isfinite(profile), profile, -np.inf)
-    maxima: list[int] = []
-    start = 0
-    while start < values.size:
-        stop = start
-        while stop + 1 < values.size and values[stop + 1] == values[start]:
-            stop += 1
-        before = values[start - 1] if start > 0 else -np.inf
-        after = values[stop + 1] if stop + 1 < values.size else -np.inf
-        if values[start] > -np.inf and values[start] > before and values[start] > after:
-            maxima.append(start)
-        start = stop + 1
-    maxima.sort(key=lambda index: -values[index])
-    return maxima[:_MAX_ALTERNATIVE_STARTS]
+    :data:`_MAX_ALTERNATIVE_STARTS` (the rule is :func:`robustmargin.models._top_local_maxima`)."""
+    return _top_maxima(profile, _MAX_ALTERNATIVE_STARTS)
 
 
 def _scan_picks(
@@ -1315,7 +1280,10 @@ def _scan_picks(
     )
     surface = np.where(np.isfinite(values), values, -np.inf).reshape(log_s.size, count)
     best_combo = np.argmax(surface, axis=1)
-    return _top_local_maxima(surface[np.arange(log_s.size), best_combo]), best_combo
+    return (
+        _top_local_maxima(surface[np.arange(log_s.size), best_combo]),
+        best_combo,
+    )
 
 
 def _face_charts(
