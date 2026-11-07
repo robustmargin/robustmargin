@@ -102,8 +102,7 @@ def _supremum(
         upper_value=upper_value,
         scale="log" if log_axis else "linear",
     )
-    value, degenerate = result
-    return float(value), bool(degenerate)
+    return float(result.value), bool(result.degenerate)
 
 
 _CONFIGURATIONS = {
@@ -252,7 +251,7 @@ def test_supremum_reports_whether_its_best_configuration_is_the_constant_curve(
     assert actual is degenerate
 
 
-def test_supremum_result_is_a_value_degenerate_pair() -> None:
+def test_supremum_result_names_its_value_degeneracy_and_asymptotes() -> None:
     result = models_module._step_supremum_log_likelihood(
         np.array([1.0, 2.0]),
         np.array([9.0, 1.0]),
@@ -264,4 +263,28 @@ def test_supremum_result_is_a_value_degenerate_pair() -> None:
         scale="linear",
     )
 
-    assert result._fields == ("value", "degenerate")
+    assert result._fields == ("value", "degenerate", "upper", "lower")
+
+
+def test_supremum_reports_the_best_configurations_asymptotes_on_the_shallow_design() -> None:
+    severity = [0.0, 15.0, 37.7879274206032, 58.9841931089883, 59.3788140504317, 84.39271170536418]
+    result = models_module._step_supremum_log_likelihood(
+        np.asarray(severity, dtype=np.float64),
+        np.array([8.0, 26.0, 14.0, 28.0, 2.0, 12.0]),
+        np.array([10.0, 49.0, 26.0, 47.0, 20.0, 14.0]),
+        estimate_lower=True,
+        estimate_upper=False,
+        lower_value=0.0,
+        upper_value=0.95,
+        scale="log",
+    )
+
+    # Best configuration: the control at u = 0.95, level 1 free at its own rate 26/49, and levels
+    # 2-5 pooled at l = 56/107. Pooling levels 1-5 at 82/156 is a lower likelihood.
+    assert result.upper == 0.95
+    assert result.lower == pytest.approx(56 / 107)
+    rates = np.array([0.95, 26 / 49, 56 / 107, 56 / 107, 56 / 107, 56 / 107])
+    full_log_likelihood = float(
+        np.sum(binom.logpmf([8, 26, 14, 28, 2, 12], [10, 49, 26, 47, 20, 14], rates))
+    )
+    assert full_log_likelihood == pytest.approx(result.value, abs=1e-9)

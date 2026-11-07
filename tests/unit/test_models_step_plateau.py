@@ -70,7 +70,7 @@ def _supremum(
     lower_value: float = 0.0,
     upper_value: float = 1.0,
 ) -> float:
-    value, _ = models_module._step_supremum_log_likelihood(
+    result = models_module._step_supremum_log_likelihood(
         np.asarray(severity, dtype=np.float64),
         np.asarray(successes, dtype=np.float64),
         np.asarray(trials, dtype=np.float64),
@@ -80,7 +80,7 @@ def _supremum(
         upper_value=upper_value,
         scale="log",
     )
-    return float(value)
+    return float(result.value)
 
 
 # --- the pure function, pinned on hand-computed designs -----------------------------------------
