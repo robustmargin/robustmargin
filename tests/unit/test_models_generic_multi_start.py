@@ -1250,7 +1250,9 @@ def test_shallow_interior_maximum_above_the_step_supremum_is_not_refused() -> No
 # recorded from a fit made before the scan existed, on one platform, so they are a cross-check,
 # not an exact oracle. The log-likelihood is flat at the maximum, so it agrees closely across
 # platforms (1e-12); the parameters are determined only to the optimizer's convergence
-# tolerance, so they agree to 1e-6.
+# tolerance, so they agree to 1e-6. The covariance is the inverse of a finite-difference Hessian,
+# whose roundoff alone moves it by a few parts in a million when the log-likelihood changes in
+# its last bit, so it is checked to 1e-4.
 
 _PINNED: dict[str, dict[str, Any]] = {
     "local-maximum-design": {
@@ -1377,7 +1379,7 @@ def test_a_fit_already_at_the_global_maximum_is_bit_identical_with_and_without_t
     )
     assert fit.covariance.names == pinned["names"]
     assert np.asarray(fit.covariance.matrix) == pytest.approx(
-        np.asarray(pinned["matrix"]), rel=1e-6
+        np.asarray(pinned["matrix"]), rel=1e-4
     )
 
 
