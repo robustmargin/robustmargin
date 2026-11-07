@@ -397,11 +397,14 @@ def _grid_for(
 ) -> GridBreakPoint:
     """The grid break-point of ``cells`` against ``target``. For the complement of an increasing
     outcome (``original_target`` given) it is read on the counts as supplied: a level breaks when
-    its event rate is strictly above ``original_target``, compared as ``events / trials``, so that
-    a rate equal to the target does not break whatever rounding ``1 - target`` carries."""
+    its event rate is strictly above ``original_target``, compared as ``events / trials``. The
+    double nearest a decimal target and the double nearest its decimal complement are not
+    complements (``0.3 < 1 - 0.7`` in floating point), so a rate tied with the target need not be
+    tied with ``1 - target`` on the complement scale; comparing by exact negation avoids that."""
     if original_target is not None:
-        # `events / trials > a` is `-events / trials < -a`, and float negation is exact, so the
-        # one grid rule decides it with no rounding from `1 - a`.
+        # `events / trials > a` is `-events / trials < -a`, and float negation is exact. Going
+        # through `1 - a` is not: `1 - a` is exact for a in [0.5, 1], but the doubles nearest a
+        # decimal and its decimal complement are not complements, so ties would be misread.
         return grid_break_point(
             [c.severity for c in cells],
             [-((c.trials - c.successes) / c.trials) for c in cells],
@@ -773,7 +776,8 @@ def classify(
         ``None`` for a fit of the outcome as counted. Otherwise ``fit`` is the complementary
         outcome of an increasing one, ``target`` is already complemented, and this is the target
         as the caller stated it: warnings name it, and bounds they quote are taken from the
-        original counts. Every test and every number in the result is unchanged by it.
+        original counts. The exact tests and the solve are unchanged by it; the grid break point
+        is not, since it is read against this target on the counts as supplied.
 
     Returns
     -------

@@ -703,8 +703,10 @@ class TestBaselineMultipleIsLogAxisOnly:
 class TestGridBreakPointOnTheOriginalCounts:
     """The exact-bound fallback's grid rule reads the counts as supplied: a level breaks when
     ``events / trials`` is strictly above the target. The comparison is exact, so a level whose
-    rate equals the target to the last digit does not break, whatever floating-point error
-    ``1 - a`` carries."""
+    rate equals the target to the last digit does not break. Re-deriving the target as ``1 - a``
+    would not be safe for a non-dyadic ``a``: the double nearest ``a`` and the double nearest its
+    decimal complement are not complements, so a tie with ``a`` (56/80 = 0.7) is not a tie with
+    ``1 - a`` on the complement (24/80 = 0.3 < 1.0 - 0.7)."""
 
     @staticmethod
     def _grid_value(events: list[int], trials: int, a: float) -> float | None:
@@ -752,3 +754,48 @@ class TestGridBreakPointOnTheOriginalCounts:
 
         assert at == 4.0, f"{tied}/{n} equals {a}: it must not break"
         assert above == 2.0, f"{tied + 1}/{n} exceeds {a}: it must break"
+
+
+class TestGridTieOnAnEstimatedLowerFit:
+    """Boundary fits with ``lower="estimate"`` take their grid from the counts as supplied, and a
+    rate equal to the target does not break, on the increasing side and on its mirror.
+
+    The ``NOT_CONVERGED`` status asserted in the setup depends on the optimizer. It is the setup,
+    a failed fit whose grid comes from the counts, not the property under test. If a future
+    fitter converges on these counts, choose new counts that still fail rather than dropping the
+    grid assertions."""
+
+    _SEVERITY = [3.423477192331265, 5.087048030753622, 5.61541733527573, 10.640361678285558, 19.0]
+    _TRIALS = [80] * 5
+
+    def _increasing(self, events: list[int]) -> Fit:
+        fit = _fit(self._SEVERITY, events, self._TRIALS, upper=1.0, lower="estimate")
+        assert fit.status is Status.NOT_CONVERGED
+        return fit
+
+    def test_an_event_rate_equal_to_a_non_dyadic_target_does_not_break(self) -> None:
+        fit = self._increasing([5, 22, 39, 56, 72])
+
+        t = threshold(
+            fit, definition=Definition.absolute(0.7), interval_method="profile", level=_LEVEL
+        )
+
+        assert t.grid is not None
+        assert t.grid.value == 19.0
+
+    def test_a_dyadic_tie_gives_the_same_grid_on_the_mirrored_decreasing_fit(self) -> None:
+        events = [5, 22, 39, 60, 72]
+        inc = self._increasing(events)
+        dec = _mirror_fit(self._SEVERITY, events, self._TRIALS, upper=1.0, lower="estimate")
+        assert dec.status is Status.NOT_CONVERGED
+
+        t_inc = threshold(
+            inc, definition=Definition.absolute(0.75), interval_method="profile", level=_LEVEL
+        )
+        t_dec = threshold(
+            dec, definition=Definition.absolute(0.25), interval_method="profile", level=_LEVEL
+        )
+
+        assert t_inc.grid is not None
+        assert t_inc.grid == t_dec.grid
+        assert t_inc.grid.value == 19.0, "the 60/80 level passes, so the break is not at 10.64"
