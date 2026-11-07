@@ -32,7 +32,7 @@ import numpy as np
 import pytest
 from statsmodels.base.model import GenericLikelihoodModel
 
-from robustmargin import Axis, Observations, Status, fit_dose_response
+from robustmargin import Axis, Definition, Observations, Status, fit_dose_response, threshold
 from robustmargin import models as models_module
 
 _LINEAR = Axis(name="severity", unit="unit", scale="linear")
@@ -1170,6 +1170,54 @@ def test_ok_fit_at_a_local_maximum_moves_to_the_global_maximum_of_the_full_log_l
     assert fit.status is Status.OK, fit.warnings
     assert fit.log_likelihood is not None
     assert fit.log_likelihood >= _LOCAL_LLF - 1e-6
+
+
+# --- an increasing outcome whose fit sat at a local maximum and broke the profile threshold -------
+#
+# Log axis, logit, upper 1.0, lower estimated, direction increasing. Without the log-likelihood
+# scan the fit is OK at -20.825183 and a profile threshold at absolute(0.25) raises because the
+# constrained fit exceeds the reported maximum. An independent multi-start oracle (decreasing
+# frame, complement counts, upper estimated, lower 0) gives -15.957757288094086.
+
+_INCREASING_LOCAL_SEVERITY = [
+    2.1493569652877778,
+    5.732817965660452,
+    16.82073058851421,
+    16.92798363449072,
+    17.31976265313372,
+]
+_INCREASING_LOCAL_EVENTS = [9, 23, 37, 50, 64]
+_INCREASING_LOCAL_LLF = -15.957757288094086
+
+
+def _fit_increasing_local_maximum() -> Any:
+    obs = Observations.from_counts(
+        _LOG,
+        severity=_INCREASING_LOCAL_SEVERITY,
+        successes=_INCREASING_LOCAL_EVENTS,
+        trials=[80] * 5,
+        outcome="success",
+        direction="increasing",
+    )
+    return fit_dose_response(obs, model="binomial", link="logit", upper=1.0, lower="estimate")
+
+
+def test_increasing_ok_fit_at_a_local_maximum_reaches_the_oracle_log_likelihood() -> None:
+    fit = _fit_increasing_local_maximum()
+
+    assert fit.status is Status.OK, fit.warnings
+    assert fit.log_likelihood is not None
+    assert fit.log_likelihood >= _INCREASING_LOCAL_LLF - 1e-6
+
+
+def test_increasing_local_maximum_fit_gives_an_ok_profile_threshold_not_a_value_error() -> None:
+    fit = _fit_increasing_local_maximum()
+
+    result = threshold(
+        fit, definition=Definition.absolute(0.25), interval_method="profile", level=0.95
+    )
+
+    assert result.status is Status.OK, result.warnings
 
 
 # --- a maximum barely above the step supremum ----------------------------------------------------
