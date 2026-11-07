@@ -1198,7 +1198,11 @@ def test_shallow_interior_maximum_above_the_step_supremum_is_not_refused() -> No
 
 # --- fits that were already at the global maximum are unchanged ----------------------------------
 #
-# Expected values pinned from a fit made before the scan existed (exact floating-point values).
+# The exact claim is the same-process comparison with the scan disabled. The pinned values were
+# recorded from a fit made before the scan existed, on one platform, so they are a cross-check,
+# not an exact oracle. The log-likelihood is flat at the maximum, so it agrees closely across
+# platforms (1e-12); the parameters are determined only to the optimizer's convergence
+# tolerance, so they agree to 1e-6.
 
 _PINNED: dict[str, dict[str, Any]] = {
     "local-maximum-design": {
@@ -1281,7 +1285,8 @@ _PINNED: dict[str, dict[str, Any]] = {
         ),
     ],
 )
-def test_a_fit_already_at_the_global_maximum_is_bit_identical_to_the_pinned_fit(
+def test_a_fit_already_at_the_global_maximum_is_bit_identical_with_and_without_the_scan(
+    monkeypatch: pytest.MonkeyPatch,
     design: str,
     scale: str,
     link: str,
@@ -1302,13 +1307,30 @@ def test_a_fit_already_at_the_global_maximum_is_bit_identical_to_the_pinned_fit(
     pinned = _PINNED[design]
 
     fit = fit_dose_response(obs, model="binomial", link=link, upper=upper, lower=lower)
+    with monkeypatch.context() as patch:
+        patch.setattr(models_module, "_scan_starts", lambda *a, **k: [])
+        unscanned = fit_dose_response(obs, model="binomial", link=link, upper=upper, lower=lower)
 
     assert fit.status is Status.OK
+    assert fit.status is unscanned.status
     assert tuple(fit.warnings) == ()
-    assert fit.log_likelihood == pinned["llf"]
-    assert {name: value.value for name, value in fit.params.items()} == pinned["params"]
+    assert tuple(fit.warnings) == tuple(unscanned.warnings)
+    assert fit.log_likelihood == unscanned.log_likelihood
+    assert fit.params.keys() == unscanned.params.keys()
+    for name, param in fit.params.items():
+        assert param.value == unscanned.params[name].value
+        assert param.fixed is unscanned.params[name].fixed
+    assert fit.covariance.names == unscanned.covariance.names
+    assert fit.covariance.matrix == unscanned.covariance.matrix
+
+    assert fit.log_likelihood == pytest.approx(pinned["llf"], rel=1e-12)
+    assert {name: value.value for name, value in fit.params.items()} == pytest.approx(
+        pinned["params"], rel=1e-6
+    )
     assert fit.covariance.names == pinned["names"]
-    assert fit.covariance.matrix == pinned["matrix"]
+    assert np.asarray(fit.covariance.matrix) == pytest.approx(
+        np.asarray(pinned["matrix"]), rel=1e-6
+    )
 
 
 def _step(upper: float, lower: float) -> models_module._StepSupremum:
