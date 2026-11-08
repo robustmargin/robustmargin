@@ -17,6 +17,12 @@ What must carry over, and how it is compared:
   ``grid`` are identical for ``absolute(a)`` against ``absolute(1 - a)`` and for ``relative(p)``
   against ``relative(p)``. Severities are never mirrored.
 
+The absolute levels are dyadic (0.25, 0.5, 0.75), so ``1 - a`` is exact. The mirrored definition
+then asks the same question, and a tie between an observed rate and the target is mirrored
+exactly. For a non-dyadic ``a``, the double nearest ``a`` and the double nearest its decimal
+complement are not complements, so a rate tied with ``a`` (56/80 = 0.7) is not tied with
+``1 - a`` on the complement (24/80 = 0.3 < 1.0 - 0.7).
+
 Tolerance is relative ``1e-9`` throughout. Both sides run the same code on the same numbers, so
 the two sides agree to rounding; ``1e-9`` leaves room for the one floating-point difference that
 is not an identity, ``1 - (1 - x)`` against ``x``, and for nothing else.
@@ -310,7 +316,7 @@ def test_increasing_threshold_equals_the_mirrored_decreasing_threshold(
     assert increasing.status is decreasing.status
 
     pairs: list[tuple[Definition, Definition]] = [
-        (Definition.absolute(a), Definition.absolute(1.0 - a)) for a in (0.3, 0.5, 0.7)
+        (Definition.absolute(a), Definition.absolute(1.0 - a)) for a in (0.25, 0.5, 0.75)
     ]
     if increasing.status is Status.OK:
         # relative(p) needs fitted asymptotes, so it is only defined on an OK fit.
@@ -348,7 +354,7 @@ def test_increasing_threshold_is_mirrored_on_exact_failed_fits_too(
     assert increasing.status is Status.SEPARATION
     assert decreasing.status is Status.SEPARATION
 
-    for a in (0.2, 0.5, 0.8):
+    for a in (0.25, 0.5, 0.75):
         t_inc = threshold(
             increasing,
             definition=Definition.absolute(a),
