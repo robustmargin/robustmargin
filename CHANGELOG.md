@@ -102,6 +102,34 @@ minor release may change the public API, and every such change carries a migrati
   `fake_threshold` produces such a result. A hand-built `Threshold` that does now raises
   `ValueError` at construction, and a hand-edited card fails `from_dict`. Migration: set the field
   to `None` (`null` in JSON).
+- **Behavioural change: profile bounds at the reachability wall.** For `Definition.absolute(a)`
+  with an estimated approaching asymptote, the profile interval's far bound can move outward
+  where the constrained maximum lies at the reachability wall: the asymptote the curve approaches
+  tends to the target while the transition stays inside the data. The inner fit now also starts
+  from the curve refitted with that asymptote fixed at the target, placed at each candidate
+  threshold. The start is only a starting point (the refit's own likelihood is never used), so
+  the profile value is always one attained by a feasible curve.
+  - The best scanned alternative, and the wall start where it is the best run overall, are
+    Newton-polished and the profile log-likelihood is the largest of those values and the first
+    run's, so it is never below what it was without the wall start. At every threshold the
+    deviance is no higher than before, and the inner fit fails at no threshold where it succeeded
+    before. The search steps through the same thresholds, so it brackets the crossing at the same
+    step or further out. A bound can come out lower only where the deviance crosses the target
+    more than once inside the last sub-interval, or where the previous search met an inner-fit
+    failure, in which case a side it left open can now close.
+  - The visible consequence, on designs whose constrained maximum lies at the wall: a finite
+    upper bound with `censoring=NONE` becomes `hi=None` with `OPEN_UPPER`, because the deviance
+    stays below the target up to the search limit. This is on the severity axis, so it reads the
+    same for an increasing outcome. A `ratio_interval` built on such a threshold then comes back
+    censored, as it does for any one-sided input.
+  - A refit that raises an error (numerical or validation) adds a warning to the interval result,
+    and the interval uses the other starts. A refit that ends with a status other than `OK` has no
+    curve to start from and is silent.
+  - **Migration:** nothing to change in calls. Code that assumed a closed upper bound for
+    these thresholds must handle `hi=None` and `OPEN_UPPER`. Affected: an absolute target with
+    an estimated approaching asymptote (the lower asymptote of the decreasing curve, the upper
+    asymptote of an increasing outcome). Unchanged: a fixed approaching asymptote, `relative`,
+    `baseline_fraction` and `baseline_multiple` targets.
 
 ### Fixed
 - An increasing fit with `absolute(a)` for a tiny `a` (`0 < a <= 2**-54`) is still `UNREACHABLE`,

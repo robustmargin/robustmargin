@@ -65,7 +65,7 @@ import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from functools import cached_property
-from typing import Any
+from typing import Any, Literal, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -90,9 +90,10 @@ from robustmargin.models import (
     _scan_log_s_grid,
     _share_logits,
     _transform,
+    fit_dose_response,
 )
 from robustmargin.models import _top_local_maxima as _top_maxima
-from robustmargin.types import Censoring, Definition, _check_finite_number
+from robustmargin.types import Censoring, Definition, Observations, Status, _check_finite_number
 
 __all__ = ["IntervalResult", "delta_interval", "profile_interval", "solve_value"]
 
@@ -1326,9 +1327,122 @@ _Start = tuple[
 ]
 
 
+@dataclass(frozen=True)
+class _WallCurve:
+    """The curve that the profile's constrained maximum approaches at far extrapolation, fitted
+    lazily and at most once.
+
+    For ``absolute(a)`` with the lower asymptote estimated, the target ``a`` is reached ever
+    further out as the fitted lower asymptote tends to ``a`` while the transition stays inside the
+    data. This is the same data, link and fixed asymptotes as ``fit``, refitted by
+    :func:`robustmargin.fit_dose_response` with the lower asymptote fixed at ``a`` (the profile
+    works on the decreasing curve ``u - (u - l) F(z)``, so it is the lower asymptote that the
+    curve approaches beyond the data). Its parameters seed one optimiser start per ``theta``
+    (:func:`_wall_start`); no number from it is ever reported.
+
+    :attr:`params` is ``None`` where the definition is not ``absolute``, where the lower asymptote
+    is fixed, or where the refit raises (a numerical or validation error) or ends with a status
+    other than ``Status.OK``. That is a missing optimiser start, not a substitute result: the
+    profile value then comes from the other starts alone. :attr:`raised` tells the two failures
+    apart: only a refit that raised is reported to the caller, because a refit whose status is
+    not ``OK`` means there is no wall curve to start from.
+    """
+
+    fit: Fit
+    definition: Definition
+
+    @cached_property
+    def _outcome(self) -> tuple[tuple[float, float, float] | None, bool]:
+        """``(params, raised)``: the refit's ``(mu, s, upper)`` or ``None``, and whether the refit
+        raised an error, a numerical or a validation one."""
+        fit = self.fit
+        if self.definition.kind != "absolute" or fit.params is None or fit.params["lower"].fixed:
+            return None, False
+        upper_param = fit.params["upper"]
+        cells = fit.cells
+        try:
+            obs = Observations.from_counts(
+                fit.axis,
+                severity=[c.severity for c in cells],
+                successes=[c.successes for c in cells],
+                trials=[c.trials for c in cells],
+                outcome=fit.outcome,
+                direction="decreasing",
+            )
+            wall = fit_dose_response(
+                obs,
+                model="binomial",
+                link=cast(Literal["probit", "logit", "cloglog"], fit.link),
+                upper=upper_param.value if upper_param.fixed else "estimate",
+                lower=self.definition.value,
+            )
+        except (np.linalg.LinAlgError, ValueError):
+            return None, True
+        if wall.status is not Status.OK or wall.params is None:
+            return None, False
+        return (
+            wall.params["mu"].value,
+            wall.params["s"].value,
+            wall.params["upper"].value,
+        ), False
+
+    @property
+    def params(self) -> tuple[float, float, float] | None:
+        """``(mu, s, upper)`` of the wall refit, or ``None`` when there is no wall start."""
+        return self._outcome[0]
+
+    @property
+    def raised(self) -> bool:
+        """Whether the refit ran and raised (so there is no wall start). Reading it does not
+        start the refit: it is ``False`` while the refit has not been needed."""
+        return "_outcome" in self.__dict__ and self._outcome[1]
+
+
+def _wall_start(
+    wall: _WallCurve, z_chart: _ZStarLogLikelihood, interval: tuple[float, float]
+) -> _Start | None:
+    """One optimiser start in the ``z*`` chart that reproduces the wall refit's curve at the
+    candidate ``theta`` of ``z_chart``, or ``None``.
+
+    The wall refit has ``(mu_w, s_w, u_w)`` and lower asymptote ``a``. The curve through the
+    target at ``theta`` with the same ``s_w`` and the same upper asymptote has
+    ``z* = (theta - mu_w) / s_w``. With both asymptotes estimated the free coordinate is the logit
+    of the share ``t / t_max`` where ``t = (u_w - a) / F(z*)`` (the chart's own construction), and
+    with only the lower one estimated there is none. The start is an optimiser start only: the
+    value it reaches is the attained log-likelihood of a feasible curve, used under the same rule
+    as every other alternative. ``None`` when there is no wall refit, when ``z*`` is outside
+    ``interval`` (the chart's feasible ``z*`` values), or when the share is not defined or is at
+    least one: the refit's upper asymptote is then not reachable at that ``z*`` with a
+    non-negative lower asymptote, and a clipped share would start from a different curve.
+    """
+    params = wall.params
+    if params is None:
+        return None
+    mu_w, s_w, upper_w = params
+    z_star = (z_chart.theta - mu_w) / s_w
+    lo, hi = interval
+    if not (math.isfinite(z_star) and lo < z_star < hi):
+        return None
+    extra: list[float] = []
+    if z_chart.estimate_lower and z_chart.estimate_upper:
+        f, s = _cdf_and_survival(z_star, z_chart.link)
+        a = z_chart.definition.value
+        t_max = min(_ratio_or_inf(1.0 - a, f), _ratio_or_inf(a, s))
+        if not (0.0 < t_max < math.inf and f > 0.0):
+            return None
+        share = ((upper_w - a) / f) / t_max
+        if not share < 1.0:
+            return None
+        extra = [_share_logits(share)[0]]
+    return z_chart, np.array([math.log(s_w), z_star, *extra], dtype=np.float64)
+
+
 def _alternative_starts(
-    fit: Fit, first_chart: _MuSubstitutedLogLikelihood, first_start: NDArray[np.float64]
-) -> list[_Start]:
+    fit: Fit,
+    first_chart: _MuSubstitutedLogLikelihood,
+    first_start: NDArray[np.float64],
+    wall: _WallCurve | None = None,
+) -> tuple[list[_Start], _Start | None]:
     """The starts for the optimiser's alternative runs, chosen by deterministic scans of
     log-likelihood values (no optimiser). Each scan is over ``log s`` (steps of
     :data:`_SCAN_LOG_S_STEP`, from eight orders of magnitude below the tested range's span to
@@ -1344,6 +1458,11 @@ def _alternative_starts(
     chart over ``log s`` and its free coordinate. Otherwise, where ``z*`` does not move with the
     asymptotes, the first chart is scanned over ``log s`` crossed with every estimated asymptote
     coordinate at the logits of :data:`_SCAN_ASYMPTOTE_SHARES`.
+
+    Returns ``(starts, wall_start)``. With ``wall`` given, ``wall_start`` is the one further start,
+    kept apart from the scanned ``starts``, that reproduces the wall refit's curve at this
+    ``theta`` in the ``z*`` chart (:func:`_wall_start`); the scan over ``z*`` cannot reach it where
+    the constrained maximum lies far beyond the tested range. It is ``None`` without a wall refit.
     """
     theta = first_chart.theta
     log_s = _scan_log_s_grid(_tested_span(fit))
@@ -1367,7 +1486,7 @@ def _alternative_starts(
         lower_value=first_chart.lower_value,
         upper_value=first_chart.upper_value,
     ):
-        return _asymptote_scan_starts(first_chart, z_chart, log_s)
+        return _asymptote_scan_starts(first_chart, z_chart, log_s), None
 
     interval = _zstar_feasible_interval(
         first_chart.definition,
@@ -1378,7 +1497,7 @@ def _alternative_starts(
         upper_value=first_chart.upper_value,
     )
     if interval is None:
-        return []
+        return [], None
     starts: list[_Start] = []
     lo, hi = interval
     steps = round(_SCAN_Z_STAR_RANGE / _SCAN_Z_STAR_STEP)
@@ -1420,6 +1539,7 @@ def _alternative_starts(
             (z_chart, np.array([log_s[i], combos[best_combo[i]][0], *combos[best_combo[i]][1]]))
             for i in picks
         ]
+    wall_start = _wall_start(wall, z_chart, interval) if wall is not None else None
 
     for face in _face_charts(first_chart, interval):
         assert fit.params is not None
@@ -1437,7 +1557,7 @@ def _alternative_starts(
             [float(expit(e[0])) if face.free_upper else face.upper_value for e in extras],
         )
         starts += [(face, np.array([log_s[i], *extras[face_best[i]]])) for i in face_picks]
-    return starts
+    return starts, wall_start
 
 
 def _asymptote_scan_starts(
@@ -1515,18 +1635,32 @@ def _failed_alternatives_warning(count: int) -> str:
     )
 
 
-def _best_alternative_fit(
+def _wall_refit_warning() -> str:
+    return (
+        "intervals.profile_interval: the refit of the curve with the approaching asymptote "
+        "fixed at the target raised an error (numerical or validation), so the profile inner fit "
+        "had no start from it; the profile values are those of the other starts"
+    )
+
+
+def _alternative_fits(
     fit: Fit,
     first_chart: _MuSubstitutedLogLikelihood,
     first_start: NDArray[np.float64],
     on_failed_alternative: Callable[[], None] | None = None,
-) -> tuple[float, GenericLikelihoodModel, NDArray[np.float64]] | None:
-    """BFGS from each of :func:`_alternative_starts`, in the ``z*`` chart, the box-face chart or
-    the first chart as each start says. Returns the best finite ``(llf, model, params)``, or
-    ``None`` when no start completed. ``on_failed_alternative`` is called once for each start
-    whose run raises or finishes with a non-finite log-likelihood."""
-    best: tuple[float, GenericLikelihoodModel, NDArray[np.float64]] | None = None
-    for chart, alt_start in _alternative_starts(fit, first_chart, first_start):
+    wall: _WallCurve | None = None,
+) -> list[tuple[float, GenericLikelihoodModel, NDArray[np.float64], bool]]:
+    """BFGS from each of :func:`_alternative_starts` (the scanned starts, then the wall start),
+    in the ``z*`` chart, the box-face chart or the first chart as each start says. Returns
+    ``(llf, model, params, is_wall)`` of every start that completed, in that order, ``is_wall``
+    marking the wall start. ``on_failed_alternative`` is called once for each start whose run
+    raises or finishes with a non-finite log-likelihood."""
+    scanned, wall_start = _alternative_starts(fit, first_chart, first_start, wall)
+    runs = [(chart, alt_start, False) for chart, alt_start in scanned]
+    if wall_start is not None:
+        runs.append((wall_start[0], wall_start[1], True))
+    completed: list[tuple[float, GenericLikelihoodModel, NDArray[np.float64], bool]] = []
+    for chart, alt_start, is_wall in runs:
         model = GenericLikelihoodModel(
             first_chart.successes,
             np.ones((first_chart.severity.size, alt_start.size)),
@@ -1543,9 +1677,8 @@ def _best_alternative_fit(
             if on_failed_alternative is not None:
                 on_failed_alternative()
             continue
-        if best is None or alt_llf > best[0]:
-            best = (alt_llf, model, np.asarray(result.params, dtype=np.float64))
-    return best
+        completed.append((alt_llf, model, np.asarray(result.params, dtype=np.float64), is_wall))
+    return completed
 
 
 def _estimated_profile_llf(
@@ -1556,15 +1689,28 @@ def _estimated_profile_llf(
     on_failed_alternative: Callable[[], None] | None = None,
     llf_hat: float | None = None,
     chi2_target: float | None = None,
+    wall: _WallCurve | None = None,
 ) -> float | None:
     """``ell_p(theta)`` for a profile in which an asymptote is estimated (this module's
     docstring): the first run from the fit's own parameters, then -- unless both asymptotes are
     fixed at ``(1, 0)``, where the problem is concave along the constraint -- alternative starts
     chosen by scans of log-likelihood values, run in the ``z*`` chart where it applies (and, at a
     finite end of its feasible interval, on that box face) and otherwise in the first chart. The
-    best alternative is used only if it beats the first run by more than the Newton tolerance. An
+    best of the scanned alternatives and, where it is a different run, the best alternative overall
+    (the wall start can be that) are each Newton-polished if they beat the first run by more than
+    the Newton tolerance. ``ell_p`` is the largest of the first run's value and the BFGS and
+    polished values of those, so it is never below the value obtained without a wall start. An
     alternative that raises is skipped and reported through ``on_failed_alternative``, once per
     start; the first run's own failure returns ``None``.
+
+    For ``absolute`` targets with an estimated lower asymptote the alternatives include a wall
+    start (:class:`_WallCurve`): the refit with the lower asymptote fixed at the target, placed in
+    the ``z*`` chart at this ``theta``. It lets the optimiser reach the constrained maximum that
+    lies at the reachability wall far beyond the tested range. It is an optimiser start like the
+    others, so the value is always one attained by a feasible curve, and the wall start can only
+    raise ``ell_p``.
+    ``wall`` shares the refit between calls (one per interval); left unset, a call makes its own,
+    and only if the alternatives run.
 
     When ``llf_hat`` and ``chi2_target`` are both given and the first run's value already has
     ``2 * (llf_hat - ell) - chi2_target < 0``, the alternatives are not run and the first run's
@@ -1615,14 +1761,37 @@ def _estimated_profile_llf(
         and 2.0 * (llf_hat - pilot_best) - chi2_target < 0.0
     )
     if not fixed_unit_range and not sign_settled:
-        best_alternative = _best_alternative_fit(fit, loglike_fn, start, on_failed_alternative)
-        if best_alternative is not None and (
-            best_alternative[0] > pilot_best + _NEWTON_DECREMENT_TOLERANCE
-        ):
-            llf, alt_model, alt_params = best_alternative
-            alt_polished = _newton_polished_llf(alt_model, alt_params)
-            if alt_polished is not None and math.isfinite(alt_polished):
-                llf = max(llf, alt_polished)
+        completed = _alternative_fits(
+            fit,
+            loglike_fn,
+            start,
+            on_failed_alternative,
+            wall if wall is not None else _WallCurve(fit, definition),
+        )
+        best_scanned: tuple[float, GenericLikelihoodModel, NDArray[np.float64]] | None = None
+        best_overall: tuple[float, GenericLikelihoodModel, NDArray[np.float64]] | None = None
+        for alt_llf, alt_model, alt_params, is_wall in completed:
+            if not is_wall and (best_scanned is None or alt_llf > best_scanned[0]):
+                best_scanned = (alt_llf, alt_model, alt_params)
+            if best_overall is None or alt_llf > best_overall[0]:
+                best_overall = (alt_llf, alt_model, alt_params)
+        best = pilot_best
+        polished_models: set[int] = set()
+        for chosen in (best_scanned, best_overall):
+            if (
+                chosen is None
+                or id(chosen[1]) in polished_models
+                or not chosen[0] > pilot_best + _NEWTON_DECREMENT_TOLERANCE
+            ):
+                continue
+            polished_models.add(id(chosen[1]))
+            candidate = chosen[0]
+            polished = _newton_polished_llf(chosen[1], chosen[2])
+            if polished is not None and math.isfinite(polished):
+                candidate = max(candidate, polished)
+            best = max(best, candidate)
+        if best > pilot_best:
+            llf = best
     if not math.isfinite(llf) or llf <= _UNREACHABLE_LOGLIKELIHOOD / 2.0:
         return None
     return llf
@@ -1635,6 +1804,7 @@ def _profile_interval_estimated(
     chi2_target = float(chi2.ppf(level, 1))
 
     failed_alternatives = 0
+    wall = _WallCurve(fit, definition)
 
     def count_failed_alternative() -> None:
         nonlocal failed_alternatives
@@ -1652,6 +1822,7 @@ def _profile_interval_estimated(
             on_failed_alternative=count_failed_alternative,
             llf_hat=llf_hat if sign_only else None,
             chi2_target=chi2_target if sign_only else None,
+            wall=wall,
         )
         if llf_p is None:
             return None
@@ -1680,12 +1851,14 @@ def _profile_interval_estimated(
         scale=fit.axis.scale,
         subdivisions=_ESTIMATED_BRACKET_SUBDIVISIONS,
     )
-    if not failed_alternatives:
+    notes: list[str] = []
+    if failed_alternatives:
+        notes.append(_failed_alternatives_warning(failed_alternatives))
+    if wall.raised:
+        notes.append(_wall_refit_warning())
+    if not notes:
         return result
-    return replace(
-        result,
-        warnings=(*result.warnings, _failed_alternatives_warning(failed_alternatives)),
-    )
+    return replace(result, warnings=(*result.warnings, *notes))
 
 
 def profile_interval(
