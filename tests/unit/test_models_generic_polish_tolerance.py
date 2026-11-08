@@ -55,7 +55,11 @@ _R21_SUCCESSES = [6, 6, 6, 3]
 
 
 def _scan_design() -> tuple[Observations, dict[str, Any], bool]:
-    """Pilot, then an alternative start, then the scan, each beating the one before."""
+    """Pilot, then a scan start that beats it; alternative starts are disabled in every run.
+
+    Where the pilot lands differs across platforms, so alternative starts are switched off and
+    the only possible replacement is the scan's, at polish index 1.
+    """
     obs = Observations.from_counts(
         _LOG,
         severity=_GAP_SEVERITY,
@@ -123,7 +127,9 @@ def _fit_first_call_only(
 
     monkeypatch.setattr(GenericLikelihoodModel, "fit", spy)
     monkeypatch.setattr(models_module, "_fit_generic", generic)
-    obs, kwargs, _ = design
+    obs, kwargs, scan_design = design
+    if scan_design:
+        monkeypatch.setattr(models_module, "_ALTERNATIVE_STARTS", ())
     fitted = fit_dose_response(obs, model="binomial", **kwargs)
     return fitted, newton_inputs
 
@@ -141,16 +147,19 @@ def _recorded_bfgs_values(
     return _recorded(monkeypatch, design)[1]
 
 
-def test_scan_design_has_an_alternative_start_replacement_and_a_scan_replacement(
+def test_scan_design_has_a_scan_start_that_replaces_the_pilot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Polish 0 is the pilot's, 1 the alternative start that replaced it, 2 the scan's.
+    # Polish 0 is the pilot's, 1 the scan's. A platform whose pilot already lands in the scan's
+    # basin leaves no replacement to test; that is a failure of this premise, not a skip.
     inputs = _recorded_bfgs_values(monkeypatch, _scan_design())
 
-    assert len(inputs) == 3
+    assert len(inputs) == 2, (
+        f"expected the scan to replace the pilot; got polish inputs {inputs} "
+        "(the pilot may have landed in the scan's basin on this platform)"
+    )
     assert inputs[1] > inputs[0] + 1e-6
-    assert inputs[2] > inputs[1] + 1e-6
-    assert abs(inputs[2]) > 200.0
+    assert abs(inputs[1]) > 200.0
 
 
 def test_alternative_design_replaces_the_pilot_once(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -163,7 +172,7 @@ def test_alternative_design_replaces_the_pilot_once(monkeypatch: pytest.MonkeyPa
 
 _DESIGNS = {
     "alternative_start": (_alternative_design, 1, False),
-    "scan": (_scan_design, 2, True),
+    "scan": (_scan_design, 1, True),
 }
 
 
@@ -177,7 +186,8 @@ def _fit_with_replacement_polish_reported(
     bfgs_value = inputs[replacement]
     with monkeypatch.context() as patch:
         if not scan_enabled:
-            # Leave no scan replacement to hide the one under test.
+            # Leave no scan replacement to hide the one under test. (The scan design disables
+            # alternative starts inside the fit helper, in every run.)
             patch.setattr(models_module, "_scan_starts", lambda *args, **kwargs: [])
         fitted, _ = _fit_first_call_only(patch, design, {replacement: bfgs_value - below_bfgs})
     return unpatched, fitted, bfgs_value
