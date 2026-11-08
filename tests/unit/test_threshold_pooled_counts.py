@@ -169,38 +169,28 @@ class TestSystemBAxis1FailsAtBaseline:
         assert t.baseline.lo <= t.baseline.rate <= t.baseline.hi
 
 
-class TestSystemBAxis1LeftCensored:
-    """``baseline_fraction(0.5)`` gives a target ``P* ~= 0.245`` (half the control's own 98/200
-    rate: the fallback path has no fitted ``u``, so the control's *observed* rate is used). At
-    severity 0.01 the result is
-    0/300, whose exact one-sided 95% upper bound is ``1 - 0.05**(1/300) ~= 0.0099`` -- far below
-    0.245 -- while the control (98/200) clears 0.245 easily, so the result is ``LEFT`` with the
-    bound reported at ``hi=0.01``. (Both tests are at ``c4 = 0.9875``, where the ``0/300``
-    upper bound is 0.0145 and the control's lower bound is about 0.40.)
+class TestSystemBAxis1BaselineFractionIsRefused:
+    """On the separated ``system_b_axis_1`` fit there is no fitted upper asymptote, so
+    ``baseline_fraction(0.5)`` has no target: the control's own 98/200 rate is only an estimate of
+    it and the definition is refused. ``absolute`` on the same fit still resolves.
     """
 
-    def test_baseline_fraction_0_5_is_left_censored_at_0_01(self) -> None:
+    def test_baseline_fraction_0_5_raises_on_the_separation_fit(self) -> None:
         obs = _observations_for(
             "system_b_axis_1", axis_name="axis_1", axis_unit="m", axis_scale="log"
         )
         fit = fit_dose_response(obs, model="binomial", link="probit", upper="estimate", lower=0.0)
         assert fit.status is Status.SEPARATION
 
-        t = threshold(
-            fit,
-            definition=Definition.baseline_fraction(0.5),
-            interval_method="profile",
-            level=_LEVEL,
-        )
-
-        assert t.censoring is Censoring.LEFT
-        assert t.value is None
-        assert t.hi == 0.01
-        assert t.lo is None
-        assert t.interval_method == "exact_bound"
-        assert t.status is fit.status is Status.SEPARATION
-        assert t.baseline is None
-        assert t.grid is not None
+        with pytest.raises(ValueError, match="baseline_fraction") as excinfo:
+            threshold(
+                fit,
+                definition=Definition.baseline_fraction(0.5),
+                interval_method="profile",
+                level=_LEVEL,
+            )
+        assert "SEPARATION" in str(excinfo.value)
+        assert "absolute(" in str(excinfo.value)
 
 
 class TestSystemCAxis1NonMonotoneContradiction:

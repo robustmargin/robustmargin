@@ -291,9 +291,14 @@ def test_system_b_axis_1_absolute_0_95_fails_at_baseline() -> None:
     assert t.status is Status.FAILS_AT_BASELINE
 
 
-def test_system_b_axis_1_baseline_fraction_0_5_is_left_censored_at_0_01() -> None:
-    """Worked case: the lowest nonzero level already fails."""
-    from robustmargin import Axis, Definition, Observations, fit_dose_response, threshold
+def test_system_b_axis_1_baseline_fraction_0_5_is_refused_on_the_failed_fit() -> None:
+    """Pins the refusal: on a failed fit there is no fitted upper asymptote, and the control's
+    observed rate is only an estimate of it, so ``baseline_fraction(p)`` raises and names
+    ``absolute(a)`` instead of resolving a plug-in target. The same counts with ``absolute``
+    still give a result."""
+    import pytest
+
+    from robustmargin import Axis, Definition, Observations, Status, fit_dose_response, threshold
 
     severity, successes, trials = _load_matrix_counts()["system_b_axis_1"]
     axis = Axis(name="axis_1", unit="m", scale="log")
@@ -306,12 +311,15 @@ def test_system_b_axis_1_baseline_fraction_0_5_is_left_censored_at_0_01() -> Non
         direction="decreasing",
     )
     fit = fit_dose_response(obs, model="binomial", link="probit", upper="estimate", lower=0.0)
-    t = threshold(
-        fit, definition=Definition.baseline_fraction(0.5), interval_method="profile", level=0.95
-    )
+    assert fit.status is Status.SEPARATION
 
-    assert t.censoring is Censoring.LEFT
-    assert t.hi == 0.01
+    with pytest.raises(ValueError, match="baseline_fraction") as excinfo:
+        threshold(
+            fit, definition=Definition.baseline_fraction(0.5), interval_method="profile", level=0.95
+        )
+    assert "SEPARATION" in str(excinfo.value)
+    assert "absolute(" in str(excinfo.value)
+    threshold(fit, definition=Definition.absolute(0.5), interval_method="profile", level=0.95)
 
 
 def test_fieller_ratio_on_system_a_axis_1_halves_propagates_separation() -> None:

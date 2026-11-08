@@ -77,8 +77,7 @@ the sequence):
    severities (``None`` if ``fail(x_K)`` does not fire). Both set is a bracket with ``lo < hi``;
    exactly one set is a one-sided bound at ``c``, with a warning naming the side and ``c``;
    neither set reports no bounds. Nothing is rescanned at ``level`` and no bound is ever at the
-   control. All of this is against the resolved target: on a failed fit under ``baseline_fraction``
-   that target comes from the control's observed rate.
+   control. All of this is against the resolved target.
 """
 
 from __future__ import annotations

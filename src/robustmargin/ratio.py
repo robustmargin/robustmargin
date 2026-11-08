@@ -390,7 +390,7 @@ def _theta_variance_for(t: Threshold) -> float:
     ``intervals.delta_interval``'s own ``max(var_theta, 0.0)``. An increasing threshold's
     variance is computed on its complementary decreasing view, which gives the same ``Var(theta)``.
     """
-    inputs, _ = _solve_inputs(t.definition, fit=t.fit)
+    inputs = _solve_inputs(t.definition, fit=t.fit)
     return max(_theta_variance(inputs.fit, definition=inputs.definition, target=inputs.target), 0.0)
 
 

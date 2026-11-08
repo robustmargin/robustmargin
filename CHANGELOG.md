@@ -53,6 +53,12 @@ minor release may change the public API, and every such change carries a migrati
   the ratio of severities does not depend on which way each outcome runs.
 
 ### Changed
+- **Breaking change: `baseline_fraction` refuses on a failed fit.** `threshold()` with
+  `Definition.baseline_fraction(p)` on a fit whose status is not `OK` raises `ValueError`, as
+  `baseline_multiple` does. It previously used the control's observed rate as a fixed target
+  `p·k₀/n₀`, whose exact claims carry no coverage guarantee for the definition's own target
+  `p·P(0)`. This includes the `UNREACHABLE` result a control with no events (`0/n`) used to give. Migration: state the target explicitly with `Definition.absolute(p * k0 / n0)` if the
+  plug-in is what you want, or refit so the fit converges.
 - **Behavioural change: `direction="increasing"` no longer raises.** `fit_dose_response`, `Fit` and
   `Threshold` used to refuse an increasing binomial outcome; a call that raised now returns a
   result. Code that caught the `ValueError` to detect an unsupported direction no longer sees it.

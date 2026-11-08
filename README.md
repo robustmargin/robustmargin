@@ -173,8 +173,9 @@ multiple of zero is not a threshold, so `lower` must be estimated (or fixed abov
 `lower=0.0` over a control that has events is reported as `CONTROL_INCOMPATIBLE`, and
 `baseline_multiple` raises for a fixed `lower` of zero. It also raises `ValueError` on any failed
 fit (`SEPARATION` or `NOT_CONVERGED`), because a multiple of the control's observed rate would be
-an uncovered target. Use `Definition.absolute(a)` then, or a converged refit (for example with
-`lower` fixed above zero), and catch the `ValueError` per job in a sweep.
+an uncovered target; `baseline_fraction(p)` raises on a failed fit for the same reason. Use
+`Definition.absolute(a)` then, or a converged refit (for example with `lower` fixed above zero),
+and catch the `ValueError` per job in a sweep.
 
 ```python
 from robustmargin import (

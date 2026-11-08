@@ -118,13 +118,11 @@ class Threshold:
     - trials are independent;
     - the target is fixed, as it is under ``absolute``.
 
-    **A target taken from the control.** On a failed fit (``SEPARATION`` or ``NOT_CONVERGED``),
-    ``baseline_fraction(p)`` resolves its target from the control's observed rate, ``p * k0 / n0``
-    for ``k0`` successes in ``n0`` control trials. The exact claims are then tests against that
-    plug-in target. They carry no coverage guarantee for ``p`` times the true zero-severity rate,
-    which is the quantity the definition names, and the joint bound above is not proved for a
-    target that depends on the control's counts. For a covered claim on a failed fit, use
-    ``absolute(a)``. ``baseline_multiple`` has no failed-fit target: it raises.
+    **No target from the control.** On any fit whose status is not ``OK``,
+    ``baseline_fraction`` and ``baseline_multiple`` raise: the control's observed rate ``k0 / n0``
+    is only an estimate of the zero-severity rate, and exact claims against a target built from it
+    carry no coverage guarantee for the quantity the definition names. For a covered claim on a
+    failed fit, use ``absolute(a)``.
 
     **Exact ties.** A claim is read non-strictly at the tested severities: a lower bound means the
     true rate there is at least the target, an upper bound that it is at most the target. If a
@@ -470,20 +468,16 @@ def _control_cell_or_none(fit: Fit) -> Cell | None:
     return None
 
 
-def _resolve_target(definition: Definition, *, fit: Fit) -> tuple[float, str | None]:
-    """The already-resolved target performance ``P*``, on the scale of the outcome as counted,
-    plus an optional warning naming where an asymptote came from.
+def _resolve_target(definition: Definition, *, fit: Fit) -> float:
+    """The already-resolved target performance ``P*``, on the scale of the outcome as counted.
 
     ``absolute(a)`` never needs an asymptote at all: ``P* = a``. The other definitions need the
-    asymptotes: the fitted values when ``fit.status is Status.OK``, or -- since there are no
-    fitted asymptotes on the exact-bound fallback path -- the zero-severity control cell's own
-    observed rate in place of the upper asymptote for ``baseline_fraction``, with a warning naming
-    that substitution. ``baseline_fraction`` belongs to a decreasing fit and ``baseline_multiple``
-    to an increasing one; the other pairing raises. A baseline at or below zero has no multiple, so
-    ``baseline_multiple`` raises for a ``lower`` fixed at zero. It also raises on any failed fit,
-    where there is no fitted baseline and a multiple of the control's observed rate would be an
-    uncovered target, and on a linear axis, where the lower asymptote is not the performance at
-    zero severity.
+    asymptotes, which exist only when ``fit.status is Status.OK``. ``baseline_fraction`` belongs
+    to a decreasing fit and ``baseline_multiple`` to an increasing one; the other pairing raises.
+    Both raise on any failed fit, where there is no fitted baseline and a target built from the
+    control's observed rate would be uncovered. A baseline at or below zero has no multiple, so
+    ``baseline_multiple`` raises for a ``lower`` fixed at zero. It also raises on a linear axis,
+    where the lower asymptote is not the performance at zero severity.
 
     ``relative(p)`` is the fraction ``p`` of the dynamic range traversed from the zero-severity
     end: ``u - p * (u - l)`` for a decreasing fit and ``l + p * (u - l)`` for an increasing one.
@@ -510,7 +504,7 @@ def _resolve_target(definition: Definition, *, fit: Fit) -> tuple[float, str | N
         )
 
     if definition.kind == "absolute":
-        return definition.value, None
+        return definition.value
 
     if fit.status is Status.OK:
         assert fit.params is not None
@@ -523,25 +517,18 @@ def _resolve_target(definition: Definition, *, fit: Fit) -> tuple[float, str | N
                 'multiple of zero is not a threshold. Refit with lower="estimate" or a fixed '
                 "lower above zero"
             )
-        warning = None
     else:
         if definition.kind == "relative":
-            # `relative(p)` needs BOTH asymptotes. When the fit failed, one comes from the control
-            # cell's observed rate, but there is no source for the other, because nothing in the
-            # data speaks to the far asymptote.
-            # Substituting `0` for it would silently turn `relative(p)` into
-            # `baseline_fraction(1 - p)` and, whenever the true asymptote is elsewhere, aim at a
-            # target that is easier to clear -- an optimistic threshold produced on a failed fit
-            # by an assumption nothing in the data supports, with no warning naming it.
-            # Refuse instead, as this function already refuses when there is no control cell to
-            # supply the other.
-            anchored = "baseline_multiple(k)" if increasing else "baseline_fraction(p)"
+            # `relative(p)` needs BOTH asymptotes, and a failed fit has neither. Nothing in the
+            # data speaks to the far asymptote, and substituting `0` for it would silently turn
+            # `relative(p)` into `baseline_fraction(1 - p)` and aim at a target that is easier to
+            # clear -- an optimistic threshold from an assumption nothing in the data supports.
+            # Refuse instead.
             raise ValueError(
                 f"threshold: definition.kind='relative' needs both asymptotes to resolve a "
                 f"target, and fit.status is {fit.status!r} (no fitted asymptotes). There is no "
                 "defensible fallback for the far asymptote -- nothing in the data speaks to "
-                "it -- so no target is resolved. Use absolute(a), which needs no asymptote, or "
-                f"{anchored}, which needs only the control rate"
+                "it -- so no target is resolved. Use absolute(a), which needs no asymptote"
             )
         control = _control_cell_or_none(fit)
         anchor = "lower" if increasing else "upper"
@@ -549,32 +536,32 @@ def _resolve_target(definition: Definition, *, fit: Fit) -> tuple[float, str | N
             raise ValueError(
                 f"threshold: definition.kind={definition.kind!r} needs the {anchor} asymptote to "
                 f"resolve a target, fit.status is {fit.status!r} (no fitted asymptotes), and "
-                "there is no zero-severity control cell to fall back to"
+                "there is no zero-severity control cell"
             )
-        if definition.kind == "baseline_multiple":
-            raise ValueError(
-                "threshold: definition.kind='baseline_multiple' has no target on a failed fit "
-                f"(fit.status is {fit.status.value}): the control's observed rate "
-                f"{control.successes}/{control.trials} is only an estimate of the rate at zero "
-                "severity, and exact claims about a multiple of an estimate carry no coverage "
-                "guarantee. Use absolute(a), or refit so that the fit converges, for example "
-                "with lower fixed above zero"
+        if fit.status is Status.CONTROL_INCOMPATIBLE:
+            asymptote = "lower" if increasing else "upper"
+            hint = (
+                f'estimate the {asymptote} asymptote ({asymptote}="estimate"): the one fixed at '
+                "the control end contradicts the control"
             )
-        upper = lower = control.successes / control.trials
-        warning = (
-            f"threshold: fit.status is {fit.status!r} (no fitted asymptotes); the target for "
-            f"definition.kind={definition.kind!r} was resolved from the zero-severity control "
-            f"cell's observed rate ({control.successes}/{control.trials} = {upper!r}), not a "
-            f"fitted {anchor} asymptote"
+        else:
+            refit_hint = ", for example with lower fixed above zero" if increasing else ""
+            hint = f"refit so that the fit converges{refit_hint}"
+        raise ValueError(
+            f"threshold: definition.kind={definition.kind!r} has no target on a failed fit "
+            f"(fit.status is {fit.status.value}): the control's observed rate "
+            f"{control.successes}/{control.trials} is only an estimate of the rate at zero "
+            "severity, and exact claims about a target taken from an estimate carry no coverage "
+            f"guarantee. Use absolute(a), or {hint}"
         )
 
     if definition.kind == "baseline_fraction":
-        return definition.value * upper, warning
+        return definition.value * upper
     if definition.kind == "baseline_multiple":
-        return definition.value * lower, warning
+        return definition.value * lower
     if increasing:
-        return lower + definition.value * (upper - lower), warning  # relative
-    return upper - definition.value * (upper - lower), warning  # relative
+        return lower + definition.value * (upper - lower)  # relative
+    return upper - definition.value * (upper - lower)  # relative
 
 
 @dataclass(frozen=True)
@@ -589,7 +576,7 @@ class _SolveInputs:
     original_target: float | None
 
 
-def _solve_inputs(definition: Definition, *, fit: Fit) -> tuple[_SolveInputs, str | None]:
+def _solve_inputs(definition: Definition, *, fit: Fit) -> _SolveInputs:
     """Resolve the target for ``fit`` and put the problem in the form every downstream rule is
     written for. A decreasing fit passes through untouched. An increasing fit is replaced by its
     complementary decreasing view (:func:`robustmargin.models._mirror_fit`): performance ``1 - P``,
@@ -597,15 +584,14 @@ def _solve_inputs(definition: Definition, *, fit: Fit) -> tuple[_SolveInputs, st
     ``baseline_multiple(k)`` is carried as it is -- its mirrored target ``1 - k * (1 - u')`` is
     computed from the candidate asymptotes by the interval code. Severity is never mirrored.
 
-    Returns the inputs and the substitution warning of :func:`_resolve_target`, if any.
     """
-    target, warning = _resolve_target(definition, fit=fit)
+    target = _resolve_target(definition, fit=fit)
     if fit.direction == "decreasing":
-        return _SolveInputs(fit, definition, target, None), warning
+        return _SolveInputs(fit, definition, target, None)
     view_definition = (
         Definition.absolute(1.0 - definition.value) if definition.kind == "absolute" else definition
     )
-    return _SolveInputs(_mirror_fit(fit), view_definition, 1.0 - target, target), warning
+    return _SolveInputs(_mirror_fit(fit), view_definition, 1.0 - target, target)
 
 
 def _reported_baseline(
@@ -699,11 +685,10 @@ def threshold(
         ``definition.kind`` is ``"baseline_fraction"`` and the fit is increasing, or
         ``"baseline_multiple"`` and the fit is decreasing; if ``definition.kind`` is
         ``"baseline_multiple"`` and the fit is ``OK`` with ``lower`` fixed at or below zero (a
-        multiple of zero is not a threshold), or the fit failed, or the axis is linear; if
-        ``definition.kind`` is ``"relative"`` and ``fit.status`` is not ``OK``; or if
-        ``definition.kind`` is ``"baseline_fraction"`` or ``"baseline_multiple"``,
-        ``fit.status`` is not ``OK``, and no zero-severity control cell exists to resolve a target
-        from.
+        multiple of zero is not a threshold), or the axis is linear; if ``definition.kind`` is
+        ``"baseline_fraction"``, ``"baseline_multiple"`` or ``"relative"`` and ``fit.status`` is
+        not ``OK`` (``baseline_fraction`` and ``baseline_multiple`` have no target built from the
+        control's observed rate; with no zero-severity control cell the error says so).
     """
     if interval_method not in _VALID_INTERVAL_METHOD_REQUESTS:
         raise ValueError(
@@ -732,8 +717,8 @@ def threshold(
             "dependence='independent' explicitly"
         )
 
-    inputs, target_warning = _solve_inputs(definition, fit=fit)
-    collected_warnings: list[str] = [] if target_warning is None else [target_warning]
+    inputs = _solve_inputs(definition, fit=fit)
+    collected_warnings: list[str] = []
 
     # Applies whatever the resulting censoring or status, because every threshold rule and every
     # fitted model assume the true performance curve is monotone in severity. Never changes
