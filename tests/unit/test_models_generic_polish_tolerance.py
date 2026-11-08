@@ -50,15 +50,22 @@ _GAP_SEVERITY = [
 ]
 _GAP_SUCCESSES = [1, 26, 14, 27, 1, 12]
 _GAP_TRIALS = [10, 49, 26, 47, 20, 14]
+# The local maximum with log-likelihood -321.078 of the scan design, on the centred-and-scaled
+# covariate: (mu, log s, a) with the lower asymptote 0.95 * expit(a). The pilot starts here.
+_PINNED_MU = -1.9991808847892973
+_PINNED_LOG_S = -1.7001946630811462
+_PINNED_A = 0.12510141733458932
+
 _R21_SEVERITY = [54.966, 84.166, 95.205, 95.73]
 _R21_SUCCESSES = [6, 6, 6, 3]
 
 
 def _scan_design() -> tuple[Observations, dict[str, Any], bool]:
-    """Pilot, then a scan start that beats it; alternative starts are disabled in every run.
+    """A pilot pinned to a local maximum, then a scan start that beats it.
 
-    Where the pilot lands differs across platforms, so alternative starts are switched off and
-    the only possible replacement is the scan's, at polish index 1.
+    Where an unpinned pilot's BFGS lands differs across platforms, so the pilot is started at a
+    known local maximum (log-likelihood -321.078) and alternative starts are switched off in every
+    run. The only possible replacement is the scan's (log-likelihood -321.060), at polish index 1.
     """
     obs = Observations.from_counts(
         _LOG,
@@ -82,6 +89,12 @@ def _alternative_design() -> tuple[Observations, dict[str, Any], bool]:
         direction="decreasing",
     )
     return obs, {"link": "logit", "upper": 0.95, "lower": 0.05}, False
+
+
+def _pinned_pilot_start(*args: Any, **kwargs: Any) -> tuple[float, float, float, float, bool]:
+    """A pilot start at the pinned local maximum, whatever the data and platform."""
+    lower = 0.95 / (1.0 + math.exp(-_PINNED_A))
+    return _PINNED_MU, math.exp(_PINNED_LOG_S), 0.95, lower, False
 
 
 def _fit_first_call_only(
@@ -130,6 +143,7 @@ def _fit_first_call_only(
     obs, kwargs, scan_design = design
     if scan_design:
         monkeypatch.setattr(models_module, "_ALTERNATIVE_STARTS", ())
+        monkeypatch.setattr(models_module, "_pilot_start", _pinned_pilot_start)
     fitted = fit_dose_response(obs, model="binomial", **kwargs)
     return fitted, newton_inputs
 
@@ -156,7 +170,7 @@ def test_scan_design_has_a_scan_start_that_replaces_the_pilot(
 
     assert len(inputs) == 2, (
         f"expected the scan to replace the pilot; got polish inputs {inputs} "
-        "(the pilot may have landed in the scan's basin on this platform)"
+        "(the pinned pilot may have left its local maximum on this platform)"
     )
     assert inputs[1] > inputs[0] + 1e-6
     assert abs(inputs[1]) > 200.0
