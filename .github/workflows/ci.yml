@@ -106,7 +106,9 @@ jobs:
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     # Each fit_dose_response call also refits the other two links for Diagnostics, which is
     # most of this job's run time. A flag that skips the link comparison would shorten it.
-    timeout-minutes: 75
+    # On identical code a shard has taken from 39 to 75 minutes, depending on the runner, so
+    # the limit leaves room for a slow runner rather than sitting at the typical time.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
