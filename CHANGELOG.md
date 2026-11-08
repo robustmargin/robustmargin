@@ -89,6 +89,13 @@ minor release may change the public API, and every such change carries a migrati
     In that second case a `ratio_interval` built on the threshold now comes back censored with no
     numbers, as it does for any one-sided input. Results whose search never met a failed inner
     fit are unchanged.
+- **Breaking change: `Threshold` rejects `baseline` and `grid` on the wrong status.** It now
+  rejects `baseline` on any status other than `FAILS_AT_BASELINE`, and `grid` on any status other
+  than `SEPARATION` and `NOT_CONVERGED`, including `UNREACHABLE`, `CONTROL_INCOMPATIBLE` and
+  `FAILS_AT_BASELINE`, which previously skipped these checks. No released `threshold()` or
+  `fake_threshold` produces such a result. A hand-built `Threshold` that does now raises
+  `ValueError` at construction, and a hand-edited card fails `from_dict`. Migration: set the field
+  to `None` (`null` in JSON).
 
 ### Fixed
 - **Direct-likelihood fits could stop at a local maximum.** In 0.2.x this affects

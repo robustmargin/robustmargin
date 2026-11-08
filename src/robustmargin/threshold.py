@@ -322,6 +322,20 @@ class Threshold:
                     f"Threshold.lo must not exceed .hi, got lo={self.lo!r}, hi={self.hi!r}"
                 )
 
+        # baseline and grid are each legal only alongside the status they document, whatever the
+        # status, terminal ones included; neither is required by that status (a threshold built
+        # without them has both `None`).
+        if self.baseline is not None and self.status is not Status.FAILS_AT_BASELINE:
+            raise ValueError(
+                "Threshold.baseline may only be set when status is FAILS_AT_BASELINE, got "
+                f"status={self.status!r}"
+            )
+        if self.grid is not None and self.status not in _NONCONVERGENT_STATUSES:
+            raise ValueError(
+                "Threshold.grid may only be set when status is SEPARATION or NOT_CONVERGED, got "
+                f"status={self.status!r}"
+            )
+
         if self.status in _TERMINAL_STATUSES:
             if self.value is not None or self.lo is not None or self.hi is not None:
                 raise ValueError(
@@ -443,20 +457,6 @@ class Threshold:
                     "Threshold.interval_method must be 'profile' or 'delta' when censoring is "
                     f"NONE and status is OK, got {self.interval_method!r}"
                 )
-
-        # baseline/grid only ever *tighten* -- an existing invariant above is never weakened to
-        # admit them. Each is legal only alongside the status it documents; neither is required
-        # by that status (a threshold built without them has both `None`).
-        if self.baseline is not None and self.status is not Status.FAILS_AT_BASELINE:
-            raise ValueError(
-                "Threshold.baseline may only be set when status is FAILS_AT_BASELINE, got "
-                f"status={self.status!r}"
-            )
-        if self.grid is not None and self.status not in _NONCONVERGENT_STATUSES:
-            raise ValueError(
-                "Threshold.grid may only be set when status is SEPARATION or NOT_CONVERGED, got "
-                f"status={self.status!r}"
-            )
 
 
 _VALID_INTERVAL_METHOD_REQUESTS = frozenset({"profile", "delta"})
