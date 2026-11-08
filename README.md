@@ -29,6 +29,13 @@ The statistics are dose-response threshold estimation, the method toxicology and
 use to find the dose at which a response crosses a given level. That is why the worked example
 below uses a classic toxicology dataset: the code is the same whatever the system under test.
 
+For control engineers, the threshold is an empirical analogue of the probabilistic robustness
+margin of randomized robust control (Barmish, Lagoa & Tempo, ACC 1997; Chen, Zhou & Aravena,
+SIAM J. Control Optim. 2008). That margin is the largest radius at which a known model still
+succeeds with probability 1 − ε, averaged over every perturbation up to that radius.
+robustmargin needs no model: it estimates the corresponding point from success counts at held
+severities, with a confidence interval.
+
 robustmargin is designed to sit under evaluation harnesses. A harness applies graded degradations
 to an AI policy, records the pass/fail outcome of each run, and hands severities and counts to
 robustmargin for the threshold statistics. To compare two checkpoints, for example before and

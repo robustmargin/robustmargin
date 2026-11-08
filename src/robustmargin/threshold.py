@@ -664,6 +664,11 @@ def threshold(
     exact tests and interval methods run on performance ``1 - P`` with the target complemented,
     and the result is read back on the outcome as counted (see :class:`Threshold`).
 
+    The result is an empirical analogue of the probabilistic robustness margin of randomized
+    robust control (Barmish, Lagoa and Tempo, 1997). That margin averages success over every
+    perturbation up to a radius, computed from a known model. This threshold is estimated from
+    success counts at held severities of a system observed only through its outcomes.
+
     ``interval_method`` is a *request*, not a promise: every censored or failed result records
     ``"exact_bound"`` regardless of what was requested, because that is the method that actually
     produced its numbers. The order in which the outcomes below are checked is
