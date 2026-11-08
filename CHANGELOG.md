@@ -91,6 +91,9 @@ minor release may change the public API, and every such change carries a migrati
     fit are unchanged.
 
 ### Fixed
+- An increasing fit with `absolute(a)` for a tiny `a` (`0 < a <= 2**-54`) is still `UNREACHABLE`,
+  but its warning now says that `1 - a` rounds to 1 in double precision, instead of claiming that
+  the target is outside the open interval (0, 1).
 - **Direct-likelihood fits could stop at a local maximum.** In 0.2.x this affects
   `fit_dose_response` with an estimated asymptote, or with a fixed one other than `upper=1`,
   `lower=0`. The optimiser ran from a single start, so it could return `OK` at a local maximum

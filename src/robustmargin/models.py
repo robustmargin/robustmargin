@@ -2557,6 +2557,11 @@ def _fit_generic(
             scan_bfgs = _bfgs(scan_start)
             if _finite_llf(scan_bfgs) > scan_best_llf:
                 scan_best, scan_best_llf = scan_bfgs, _finite_llf(scan_bfgs)
+        # A replacement is chosen only when its BFGS value beats the selected result by more than
+        # the switch margin. The judgement then refuses it if its Newton polish falls more than
+        # 1e-8 * (1 + |llf|) below that BFGS value. A reported fit is therefore never more than
+        # that relative tolerance below the best value any stage reached, and a larger drop is a
+        # refusal, never a return to the lower result.
         if scan_best is not None and scan_best_llf > selected_best + _NEWTON_DECREMENT_TOLERANCE:
             bfgs_result = scan_best
             result, caught = _polish(bfgs_result)
