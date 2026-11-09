@@ -5,16 +5,17 @@ are trivial against one: against a target of 0 every ``pass`` is true, and again
 ``fail`` is true for any control with a failure. So ``threshold()`` decides this before any exact
 test, whatever the fit's status, and reports it with no numbers and a warning naming the target.
 
-Two routes reach such a target:
+One route reaches such a target:
 
 * ``Definition.absolute(a)`` with ``a`` of 0, 1, above 1 or below 0 (``Definition`` accepts any
-  finite ``a``; reachability is decided here, not at construction);
-* ``Definition.baseline_fraction(p)`` on a failed fit, where the target is ``p`` times the
-  control's observed rate and the control is ``0/n``, so the target is exactly 0. The warning that
-  records where that target came from names the control count.
+  finite ``a``; reachability is decided here, not at construction).
 
 This needs ``Threshold`` to accept ``UNREACHABLE`` on a ``SEPARATION`` / ``NOT_CONVERGED`` fit;
 the last test checks that it also survives a JSON round trip.
+
+``Definition.baseline_fraction(p)`` on a failed fit never reaches this decision: it has no
+target on a failed fit (a ``0/n`` control would make it exactly 0) and is refused with a
+``ValueError``; the tests below pin that refusal.
 """
 
 from __future__ import annotations
@@ -201,11 +202,10 @@ class TestTargetsJustInsideTheRangeAreClassifiedNotRejected:
         assert t.grid is not None
 
 
-class TestBaselineFractionOnAFailedFitWithAZeroControl:
-    """The target is ``p * (control successes / control trials)``, so a ``0/n`` control makes it
-    exactly 0 and every exact ``pass`` trivially true. A ``RIGHT`` bound at the highest severity
-    would then be a claim made against a target no curve can fall to, so the result must be
-    ``UNREACHABLE`` instead."""
+class TestBaselineFractionOnAFailedFitIsRefused:
+    """``baseline_fraction(p)`` has no target on a failed fit: the control's observed rate is only
+    an estimate of the upper asymptote, and with a ``0/n`` control the plug-in would be exactly 0.
+    The definition raises ``ValueError`` naming the kind and the status, whatever the control."""
 
     @staticmethod
     def _zero_control_separation() -> Fit:
@@ -231,51 +231,36 @@ class TestBaselineFractionOnAFailedFitWithAZeroControl:
         )
         return dataclasses.replace(fake_fit(status=status, monotonicity=None), cells=cells)
 
-    def test_a_real_separation_fit_with_a_zero_control_is_unreachable_and_names_the_count(
-        self,
-    ) -> None:
+    def test_a_real_separation_fit_with_a_zero_control_raises_and_names_the_status(self) -> None:
         fit = self._zero_control_separation()
 
-        t = threshold(
-            fit,
-            definition=Definition.baseline_fraction(0.5),
-            interval_method="profile",
-            level=_LEVEL,
-        )
+        with pytest.raises(ValueError, match="baseline_fraction") as excinfo:
+            threshold(
+                fit,
+                definition=Definition.baseline_fraction(0.5),
+                interval_method="profile",
+                level=_LEVEL,
+            )
 
-        assert t.status is Status.UNREACHABLE
-        assert t.censoring is Censoring.NONE
-        assert t.value is None and t.lo is None and t.hi is None
-        assert t.grid is None and t.baseline is None
-        assert any("0/100" in w for w in t.warnings), f"no warning names 0/100: {t.warnings!r}"
-        # The control's own rate prints as "0.0" too, so the bare substring would match the
-        # warning about where the target came from. Match the sentence that names the *target*.
-        expected_target = 0.5 * (0 / 100)
-        assert any(
-            f"the resolved target {expected_target!r} is outside the open interval (0, 1)" in w
-            for w in t.warnings
-        ), f"no warning names the resolved target {expected_target!r}: {t.warnings!r}"
+        assert "SEPARATION" in str(excinfo.value)
+        assert "absolute(" in str(excinfo.value)
 
     @pytest.mark.parametrize("status", [Status.SEPARATION, Status.NOT_CONVERGED])
     @pytest.mark.parametrize("p", [0.1, 0.5, 0.9])
-    def test_every_fraction_of_a_zero_control_is_unreachable_on_a_failed_fit(
+    def test_every_fraction_of_a_zero_control_raises_on_a_failed_fit(
         self, status: Status, p: float
     ) -> None:
-        t = threshold(
-            self._hand_built(status),
-            definition=Definition.baseline_fraction(p),
-            interval_method="profile",
-            level=_LEVEL,
-        )
+        with pytest.raises(ValueError, match="baseline_fraction"):
+            threshold(
+                self._hand_built(status),
+                definition=Definition.baseline_fraction(p),
+                interval_method="profile",
+                level=_LEVEL,
+            )
 
-        assert t.status is Status.UNREACHABLE
-        assert t.fit.status is status
-        assert any("0/100" in w for w in t.warnings)
-
-    def test_an_all_success_control_resolves_to_the_fraction_itself_and_is_not_unreachable(
-        self,
-    ) -> None:
-        """The contrast: with a ``100/100`` control the target is ``p`` and inside ``(0, 1)``."""
+    def test_an_all_success_control_is_refused_too(self) -> None:
+        """The refusal does not depend on the control: with a ``100/100`` control the plug-in
+        target would be inside ``(0, 1)``, and the definition still raises."""
         cells = (
             Cell(severity=0.0, successes=100, trials=100),
             Cell(severity=1.0, successes=100, trials=100),
@@ -285,15 +270,13 @@ class TestBaselineFractionOnAFailedFitWithAZeroControl:
             fake_fit(status=Status.SEPARATION, monotonicity=None), cells=cells
         )
 
-        t = threshold(
-            fit,
-            definition=Definition.baseline_fraction(0.5),
-            interval_method="profile",
-            level=_LEVEL,
-        )
-
-        assert t.status is Status.SEPARATION
-        assert t.lo == 1.0 and t.hi == 2.0
+        with pytest.raises(ValueError, match="baseline_fraction"):
+            threshold(
+                fit,
+                definition=Definition.baseline_fraction(0.5),
+                interval_method="profile",
+                level=_LEVEL,
+            )
 
     def test_relative_on_a_failed_fit_still_refuses_rather_than_resolving_a_target(self) -> None:
         with pytest.raises(ValueError, match="relative"):
@@ -338,21 +321,19 @@ class TestAControlIncompatibleFitIsNeverReportedAsUnreachable:
         assert t.censoring is Censoring.NONE
         assert t.value is None and t.lo is None and t.hi is None
 
-    def test_a_zero_control_fraction_keeps_the_fits_status(self) -> None:
-        """The target is ``p * 0/200 = 0``, outside ``(0, 1)``, on a control that is the very
-        reason the fit was rejected."""
+    def test_a_zero_control_fraction_is_refused_on_a_control_incompatible_fit(self) -> None:
+        """The control is the very reason the fit was rejected, so it is no source for a target."""
         fit = self._control_incompatible_fit(0)
 
-        t = threshold(
-            fit,
-            definition=Definition.baseline_fraction(0.5),
-            interval_method="profile",
-            level=_LEVEL,
-        )
+        with pytest.raises(ValueError, match="baseline_fraction") as excinfo:
+            threshold(
+                fit,
+                definition=Definition.baseline_fraction(0.5),
+                interval_method="profile",
+                level=_LEVEL,
+            )
 
-        assert t.status is Status.CONTROL_INCOMPATIBLE
-        assert t.censoring is Censoring.NONE
-        assert t.value is None and t.lo is None and t.hi is None
+        assert "CONTROL_INCOMPATIBLE" in str(excinfo.value)
 
 
 class TestUnreachableOnAFailedFitSerialises:

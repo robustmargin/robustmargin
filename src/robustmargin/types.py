@@ -253,11 +253,10 @@ class Definition:
       at or below 0 or at or above 1 is :data:`Status.UNREACHABLE` on every fit.
     - ``baseline_fraction(p)``: performance falls to ``p`` times the performance at zero
       severity. Requires ``0 < p < 1``. For a decreasing outcome only. On a linear axis,
-      "performance at zero severity" is the fitted upper asymptote on a converged fit and the
-      control's observed rate on a failed fit; it is not the fitted curve at severity 0. On a
-      failed fit the exact claims are about the plug-in target ``p * k0 / n0`` (the control's
-      observed rate), with no coverage guarantee for ``p`` times the true zero-severity rate; use
-      ``absolute(a)`` for a covered claim.
+      "performance at zero severity" is the fitted upper asymptote; it is not the fitted curve at
+      severity 0. On any fit whose status is not ``OK`` there is no fitted
+      asymptote and ``threshold`` raises, because a target built from the control's observed rate
+      carries no coverage guarantee; use ``absolute(a)`` for a covered claim.
     - ``baseline_multiple(k)``: performance rises to ``k`` times the performance at zero
       severity. Requires ``k > 1``. For an increasing outcome on a log axis only, where the
       performance at zero severity is the lower asymptote; ``threshold`` raises on a linear axis.
@@ -314,10 +313,10 @@ class Definition:
         """Build a ``baseline_fraction(p)`` definition: performance falls to ``p`` times the
         zero-severity performance. Requires ``0 < p < 1``.
 
-        On a failed fit (``SEPARATION`` or ``NOT_CONVERGED``) the target is resolved from the
-        control's observed rate, ``p * k0 / n0``, and the exact claims are tests against that
-        plug-in target. They carry no coverage guarantee for ``p`` times the true zero-severity
-        rate. For a covered claim on a failed fit, use ``absolute(a)``.
+        On any fit whose status is not ``OK`` there is no fitted upper asymptote
+        and ``threshold`` raises: a target built from the control's observed rate carries no
+        coverage guarantee for ``p`` times the true zero-severity rate. For a covered claim on a
+        failed fit, use ``absolute(a)``.
         """
         return cls(kind="baseline_fraction", value=p)
 
