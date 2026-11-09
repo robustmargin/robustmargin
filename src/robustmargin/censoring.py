@@ -270,11 +270,26 @@ def _target_out_of_range(*, target: float, shown_target: float) -> Classificatio
     the open interval ``(0, 1)``, and the exact one-sided tests against one are trivially true or
     false: every ``pass`` fires against a target of 0, and ``fail`` fires for any control with a
     failure against a target of 1. A claim made from them would rest on nothing, so this is decided
-    before any exact test. ``shown_target`` is the target as the caller states it, which is what
-    the warning names.
+    before any exact test. ``shown_target`` is the resolved target ``P*`` (for ``absolute``, the
+    caller's own ``a``; for the other definitions, the value computed from the fit), which is what
+    the warning names. A resolved target inside ``(0, 1)`` whose complement rounds to 1 is named as
+    such rather than as out of range.
     """
     if not (target <= 0.0 or target >= 1.0):
         return None
+    if 0.0 < shown_target < 1.0 and target >= 1.0:
+        message = (
+            f"censoring.classify: the complement 1 - {shown_target!r} of the resolved "
+            "target rounds to 1 in double precision, so no curve can be resolved against it; "
+            "reported as UNREACHABLE without running any exact test"
+        )
+    else:
+        message = (
+            f"censoring.classify: the resolved target {shown_target!r} is outside the open "
+            "interval (0, 1), so no binomial performance curve crosses it and an exact test "
+            "against it is trivially true or false; reported as UNREACHABLE without running any "
+            "exact test"
+        )
     return Classification(
         status=Status.UNREACHABLE,
         censoring=Censoring.NONE,
@@ -282,12 +297,7 @@ def _target_out_of_range(*, target: float, shown_target: float) -> Classificatio
         hi=None,
         baseline=None,
         grid=None,
-        warnings=(
-            f"censoring.classify: the resolved target {shown_target!r} is outside the open "
-            "interval (0, 1), so no binomial performance curve crosses it and an exact test "
-            "against it is trivially true or false; reported as UNREACHABLE without running any "
-            "exact test",
-        ),
+        warnings=(message,),
     )
 
 
@@ -773,8 +783,8 @@ def classify(
         The confidence level, strictly between 0 and 1.
     original_target
         ``None`` for a fit of the outcome as counted. Otherwise ``fit`` is the complementary
-        outcome of an increasing one, ``target`` is already complemented, and this is the target
-        as the caller stated it: warnings name it, and bounds they quote are taken from the
+        outcome of an increasing one, ``target`` is already complemented, and this is the resolved
+        target before complementing: warnings name it, and bounds they quote are taken from the
         original counts. The exact tests and the solve are unchanged by it; the grid break point
         is not, since it is read against this target on the counts as supplied.
 
