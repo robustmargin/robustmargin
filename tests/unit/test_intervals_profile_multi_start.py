@@ -55,7 +55,11 @@ from robustmargin import (
     threshold,
 )
 from robustmargin import intervals as iv
-from robustmargin.models import _NEWTON_DECREMENT_TOLERANCE, _full_binomial_log_likelihood
+from robustmargin.models import (
+    _NEWTON_DECREMENT_TOLERANCE,
+    _full_binomial_log_likelihood,
+    _mirror_fit,
+)
 
 _LEVEL = 0.95
 _CHI2 = float(chi2.ppf(_LEVEL, 1))
@@ -2225,14 +2229,18 @@ def test_alternatives_still_run_at_the_estimate_and_where_the_first_run_is_outsi
         assert len(runs) > 1
 
 
-# --- known residual: upper bounds the inner fit still reports too narrow -------------------------
+# --- upper bounds checked against independent witnesses -----------------------------------------
 #
 # Five designs, both asymptotes estimated, on which independent attained-likelihood witnesses show
-# the profile deviance is still below the chi-square target well beyond the reported ``hi``. The
-# witnesses hold today (the non-xfail witness test below); the tests marked xfail pin the
-# package's bound. Four of the five are ``strict=True``, so a fix turns them into XPASS, which
-# fails the suite until the marker is removed. ``wall-d`` is non-strict because whether it misses
-# depends on floating-point rounding.
+# the profile deviance is below the chi-square target well beyond the bound a single-start inner
+# fit reports. The witnesses hold (the witness test below). The profile's inner fit now reaches
+# the far-extrapolation cases ``wall-a``, ``wall-c`` and ``wall-d``, whose bound test passes. Two
+# cases remain known misses and are strict xfail, so a fix turns them into XPASS, which fails the
+# suite until the marker is removed:
+#
+# * ``step`` is a basin narrower than the starting grid, which no start lands in.
+# * ``wall-b`` has a target that moves with the upper asymptote, so the wall start, which applies
+#   to absolute targets, does not cover it.
 #
 # * ``step``: the profile is flat at ``g = -0.1196`` from 10.85 up to the tested level
 #   11.612, where the best curve is a step between 2.078 and 11.612. Witness:
@@ -2455,18 +2463,17 @@ def _under_covered_upper_bound(name: str) -> Threshold:
     return threshold(fit, definition=case.definition, interval_method="profile", level=case.level)
 
 
-def _expect_inner_fit_miss(reason: str, *, strict: bool = True) -> Any:
+def _expect_inner_fit_miss(reason: str) -> Any:
     return [
         pytest.mark.slow,
-        pytest.mark.xfail(strict=strict, reason=reason),
+        pytest.mark.xfail(strict=True, reason=reason),
     ]
 
 
 _STEP_MISS = "inner fit misses a step basin narrower than the starting grid"
-_WALL_MISS = "inner fit misses the reachability-wall maximum far beyond the tested range"
-_WALL_MISS_FLAKY = (
-    "inner fit misses the reachability-wall maximum far beyond the tested range; whether the "
-    "miss occurs depends on floating-point rounding, so it can pass on some platforms"
+_WALL_MISS = (
+    "the target moves with the upper asymptote, which the wall start (absolute targets) "
+    "does not cover"
 )
 
 
@@ -2474,16 +2481,174 @@ _WALL_MISS_FLAKY = (
     "name",
     [
         pytest.param("step", marks=_expect_inner_fit_miss(_STEP_MISS)),
-        pytest.param("wall-a", marks=_expect_inner_fit_miss(_WALL_MISS)),
+        pytest.param("wall-a", marks=pytest.mark.slow),
         pytest.param("wall-b", marks=_expect_inner_fit_miss(_WALL_MISS)),
-        pytest.param("wall-c", marks=_expect_inner_fit_miss(_WALL_MISS)),
-        pytest.param("wall-d", marks=_expect_inner_fit_miss(_WALL_MISS_FLAKY, strict=False)),
+        pytest.param("wall-c", marks=pytest.mark.slow),
+        pytest.param("wall-d", marks=pytest.mark.slow),
     ],
 )
 def test_upper_bound_reaches_the_witnessed_extent_or_the_side_is_open(name: str) -> None:
-    """Pins the known residual: the reported ``hi`` is still short of the extent the witnesses
-    prove (``_UnderCoveredCase.bound``). A correct ``hi`` is at or beyond it, or the upper side is
-    open. Strict xfail: a fix makes this XPASS, and the marker is then to be removed."""
+    """The reported ``hi`` reaches the extent the witnesses prove (``_UnderCoveredCase.bound``), or
+    the upper side is open. ``step`` and ``wall-b`` are known misses (strict xfail: a fix makes
+    them XPASS, and the marker is then to be removed)."""
     result = _under_covered_upper_bound(name)
 
     assert result.hi is None or result.hi >= _UNDER_COVERED[name].bound
+    if result.hi is None:
+        # Open because the deviance never reached the target, not because an inner fit failed.
+        assert any(
+            "did not cross the chi-square target before the upper search limit" in w
+            for w in result.warnings
+        ), result.warnings
+
+
+@pytest.mark.parametrize("name", ["wall-a", "wall-c", "wall-d"])
+def test_inner_fit_attains_the_wall_likelihood_at_the_last_witness(name: str) -> None:
+    """Oracle: ``_wall_deviance`` is an explicit feasible curve, so its log-likelihood is a lower
+    bound on the constrained maximum at the last witness. With the alternatives running (no
+    ``llf_hat`` or ``chi2_target``), the inner fit must reach it to within ``1e-6 * (1 + |llf|)``,
+    far above optimiser noise at this size and far below the shortfall of a fit that misses the
+    wall. All three designs are on the linear scale, so ``theta`` is the natural-axis value."""
+    case = _UNDER_COVERED[name]
+    assert case.design.scale == "linear"
+    x = case.witnesses[-1]
+    definition = case.definition
+    if case.view == "inc":
+        # What the threshold hands the profile for an increasing fit: the complementary
+        # decreasing view with the absolute target ``1 - a``.
+        fit = _mirror_fit(_increasing_fit(case.design))
+        definition = Definition.absolute(1.0 - definition.value)
+    else:
+        fit = _decreasing_fit(case.design)
+    llf_hat = fit.log_likelihood
+    assert llf_hat is not None
+    chi2_target = float(chi2.ppf(case.level, 1))
+    llf_wall = llf_hat - 0.5 * (_wall_deviance(name, x) + chi2_target)
+
+    ell_p = iv._estimated_profile_llf(x, fit=fit, definition=definition)
+
+    assert ell_p is not None
+    assert ell_p >= llf_wall - 1.0e-6 * (1.0 + abs(llf_wall)), (
+        2.0 * (llf_hat - ell_p) - chi2_target,
+        2.0 * (llf_hat - llf_wall) - chi2_target,
+    )
+
+
+def test_wall_refit_that_raises_leaves_a_warning_and_the_finite_bound_of_the_other_starts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With the wall refit raising, the interval is still computed from the other starts and the
+    caller is told the refit raised. Only the refit is patched: it is the only call to
+    ``fit_dose_response`` made inside the interval code."""
+
+    def raising(*args: Any, **kwargs: Any) -> Any:
+        raise ValueError("forced refit failure")
+
+    monkeypatch.setattr(iv, "fit_dose_response", raising)
+    result = _under_covered_upper_bound("wall-a")
+
+    assert any("refit" in w and "raised" in w for w in result.warnings), result.warnings
+    assert result.hi is not None
+    assert math.isfinite(result.hi)
+    assert result.hi < _UNDER_COVERED["wall-a"].bound
+    assert result.censoring is Censoring.NONE
+
+
+def _wall_stub(mu: float, s: float, upper: float) -> Any:
+    return SimpleNamespace(params=(mu, s, upper))
+
+
+def _absolute_chart(theta: float, link: str = "probit") -> iv._ZStarLogLikelihood:
+    return iv._ZStarLogLikelihood(
+        theta=theta,
+        definition=Definition.absolute(0.5),
+        severity=_SEVERITY,
+        successes=_SUCCESSES,
+        trials=_TRIALS,
+        scale="linear",
+        link=link,
+        estimate_lower=True,
+        estimate_upper=True,
+        lower_value=0.0,
+        upper_value=1.0,
+    )
+
+
+@pytest.mark.parametrize("theta", [14.0, 16.0])
+def test_wall_start_is_none_where_the_share_needed_is_not_below_one(theta: float) -> None:
+    """With ``mu_w = 17``, ``s_w = 1`` and ``u_w = 0.95`` the share is ``0.9`` for every ``z*``
+    above 0 and exceeds 1 below it (about 4.8 at ``z* = -1``, far more at ``-3``): the refit's
+    upper asymptote is not reachable with a non-negative lower asymptote there."""
+    chart = _absolute_chart(theta)
+    start = iv._wall_start(_wall_stub(17.0, 1.0, 0.95), chart, (-50.0, 50.0))
+
+    assert start is None
+
+
+@pytest.mark.parametrize("link", _LINKS)
+def test_wall_start_on_the_far_side_reproduces_the_refit_curve_through_the_target(
+    link: str,
+) -> None:
+    """At ``z* = 3`` the share is below one. The chart's asymptotes at the start put the curve
+    through the target with the refit's ``s`` and upper asymptote, and the start's ``mu`` is the
+    refit's."""
+    mu_w, s_w, u_w = 17.0, 2.0, 0.95
+    theta = mu_w + 3.0 * s_w
+    chart = _absolute_chart(theta, link)
+    start = iv._wall_start(_wall_stub(mu_w, s_w, u_w), chart, (-50.0, 50.0))
+
+    assert start is not None
+    start_chart, x0 = start
+    assert start_chart is chart
+    assert math.exp(x0[0]) == pytest.approx(s_w, rel=1e-12)
+    assert x0[1] == pytest.approx(3.0, rel=1e-12)
+    assert theta - s_w * x0[1] == pytest.approx(mu_w, rel=1e-12)
+    asymptotes = iv._zstar_chart_asymptotes(
+        float(x0[1]),
+        x0[2:],
+        definition=chart.definition,
+        link=link,
+        estimate_lower=True,
+        estimate_upper=True,
+        lower_value=0.0,
+        upper_value=1.0,
+    )
+    assert asymptotes is not None
+    assert asymptotes[1] == pytest.approx(u_w, rel=1e-9)
+
+
+def test_wall_start_is_none_without_a_wall_refit() -> None:
+    start = iv._wall_start(
+        SimpleNamespace(params=None),  # type: ignore[arg-type]
+        _absolute_chart(23.0),
+        (-50.0, 50.0),
+    )
+
+    assert start is None
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("name", ["wall-a", "wall-d"])
+def test_wall_start_never_lowers_the_estimated_profile_log_likelihood(
+    name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An added start can only raise the profile value, so the value with the wall start is at
+    least the value with it removed, at the estimate and at thetas on both sides of it."""
+    case = _UNDER_COVERED[name]
+    definition = case.definition
+    if case.view == "inc":
+        fit = _mirror_fit(_increasing_fit(case.design))
+        definition = Definition.absolute(1.0 - definition.value)
+    else:
+        fit = _decreasing_fit(case.design)
+    theta_hat = _under_covered_upper_bound(name).value
+    assert theta_hat is not None
+    thetas = [theta_hat, 0.5 * theta_hat, 2.0 * theta_hat, case.witnesses[0], case.witnesses[-1]]
+
+    with_wall = [iv._estimated_profile_llf(t, fit=fit, definition=definition) for t in thetas]
+    monkeypatch.setattr(iv, "_wall_start", lambda *args, **kwargs: None)
+    without = [iv._estimated_profile_llf(t, fit=fit, definition=definition) for t in thetas]
+
+    for t, a, b in zip(thetas, with_wall, without, strict=True):
+        assert a is not None, t
+        assert b is None or a >= b - 1.0e-9, (t, a, b)
