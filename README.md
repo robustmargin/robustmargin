@@ -4,11 +4,21 @@
 **Robustness margins for AI safety evaluation: how much stress an AI system takes before it
 fails, with a confidence interval.**
 
-AI systems are usually evaluated by a success rate under nominal conditions. A safety case needs
-a different number: how far conditions can degrade before the system starts to fail, and how
-sure we are of that point. robustmargin estimates that robustness margin from pass/fail stress
-tests, for any AI model or autonomous system you can test at increasing severity. It is
-model-agnostic: it sees only severities and counts, and needs no GPU and no ML framework.
+robustmargin is a robustness calculation engine. AI systems are usually evaluated by a success
+rate under nominal conditions; a safety case needs a different number: how far conditions can
+degrade before the system starts to fail, and how sure we are of that point. robustmargin
+estimates that robustness margin, with a confidence interval, from pass/fail stress tests at
+increasing severity.
+
+It is model-agnostic and framework-free: it sees only severities and outcome counts, and needs no
+GPU and no ML framework. That makes it usable wherever robustness and safety carry weight:
+
+- **AI safety research**: measure how much perturbation a model or policy tolerates, and whether
+  a training intervention moved that margin.
+- **Physical AI**: learned policies evaluated under graded sensing noise, latency or
+  disturbances.
+- **Autonomous and safety-critical systems**: margins reported with honest uncertainty, and
+  censored bounds instead of invented numbers when the data cannot support an estimate.
 
 > **Status: latest release `0.2.1`.** Binomial dose-response fits, thresholds with profile-likelihood or delta
 > confidence intervals, censoring, ratios of two thresholds with Fieller or log-delta intervals,
@@ -26,8 +36,9 @@ a number, it says so: a threshold beyond the tested range is censored and report
 and a failed fit carries a status flag and no estimate.
 
 The statistics are dose-response threshold estimation, the method toxicology and psychophysics
-use to find the dose at which a response crosses a given level. That is why the worked example
-below uses a classic toxicology dataset: the code is the same whatever the system under test.
+use to find the dose at which a response crosses a given level. That is why the second worked
+example below uses a classic toxicology dataset: the code is the same whatever the system under
+test.
 
 For control engineers, the threshold is an empirical analogue of the probabilistic robustness
 margin of randomized robust control (Barmish, Lagoa & Tempo, ACC 1997; Chen, Zhou & Aravena,
@@ -36,10 +47,21 @@ succeeds with probability 1 − ε, averaged over every perturbation up to that 
 robustmargin needs no model: it estimates the corresponding point from success counts at held
 severities, with a confidence interval.
 
-robustmargin is designed to sit under evaluation harnesses. A harness applies graded degradations
-to an AI policy, records the pass/fail outcome of each run, and hands severities and counts to
-robustmargin for the threshold statistics. To compare two checkpoints, for example before and
-after post-training, `ratio_interval` gives a confidence interval for the ratio of their margins.
+## How it fits into an evaluation stack
+
+robustmargin does not run models. Your policy or model evaluator does, and a thin adapter turns
+its results into robustmargin's input:
+
+1. The evaluator applies a graded degradation (input noise, a perturbation, a disturbance, a
+   distribution shift) at a set of severity levels.
+2. It records the pass/fail outcome of each run.
+3. The adapter hands robustmargin the severities and the success counts; robustmargin returns
+   the threshold, its confidence interval, its censoring status and fit diagnostics.
+
+Because the interface is only severities and counts, the same adapter pattern works for any
+evaluator. A typical use is comparing checkpoints, for example before and after RL
+post-training: `ratio_interval` gives a confidence interval for the ratio of their margins, so
+"the new checkpoint is more robust" becomes a claim with an interval attached.
 
 ## Install
 
@@ -51,7 +73,92 @@ pip install robustmargin
 
 Runtime dependencies are `numpy`, `scipy`, and `statsmodels`, with loose minimum versions.
 
-## Worked example
+## Worked example: robustness before and after RL post-training
+
+Two checkpoints of the same policy, before and after RL post-training, are evaluated on a task at
+increasing levels of Gaussian input noise: 200 runs per level, each scored pass or fail. The counts
+are illustrative. The question a safety case asks is not "what is the success rate?" but "how much
+noise can each checkpoint take before success falls below 90%, and did post-training move that
+point?"
+
+```python
+from robustmargin import (
+    Axis,
+    Censoring,
+    Definition,
+    Observations,
+    Status,
+    fit_dose_response,
+    ratio_interval,
+    threshold,
+)
+
+axis = Axis(name="input_noise", unit="std", scale="log")
+noise = [0.0, 0.05, 0.1, 0.2, 0.4, 0.8]
+runs = [200] * len(noise)
+passed = {
+    "before_rl": [196, 193, 181, 142, 61, 9],
+    "after_rl": [197, 196, 192, 177, 119, 38],
+}
+
+margins = {}
+for name, successes in passed.items():
+    obs = Observations.from_counts(
+        axis,
+        severity=noise,
+        successes=successes,
+        trials=runs,
+        outcome="task_success",
+        direction="decreasing",
+    )
+    # Clean-input success is below 100%, so the upper asymptote is estimated, not fixed at 1.
+    fit = fit_dose_response(obs, model="binomial", link="probit", upper="estimate", lower=0.0)
+    assert fit.status is Status.OK
+    margins[name] = threshold(
+        fit, definition=Definition.absolute(0.9), interval_method="profile", level=0.95
+    )
+
+# The noise level at which success falls to 90%, with a 95% profile-likelihood interval.
+before, after = margins["before_rl"], margins["after_rl"]
+assert before.censoring is Censoring.NONE and after.censoring is Censoring.NONE
+assert 0.096 < before.lo < before.value < before.hi < 0.130  # about 0.11
+assert 0.159 < after.lo < after.value < after.hi < 0.217  # about 0.19
+
+# Did RL post-training move the margin? The ratio of the two margins, with its own interval.
+ratio = ratio_interval(after, before, method="log_delta", dependence="independent")
+assert 1.35 < ratio.lo < ratio.estimate < ratio.hi < 2.06  # about 1.67x, interval excludes 1
+```
+
+When the data cannot support a number, robustmargin does not invent one. A checkpoint that never
+drops below the criterion within the tested range gets a censored bound, not an estimate:
+
+```python
+from robustmargin import (
+    Axis,
+    Censoring,
+    Definition,
+    Observations,
+    fit_dose_response,
+    threshold,
+)
+
+obs = Observations.from_counts(
+    Axis(name="input_noise", unit="std", scale="log"),
+    severity=[0.0, 0.05, 0.1, 0.2, 0.4, 0.8],
+    successes=[200, 200, 199, 200, 199, 198],
+    trials=[200] * 6,
+    outcome="task_success",
+    direction="decreasing",
+)
+fit = fit_dose_response(obs, model="binomial", link="probit", upper="estimate", lower=0.0)
+t = threshold(fit, definition=Definition.absolute(0.9), interval_method="profile", level=0.95)
+
+# "The margin exceeds 0.8" (exact one-sided bound), never "the margin is 0.8".
+assert t.censoring is Censoring.RIGHT
+assert t.value is None and t.lo == 0.8
+```
+
+## Worked example: a classic dose-response dataset
 
 Finney's (1971) toxicity data: groups of insects exposed to increasing doses, with the number
 affected in each group. The outcome here is survival, which decreases with dose. The dose-0 group
