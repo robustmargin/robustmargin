@@ -7,11 +7,12 @@ fails, with a confidence interval.**
 robustmargin is a robustness calculation engine. AI systems are usually evaluated by a success
 rate under nominal conditions; a safety case needs a different number: how far conditions can
 degrade before the system starts to fail, and how sure we are of that point. robustmargin
-estimates that robustness margin, with a confidence interval, from pass/fail stress tests at
-increasing severity.
+estimates that robustness margin, with a confidence interval, from stress tests at increasing
+severity, scored pass/fail or on a continuous scale.
 
-It is model-agnostic and framework-free: it sees only severities and outcome counts, and needs no
-GPU and no ML framework. That makes it usable wherever robustness and safety carry weight:
+It is model-agnostic and framework-free: it sees only severities and outcomes (success counts or
+real-valued scores), and needs no GPU and no ML framework. That makes it usable wherever
+robustness and safety carry weight:
 
 - **AI safety research**: measure how much perturbation a model or policy tolerates, and whether
   a training intervention moved that margin.
@@ -20,20 +21,21 @@ GPU and no ML framework. That makes it usable wherever robustness and safety car
 - **Autonomous and safety-critical systems**: margins reported with honest uncertainty, and
   censored bounds instead of invented numbers when the data cannot support an estimate.
 
-> **Status: latest release `0.2.1`.** Binomial dose-response fits, thresholds with profile-likelihood or delta
-> confidence intervals, censoring, ratios of two thresholds with Fieller or log-delta intervals,
-> fit diagnostics, and the grid break-point rule. Continuous responses (Gaussian least-squares
-> fits) are in the development version. Clustered and paired inference, and design helpers, are
-> planned for `0.3`. While the version is below 1.0, a minor release may change the public API.
+> **Status: latest release `0.3.0`.** Dose-response fits for pass/fail outcomes that fall or rise
+> with severity and for real-valued scores (Gaussian least squares), thresholds with
+> profile-likelihood or delta confidence intervals, censoring, ratios of two thresholds with
+> Fieller or log-delta intervals, fit diagnostics, and the grid break-point rule. Clustered and
+> paired inference, model-free fits and design helpers are planned for `0.4`. While the version
+> is below 1.0, a minor release may change the public API.
 
 ## What it does
 
 You test a system at increasing levels of some stress (the *severity*), such as input noise, a
-perturbation, a disturbance or a distribution shift, and count successes at each level.
-robustmargin fits a dose-response curve to those counts and reports the severity at which
-performance crosses a level you choose, with a confidence interval. When the data cannot support
-a number, it says so: a threshold beyond the tested range is censored and reported as a bound,
-and a failed fit carries a status flag and no estimate.
+perturbation, a disturbance or a distribution shift, and count successes at each level (or record
+a score for each run). robustmargin fits a dose-response curve to those outcomes and reports the
+severity at which performance crosses a level you choose, with a confidence interval. When the
+data cannot support a number, it says so: a threshold beyond the tested range is censored and
+reported as a bound, and a failed fit carries a status flag and no estimate.
 
 The statistics are dose-response threshold estimation, the method toxicology and psychophysics
 use to find the dose at which a response crosses a given level. That is why the second worked
@@ -54,11 +56,11 @@ its results into robustmargin's input:
 
 1. The evaluator applies a graded degradation (input noise, a perturbation, a disturbance, a
    distribution shift) at a set of severity levels.
-2. It records the pass/fail outcome of each run.
-3. The adapter hands robustmargin the severities and the success counts; robustmargin returns
-   the threshold, its confidence interval, its censoring status and fit diagnostics.
+2. It records the outcome of each run: pass/fail, or a real-valued score.
+3. The adapter hands robustmargin the severities and the success counts or scores; robustmargin
+   returns the threshold, its confidence interval, its censoring status and fit diagnostics.
 
-Because the interface is only severities and counts, the same adapter pattern works for any
+Because the interface is only severities and outcomes, the same adapter pattern works for any
 evaluator. A typical use is comparing checkpoints, for example before and after RL
 post-training: `ratio_interval` gives a confidence interval for the ratio of their margins, so
 "the new checkpoint is more robust" becomes a claim with an interval attached.
@@ -270,7 +272,7 @@ assert any(w.startswith("NON_MONOTONE_DATA: ") for w in ratio.warnings)
 ```
 
 Treat an overdispersed fit's intervals as too narrow. Clustered inference, which addresses this,
-is planned for `0.3`.
+is planned for `0.4`.
 
 ### An outcome that rises with severity
 

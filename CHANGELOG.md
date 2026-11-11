@@ -7,6 +7,8 @@ minor release may change the public API, and every such change carries a migrati
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-11-10
+
 ### Added
 - **Outcomes that rise with severity.** `Observations(direction="increasing")` now fits and
   thresholds like any other. `successes` counts an outcome that rises with severity, such as an
@@ -244,6 +246,15 @@ minor release may change the public API, and every such change carries a migrati
     `censoring` can change from `NONE` to `OPEN_LOWER`/`OPEN_UPPER`. Point estimates are
     unchanged, and so are profile intervals with both asymptotes fixed at `1` and `0`. Profile
     intervals on the affected fits take about two to three times as long.
+
+### Known limitations
+- Profile bounds with an estimated asymptote can still be slightly too narrow in rare cases: about
+  0.3% of interval sides in a perturbation search, mostly upper bounds far beyond the largest
+  tested severity (see the local-maximum entry under Fixed).
+- `Fit.predict` on a count fit with an estimated asymptote: at a severity far beyond the tested
+  range, where the fitted curve equals its asymptote in double precision, `lo` and `hi` are `nan`;
+  slightly closer in, they can collapse onto the estimate. This is unchanged from 0.2.x. The
+  estimate itself is unaffected. Read the band within or near the tested range.
 
 ## [0.2.1] — 2026-10-23
 
