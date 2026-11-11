@@ -43,6 +43,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from scipy.stats import norm
+from scipy.stats import t as student_t
 
 from robustmargin.intervals import _MAX_LOG_HALF_WIDTH, _theta_variance
 from robustmargin.threshold import Threshold, _solve_inputs
@@ -183,6 +184,12 @@ class Ratio:
             raise ValueError(
                 "Ratio.threshold_a.definition must equal Ratio.threshold_b.definition, got "
                 f"{self.threshold_a.definition!r} and {self.threshold_b.definition!r}"
+            )
+        if self.threshold_a.fit.model != self.threshold_b.fit.model:
+            raise ValueError(
+                "Ratio.threshold_a and .threshold_b must be fitted with the same model, got "
+                f"{self.threshold_a.fit.model!r} and {self.threshold_b.fit.model!r}: a count "
+                "threshold and a continuous-response threshold are not comparable"
             )
 
         if self.method not in _VALID_METHODS:
@@ -377,6 +384,29 @@ _CENSORING_FLIP: dict[Censoring, Censoring] = {
     Censoring.OPEN_UPPER: Censoring.OPEN_LOWER,
     Censoring.OPEN_LOWER: Censoring.OPEN_UPPER,
 }
+
+
+def _welch_satterthwaite_df(
+    variance_a: float, df_a: int, variance_b: float, df_b: int
+) -> float | None:
+    """``(Va + Vb)^2 / (Va^2 / df_a + Vb^2 / df_b)``, the Welch-Satterthwaite degrees of freedom
+    of a sum of two variance estimates (Satterthwaite, 1946, *Biometrics Bulletin* 2:110-114;
+    Welch, 1947, *Biometrika* 34:28-35), or ``None`` when both variances are zero and the degrees
+    of freedom are undefined."""
+    denominator = variance_a**2 / df_a + variance_b**2 / df_b
+    if not denominator > 0.0:
+        return None
+    return float((variance_a + variance_b) ** 2 / denominator)
+
+
+def _gaussian_quantile(level: float, df: float | None) -> float:
+    """The two-sided Student-t quantile at ``df`` for a ratio of Gaussian thresholds. Where the
+    degrees of freedom are undefined because both variances are zero, no interval end depends on
+    the quantile, and the normal one is used."""
+    probability = 0.5 + level / 2.0
+    if df is None:
+        return float(norm.ppf(probability))
+    return float(student_t.ppf(probability, df))
 
 
 def _theta_variance_for(t: Threshold) -> float:
@@ -713,12 +743,21 @@ def ratio_interval(
     ``method="fieller"`` solves the classic Fieller quadratic on the natural severity scale;
     ``method="log_delta"`` uses the log-scale delta method and additionally requires, once both
     inputs are known to be ``(OK, NONE)``, that both axes' ``scale`` are ``"log"`` and both
-    thresholds' ``value`` are ``> 0``. Both use the normal quantile ``z``, never a Student-t
-    quantile, matching the rest of robustmargin -- R ``drc``'s own
-    ``EDcomp(interval="fieller")`` uses ``qt`` instead, which is why its interval endpoints (not
-    its point estimates) do not match robustmargin's at the usual reference tolerance
+    thresholds' ``value`` are ``> 0``. For binomial thresholds both use the normal quantile
+    ``z``, never a Student-t quantile -- R ``drc``'s own ``EDcomp(interval="fieller")`` uses
+    ``qt`` instead, which is why its interval endpoints (not its point estimates) do not match
+    robustmargin's at the usual reference tolerance
     (the reference comparison at
     https://github.com/robustmargin/robustmargin/blob/main/tests/reference/test_ratio_drc_edcomp.py).
+
+    **Two Gaussian (continuous-response) thresholds** use a Student-t quantile on
+    Welch-Satterthwaite degrees of freedom (Satterthwaite, 1946, *Biometrics Bulletin* 2:110-114;
+    Welch, 1947, *Biometrika* 34:28-35), because each carries its own residual variance and
+    degrees of freedom. ``log_delta`` uses the degrees of freedom of ``Va + Vb``, the variances of
+    the two log-scale thresholds. ``fieller`` uses them for its pivot ``ED_a - rho * ED_b``,
+    ``(Va + rho^2 Vb)^2 / (Va^2 / df_a + rho^4 Vb^2 / df_b)`` on the original-scale variances,
+    evaluated at the estimate ``rho = ED_a / ED_b`` and held fixed there. A count threshold and a
+    continuous-response threshold are not comparable and raise ``ValueError``.
 
     ``IntervalShape.EXCLUSIVE`` is **unreachable** through this function while
     ``dependence="independent"``: a two-ray Fieller set turns out, once intersected with the
@@ -771,8 +810,10 @@ def ratio_interval(
     Raises
     ------
     ValueError
-        On any of: ``t_a.fit is t_b.fit`` under ``dependence="independent"`` (checked directly
-        by this function); mismatched axis name/unit, mismatched ``definition``, or shared cluster
+        On any of: ``t_a`` and ``t_b`` fitted with different models (a count threshold against a
+        continuous-response one); ``t_a.fit is t_b.fit`` under ``dependence="independent"``
+        (checked directly by this function); mismatched axis name/unit, mismatched ``definition``,
+        or shared cluster
         ids under ``dependence="independent"`` (via :class:`Ratio`'s own validation, once this
         function reaches the point of constructing one); ``method`` outside
         ``{"fieller", "log_delta"}``; ``dependence`` anything other than ``"independent"``
@@ -786,6 +827,12 @@ def ratio_interval(
     if method not in _VALID_METHODS:
         raise ValueError(
             f"ratio_interval: method must be one of {sorted(_VALID_METHODS)}, got {method!r}"
+        )
+    if t_a.fit.model != t_b.fit.model:
+        raise ValueError(
+            "ratio_interval: threshold_a and threshold_b are fitted with different models "
+            f"({t_a.fit.model!r} and {t_b.fit.model!r}); a count threshold and a "
+            "continuous-response threshold are not comparable"
         )
     if dependence == "paired":
         raise ValueError(
@@ -908,10 +955,20 @@ def ratio_interval(
 
     z = float(norm.ppf(0.5 + resolved_level / 2.0))
     estimate = value_a / value_b
+    gaussian = t_a.fit.model == "gaussian"
+    df_a = t_a.fit.residual.df if t_a.fit.residual is not None else 0
+    df_b = t_b.fit.residual.df if t_b.fit.residual is not None else 0
 
     if method == "fieller":
         va = _fieller_variance(t_a, value=value_a)
         vb = _fieller_variance(t_b, value=value_b)
+        if gaussian:
+            # The pivot `ED_a - rho * ED_b` has variance `Va + rho^2 Vb`, whose Satterthwaite
+            # degrees of freedom are evaluated at the estimate `rho` and held fixed there.
+            z = _gaussian_quantile(
+                resolved_level,
+                _welch_satterthwaite_df(va, df_a, estimate**2 * vb, df_b),
+            )
         shape, lo, hi, shape_warnings = _fieller_shape(
             theta_a=value_a, va=va, theta_b=value_b, vb=vb, z=z
         )
@@ -921,6 +978,10 @@ def ratio_interval(
         # `Var(log(value))` -- no natural-scale detour needed (module docstring).
         var_log_a = _theta_variance_for(t_a)
         var_log_b = _theta_variance_for(t_b)
+        if gaussian:
+            z = _gaussian_quantile(
+                resolved_level, _welch_satterthwaite_df(var_log_a, df_a, var_log_b, df_b)
+            )
         lo, hi = _log_delta_shape(
             theta_a=value_a, var_log_a=var_log_a, theta_b=value_b, var_log_b=var_log_b, z=z
         )

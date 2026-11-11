@@ -1,0 +1,345 @@
+{
+  "versions": {
+    "r_version": "R version 4.6.1 (2026-06-24)",
+    "drc_version": "3.0.1",
+    "mass_version": "7.3.65",
+    "jsonlite_version": "2.0.0",
+    "generated_at": "2026-11-11 01:03:10 UTC"
+  },
+  "dataset": {
+    "conc": [0, 0, 0, 0, 0, 0, 0.94, 0.94, 0.94, 1.88, 1.88, 1.88, 3.75, 3.75, 3.75, 7.5, 7.5, 7.5, 15, 15, 15, 30, 30, 30],
+    "rootl": [7.58, 8, 8.328571429, 7.25, 7.375, 7.9625, 8.355555556, 6.914285714, 7.75, 6.871428571, 6.45, 5.922222222, 1.925, 2.885714286, 4.233333333, 1.1875, 0.857142857, 1.057142857, 0.6875, 0.525, 0.825, 0.25, 0.22, 0.44],
+    "note": "str(ryegrass): rootl (num), conc (num); includes conc = 0 controls; the response decreases with conc."
+  },
+  "mapping_note": "logit link <=> drc LL.4; probit link <=> drc LN.4. Natural parameters: mu = log(e), upper = d, lower = c, and s = |1/b| (decreasing outcome, s > 0). The sign of b differs between LL.4 (b > 0) and LN.4 (b < 0); each block's s_formula records which was found, and curve_check records the maximum absolute difference between the curve recomputed from the mapped parameters and drc's predict() at held-out concentrations. mapped_vcov is drc's vcov transformed to the (mu, s, upper, lower) parametrisation by the delta method. drc's `ED(interval = 'delta')` Lower/Upper are Estimate +/- qt(0.975, df_residual) * SE on the original concentration scale; robustmargin builds the interval on the log scale, so the tests compare Estimate and Std. Error, and se_log = SE / Estimate.",
+  "LL4": {
+    "fct": "LL.4",
+    "rss_default_fit": 5.40021462843058,
+    "rss_tight_fit": 5.40021462781787,
+    "control": "reference = refit from the default fit's coef with drmc(relTol=1e-14, maxIt=10000, method='BFGS')",
+    "coef": {
+      "b": 2.98223208192663,
+      "c": 0.481409629692092,
+      "d": 7.79296087867835,
+      "e": 3.05795711457471
+    },
+    "vcov": {
+      "row_names": ["b", "c", "d", "e"],
+      "col_names": ["b", "c", "d", "e"],
+      "values": [
+        [0.216288657609531, 0.0460159589852222, -0.0350476855393051, -0.00376352950401762],
+        [0.0460159589852222, 0.0450257116742785, -0.0047120226259077, -0.0169183853531081],
+        [-0.0350476855393051, -0.0047120226259077, 0.0355577012288489, -0.0128688011178184],
+        [-0.00376352950401762, -0.0169183853531081, -0.0128688011178184, 0.0344960936893288]
+      ]
+    },
+    "vcov_definitions": {
+      "nls_gauss_newton": {
+        "row_names": ["b", "c", "d", "e"],
+        "col_names": ["b", "c", "d", "e"],
+        "values": [
+          [0.210156990990089, 0.042600673900342, -0.0358193930375178, 0.000852327039036904],
+          [0.042600673900342, 0.0438927827425712, -0.00449842933547843, -0.015990943354832],
+          [-0.0358193930375178, -0.00449842933547843, 0.0359987107673903, -0.0136624146100216],
+          [0.000852327039036904, -0.015990943354832, -0.0136624146100216, 0.0345323816273469]
+        ]
+      },
+      "observed_hessian": {
+        "row_names": ["b", "c", "d", "e"],
+        "col_names": ["b", "c", "d", "e"],
+        "values": [
+          [0.216289800055171, 0.0460161804443326, -0.0350478919645385, -0.00376350837565879],
+          [0.0460161804443326, 0.0450257511558627, -0.00471205217043328, -0.0169184050805674],
+          [-0.0350478919645385, -0.00471205217043329, 0.0355577510211211, -0.0128688350770684],
+          [-0.00376350837565879, -0.0169184050805674, -0.0128688350770684, 0.0344961678164844]
+        ]
+      },
+      "nls_converged": false,
+      "max_scaled_gap_drc_vs_nls_gauss_newton": 0.0534380338713132,
+      "max_scaled_gap_drc_vs_observed_hessian": 5.28204138238667e-06,
+      "drc_vcov_equals": "observed_hessian",
+      "note": "gap = max over entries of |V_drc - V_other| / (sd_i sd_j) using drc's own SDs. drc_vcov_equals names the closer definition; it is a numeric verdict, not an assumption."
+    },
+    "n": 24,
+    "df_residual": 20,
+    "rss": 5.40021462781787,
+    "residual_sd": 0.51962556845376,
+    "residual_sd_drc_summary": 0.51962556845376,
+    "logLik_drc": -16.1551432168077,
+    "logLik_gaussian_mle": -16.1551432168077,
+    "AIC_drc": 42.3102864336155,
+    "mapped": {
+      "mu": 1.11774708339765,
+      "s": 0.335319308668279,
+      "upper": 7.79296087867835,
+      "lower": 0.481409629692092
+    },
+    "s_formula": "1/b",
+    "curve_check": {
+      "x": [0.94, 1.88, 3.75, 7.5, 15, 30],
+      "max_abs_difference_from_predict": 1.33226762955019e-15,
+      "formula": "P(x) = upper - (upper - lower) * F((log(x) - mu) / s), F = plogis (LL.4) or pnorm (LN.4)"
+    },
+    "mapped_vcov": {
+      "row_names": ["mu", "s", "upper", "lower"],
+      "col_names": ["mu", "s", "upper", "lower"],
+      "values": [
+        [0.00368898710999481, 0.000138382463829033, -0.00420830006296808, -0.00553257770440025],
+        [0.000138382463829033, 0.00273443745136676, 0.00394072807300454, -0.00517399019618361],
+        [-0.00420830006296808, 0.00394072807300454, 0.0355577012288489, -0.0047120226259077],
+        [-0.00553257770440025, -0.00517399019618361, -0.0047120226259077, 0.0450257116742785]
+      ]
+    },
+    "ED_relative": {
+      "type": "relative",
+      "response_levels": [10, 50, 90],
+      "level": 0.95,
+      "df_residual": 20,
+      "t_quantile": 2.08596344726586,
+      "table": {
+        "row_names": ["e:1:10", "e:1:50", "e:1:90"],
+        "col_names": ["Estimate", "Std. Error", "Lower", "Upper"],
+        "values": [
+          [1.46371138855031, 0.186771971597753, 1.07411188282362, 1.853310894277],
+          [3.05795711457471, 0.185731240477548, 2.67052853592319, 3.44538569322622],
+          [6.38862400588383, 0.84509706418376, 4.62578242060481, 8.15146559116284]
+        ]
+      },
+      "se_log": [0.127601638587192, 0.0607370324431051, 0.132281546606192]
+    },
+    "ED_absolute": {
+      "type": "absolute",
+      "response_levels": [2, 4, 6],
+      "level": 0.95,
+      "df_residual": 20,
+      "t_quantile": 2.08596344726586,
+      "table": {
+        "row_names": ["e:1:2", "e:1:4", "e:1:6"],
+        "col_names": ["Estimate", "Std. Error", "Lower", "Upper"],
+        "values": [
+          [4.7907790340582, 0.45351118548821, 3.84477127820359, 5.73678678991281],
+          [3.13592766867944, 0.191399133542893, 2.73667607227061, 3.53517926508827],
+          [2.09753528371173, 0.17339929387957, 1.73583069489723, 2.45923987252622]
+        ]
+      },
+      "se_log": [0.0946633485418856, 0.0610342947174839, 0.0826681177790387],
+      "definition": "info: drc's fixed-p definition (p = (d - y)/(d - c) held fixed); pinned by ED_absolute_two_ways$fixed_p"
+    },
+    "ED_absolute_two_ways": {
+      "response_levels": [2, 4, 6],
+      "level": 0.95,
+      "df_residual": 20,
+      "t_quantile": 2.08596344726586,
+      "full_gradient": {
+        "definition": "delta SE from the gradient of the closed-form absolute ED over all four drc parameters (b, c, d, e), with drc's coef() and vcov(); interval = Estimate +/- t(df) * SE on the original scale. This is robustmargin's definition and the test reference.",
+        "columns": ["Estimate", "Std. Error", "Lower", "Upper"],
+        "table": {
+          "row_names": {},
+          "col_names": {},
+          "values": [
+            [4.7907790340582, 0.364107510088329, 4.03126407713896, 5.55029399097744],
+            [3.13592766867944, 0.157181828885395, 2.80805211905011, 3.46380321830877],
+            [2.09753528371173, 0.147428263878605, 1.79000531416709, 2.40506525325636]
+          ]
+        },
+        "se_log": [0.0760017332253997, 0.0501229127365636, 0.0702864285637765]
+      },
+      "fixed_p": {
+        "definition": "drc's definition recomputed in R: the level is converted to p = (d - y)/(d - c) at the fitted (c, d) and p is then held fixed, so the gradient runs through b and e only. Asserted equal to drc's ED(type = 'absolute') Std. Error to 1e-8 relative.",
+        "columns": ["Estimate", "Std. Error", "Lower", "Upper"],
+        "table": {
+          "row_names": {},
+          "col_names": {},
+          "values": [
+            [4.7907790340582, 0.453511185525313, 3.84477127812619, 5.73678678999021],
+            [3.13592766867944, 0.191399133544026, 2.73667607226824, 3.53517926509063],
+            [2.09753528371173, 0.173399293885424, 1.73583069488502, 2.45923987253843]
+          ]
+        },
+        "max_relative_difference_from_drc_se": 8.18148090411179e-11
+      }
+    },
+    "predict_confidence": {
+      "conc": [0.94, 1.88, 3.75, 7.5, 15, 30],
+      "level": 0.95,
+      "table": {
+        "row_names": {},
+        "col_names": ["Prediction", "Lower", "Upper"],
+        "values": [
+          [7.58233727265566, 7.24632029125273, 7.9183542540586],
+          [6.40463472682511, 5.83788770976973, 6.97138174388049],
+          [3.05817527673588, 2.47025475630453, 3.64609579716723],
+          [0.952514643891825, 0.568558077875825, 1.33647120990783],
+          [0.544582821378156, 0.152089066023084, 0.937076576733227],
+          [0.489464924966996, 0.0567125941238539, 0.922217255810138]
+        ]
+      },
+      "note": "columns Prediction, Lower, Upper; identity-scale t(df_residual) band."
+    }
+  },
+  "LN4": {
+    "fct": "LN.4",
+    "rss_default_fit": 5.46222098213047,
+    "rss_tight_fit": 5.46222067285926,
+    "control": "reference = refit from the default fit's coef with drmc(relTol=1e-14, maxIt=10000, method='BFGS')",
+    "coef": {
+      "b": -1.79180495117965,
+      "c": 0.522789305767121,
+      "d": 7.77230545449623,
+      "e": 3.04461236669935
+    },
+    "vcov": {
+      "row_names": ["b", "c", "d", "e"],
+      "col_names": ["b", "c", "d", "e"],
+      "values": [
+        [0.0755517379045788, -0.0257247781159547, 0.01919385726519, 0.00460837619816187],
+        [-0.0257247781159547, 0.0436445908009783, -0.00357336458408712, -0.0172935771590163],
+        [0.01919385726519, -0.00357336458408712, 0.0351331266969306, -0.0125820704951709],
+        [0.00460837619816187, -0.0172935771590163, -0.0125820704951709, 0.034486480255071]
+      ]
+    },
+    "vcov_definitions": {
+      "nls_gauss_newton": {
+        "row_names": ["b", "c", "d", "e"],
+        "col_names": ["b", "c", "d", "e"],
+        "values": [
+          [0.0678079720269687, -0.0215754136707126, 0.018549589013389, 0.000845500959732024],
+          [-0.0215754136707126, 0.0417504663954382, -0.00294018124263209, -0.0159935113172932],
+          [0.018549589013389, -0.00294018124263209, 0.0353313984030181, -0.013521554902423],
+          [0.000845500959732024, -0.0159935113172932, -0.013521554902423, 0.0342159839528799]
+        ]
+      },
+      "observed_hessian": {
+        "row_names": ["b", "c", "d", "e"],
+        "col_names": ["b", "c", "d", "e"],
+        "values": [
+          [0.075552227354557, -0.0257249454438768, 0.0191939607777674, 0.0046084400661388],
+          [-0.0257249454438768, 0.043644655204259, -0.00357338161451293, -0.017293630464428],
+          [0.0191939607777674, -0.00357338161451293, 0.0351331650353376, -0.0125820953759307],
+          [0.0046084400661388, -0.017293630464428, -0.0125820953759307, 0.0344865733080512]
+        ]
+      },
+      "nls_converged": false,
+      "max_scaled_gap_drc_vs_nls_gauss_newton": 0.102496197868941,
+      "max_scaled_gap_drc_vs_observed_hessian": 6.47834175309347e-06,
+      "drc_vcov_equals": "observed_hessian",
+      "note": "gap = max over entries of |V_drc - V_other| / (sd_i sd_j) using drc's own SDs. drc_vcov_equals names the closer definition; it is a numeric verdict, not an assumption."
+    },
+    "n": 24,
+    "df_residual": 20,
+    "rss": 5.46222067285926,
+    "residual_sd": 0.522600261809122,
+    "residual_sd_drc_summary": 0.522600261809122,
+    "logLik_drc": -16.2921439172677,
+    "logLik_gaussian_mle": -16.2921439172677,
+    "AIC_drc": 42.5842878345354,
+    "mapped": {
+      "mu": 1.11337359148176,
+      "s": 0.558096459852756,
+      "upper": 7.77230545449623,
+      "lower": 0.522789305767121
+    },
+    "s_formula": "-1/b",
+    "curve_check": {
+      "x": [0.94, 1.88, 3.75, 7.5, 15, 30],
+      "max_abs_difference_from_predict": 6.66133814775094e-16,
+      "formula": "P(x) = upper - (upper - lower) * F((log(x) - mu) / s), F = plogis (LL.4) or pnorm (LN.4)"
+    },
+    "mapped_vcov": {
+      "row_names": ["mu", "s", "upper", "lower"],
+      "col_names": ["mu", "s", "upper", "lower"],
+      "values": [
+        [0.0037203590692002, 0.000471448711544949, -0.00413256893809803, -0.00568005876484177],
+        [0.000471448711544949, 0.00732962118249797, 0.00597834255540443, -0.00801253930432551],
+        [-0.00413256893809803, 0.00597834255540443, 0.0351331266969306, -0.00357336458408712],
+        [-0.00568005876484177, -0.00801253930432551, -0.00357336458408712, 0.0436445908009783]
+      ]
+    },
+    "ED_relative": {
+      "type": "relative",
+      "response_levels": [10, 50, 90],
+      "level": 0.95,
+      "df_residual": 20,
+      "t_quantile": 2.08596344726586,
+      "table": {
+        "row_names": ["e:1:10", "e:1:50", "e:1:90"],
+        "col_names": ["Estimate", "Std. Error", "Lower", "Upper"],
+        "values": [
+          [1.48905873614924, 0.179615111989684, 1.11438817796219, 1.86372929433628],
+          [3.04461236669935, 0.185705358713934, 2.65723777646069, 3.43198695693801],
+          [6.22518389531787, 0.810869644476496, 4.53373945644243, 7.9166283341933]
+        ]
+      },
+      "se_log": [0.120623255234495, 0.0609947462426085, 0.130256335894972]
+    },
+    "ED_absolute": {
+      "type": "absolute",
+      "response_levels": [2, 4, 6],
+      "level": 0.95,
+      "df_residual": 20,
+      "t_quantile": 2.08596344726586,
+      "table": {
+        "row_names": ["e:1:2", "e:1:4", "e:1:6"],
+        "col_names": ["Estimate", "Std. Error", "Lower", "Upper"],
+        "values": [
+          [4.83370081002398, 0.471857148840311, 3.84942404521201, 5.81797757483596],
+          [3.13258391717215, 0.192789529046254, 2.73043200656606, 3.53473582777823],
+          [2.06923132342805, 0.167820413576596, 1.71916407500223, 2.41929857185387]
+        ]
+      },
+      "se_log": [0.0976181951232456, 0.0615432927397166, 0.0811027803786442],
+      "definition": "info: drc's fixed-p definition (p = (d - y)/(d - c) held fixed); pinned by ED_absolute_two_ways$fixed_p"
+    },
+    "ED_absolute_two_ways": {
+      "response_levels": [2, 4, 6],
+      "level": 0.95,
+      "df_residual": 20,
+      "t_quantile": 2.08596344726586,
+      "full_gradient": {
+        "definition": "delta SE from the gradient of the closed-form absolute ED over all four drc parameters (b, c, d, e), with drc's coef() and vcov(); interval = Estimate +/- t(df) * SE on the original scale. This is robustmargin's definition and the test reference.",
+        "columns": ["Estimate", "Std. Error", "Lower", "Upper"],
+        "table": {
+          "row_names": {},
+          "col_names": {},
+          "values": [
+            [4.83370081002398, 0.385329000971324, 4.02991859882633, 5.63748302122164],
+            [3.13258391717215, 0.157569010023112, 2.80390072184207, 3.46126711250223],
+            [2.06923132342805, 0.143072840123289, 1.77078660863435, 2.36767603822174]
+          ]
+        },
+        "se_log": [0.0797171807101177, 0.0503000124463875, 0.0691429897196141]
+      },
+      "fixed_p": {
+        "definition": "drc's definition recomputed in R: the level is converted to p = (d - y)/(d - c) at the fitted (c, d) and p is then held fixed, so the gradient runs through b and e only. Asserted equal to drc's ED(type = 'absolute') Std. Error to 1e-8 relative.",
+        "columns": ["Estimate", "Std. Error", "Lower", "Upper"],
+        "table": {
+          "row_names": {},
+          "col_names": {},
+          "values": [
+            [4.83370081002398, 0.4718571488866, 3.84942404511545, 5.81797757493252],
+            [3.13258391717215, 0.19278952904818, 2.73043200656204, 3.53473582778225],
+            [2.06923132342805, 0.167820413582762, 1.71916407498937, 2.41929857186673]
+          ]
+        },
+        "max_relative_difference_from_drc_se": 9.80990766465359e-11
+      }
+    },
+    "predict_confidence": {
+      "conc": [0.94, 1.88, 3.75, 7.5, 15, 30],
+      "level": 0.95,
+      "table": {
+        "row_names": {},
+        "col_names": ["Prediction", "Lower", "Upper"],
+        "values": [
+          [7.64464055334023, 7.30582687040544, 7.98345423627502],
+          [6.3670594025588, 5.78361999955275, 6.95049880556486],
+          [3.09225483813434, 2.50467989233958, 3.67982978392911],
+          [0.907853510317746, 0.49976865035488, 1.31593837028061],
+          [0.538274099793191, 0.126492970839058, 0.950055228747323],
+          [0.522939494260589, 0.0876112225423084, 0.958267765978871]
+        ]
+      },
+      "note": "columns Prediction, Lower, Upper; identity-scale t(df_residual) band."
+    }
+  }
+}

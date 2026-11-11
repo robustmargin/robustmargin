@@ -31,7 +31,11 @@ literal list, so it cannot drift from ``schema/scorecard-v2.json``.
 version found and the versions this reader reads. Version ``"2"`` adds the ``"increasing"``
 direction and the ``"baseline_multiple"`` definition to version ``"1"``; a ``Fit`` or
 ``Threshold`` tagged ``"1"`` that carries either raises, since no ``"1"`` writer could have
-produced it (the check is per object, not per card). Only the ``Scorecard`` root requires the tag;
+produced it (the check is per object, not per card). The same holds for a ``Fit`` with
+``model="gaussian"`` (a continuous response), which schema ``"2"`` also carries: its ``cells`` are
+``ContinuousCell``, it has a ``residual``, and its diagnostics are ``ContinuousDiagnostics``. A
+binomial ``Fit`` writes no ``residual`` key at all, so its serialised form is unchanged. Only the
+``Scorecard`` root requires the tag;
 a nested or bare result that omits it is read as ``"2"``. A reader older than this release reads
 ``"1"`` only and rejects every card written now, so upgrade readers before writers; a result read
 from a ``"1"`` card keeps ``"1"`` when written back.
@@ -58,8 +62,24 @@ from robustmargin.empirical import BaselineRate, GridBreakPoint
 from robustmargin.models import Covariance, Fit, Parameter
 from robustmargin.ratio import Ratio
 from robustmargin.threshold import Threshold
-from robustmargin.types import Axis, Cell, Censoring, Definition, IntervalShape, JSONValue, Status
-from robustmargin.validation import AdjacentPair, Diagnostics, MonotonicityCheck
+from robustmargin.types import (
+    Axis,
+    Cell,
+    Censoring,
+    ContinuousCell,
+    Definition,
+    IntervalShape,
+    JSONValue,
+    Residual,
+    Status,
+)
+from robustmargin.validation import (
+    AdjacentPair,
+    ContinuousAdjacentPair,
+    ContinuousDiagnostics,
+    Diagnostics,
+    MonotonicityCheck,
+)
 
 __all__ = ["SCHEMA_VERSION", "Scorecard", "from_dict", "load_schema", "to_dict"]
 
@@ -71,6 +91,10 @@ _SUPPORTED_SCHEMA_VERSIONS: frozenset[str] = frozenset({"1", "2"})
 # What schema "2" added to "1": a "1" payload carrying either is not one a "1" writer produced.
 _VERSION_2_DIRECTIONS = frozenset({"increasing"})
 _VERSION_2_DEFINITION_KINDS = frozenset({"baseline_multiple"})
+_VERSION_2_MODELS = frozenset({"gaussian"})
+# A field written only when set: a binomial Fit has no residual and writes no key for it, so its
+# serialised form is the one a schema "1" reader accepts.
+_OMITTED_WHEN_NONE = frozenset({"residual"})
 
 
 def _default_created_at() -> str:
@@ -205,6 +229,8 @@ def _encode_dataclass_instance(obj: Any) -> dict[str, JSONValue]:
     result: dict[str, JSONValue] = {}
     for f in dataclasses.fields(obj):
         raw = getattr(obj, f.name)
+        if f.name in _OMITTED_WHEN_NONE and raw is None:
+            continue
         if f.name == "provenance":
             result[f.name] = _encode_provenance(raw)
         else:
@@ -448,6 +474,16 @@ def _cell_from_dict(data: object, card_version: str | None) -> Cell:
     return Cell(**_validated_fields(Cell, data, tagged=False, card_version=card_version))
 
 
+def _continuous_cell_from_dict(data: object, card_version: str | None) -> ContinuousCell:
+    return ContinuousCell(
+        **_validated_fields(ContinuousCell, data, tagged=False, card_version=card_version)
+    )
+
+
+def _residual_from_dict(data: object, card_version: str | None) -> Residual:
+    return Residual(**_validated_fields(Residual, data, tagged=False, card_version=card_version))
+
+
 def _parameter_from_dict(data: object, card_version: str | None) -> Parameter:
     return Parameter(**_validated_fields(Parameter, data, tagged=False, card_version=card_version))
 
@@ -465,12 +501,26 @@ def _adjacent_pair_from_dict(data: object, card_version: str | None) -> Adjacent
     return AdjacentPair(**fields)
 
 
+def _continuous_adjacent_pair_from_dict(
+    data: object, card_version: str | None
+) -> ContinuousAdjacentPair:
+    fields = _validated_fields(
+        ContinuousAdjacentPair, data, tagged=False, card_version=card_version
+    )
+    return ContinuousAdjacentPair(**fields)
+
+
 def _monotonicity_check_from_dict(data: object, card_version: str | None) -> MonotonicityCheck:
     """``MonotonicityCheck`` is an untagged helper, like ``BaselineRate``: it only ever appears
-    as ``Fit.monotonicity``.
+    as ``Fit.monotonicity``. Its ``method`` says which pair type its ``pairs`` are.
     """
     fields = _validated_fields(MonotonicityCheck, data, tagged=False, card_version=card_version)
-    fields["pairs"] = tuple(_adjacent_pair_from_dict(p, card_version) for p in fields["pairs"])
+    build_pair = (
+        _continuous_adjacent_pair_from_dict
+        if fields.get("method") == "welch_t_one_sided_holm"
+        else _adjacent_pair_from_dict
+    )
+    fields["pairs"] = tuple(build_pair(p, card_version) for p in fields["pairs"])
     return MonotonicityCheck(**fields)
 
 
@@ -483,12 +533,32 @@ def _diagnostics_from_dict(data: object, card_version: str | None) -> Diagnostic
     return Diagnostics(**fields)
 
 
+def _continuous_diagnostics_from_dict(
+    data: object, card_version: str | None
+) -> ContinuousDiagnostics:
+    """``ContinuousDiagnostics`` is an untagged helper, like ``Diagnostics``: it only ever appears
+    as a Gaussian ``Fit.diagnostics``."""
+    fields = _validated_fields(ContinuousDiagnostics, data, tagged=False, card_version=card_version)
+    fields["link_status"] = {k: Status(v) for k, v in fields["link_status"].items()}
+    return ContinuousDiagnostics(**fields)
+
+
 def _reject_version_2_content(
-    fields: dict[str, Any], *, type_name: str, definition: object = None
+    fields: dict[str, Any], *, type_name: str, definition: object = None, raw: object = None
 ) -> None:
     """Refuse a payload that says it is schema ``"1"`` but carries what only ``"2"`` has."""
     if fields.get("schema_version", SCHEMA_VERSION) != "1":
         return
+    if fields.get("model") in _VERSION_2_MODELS:
+        raise ValueError(
+            f"from_dict: {type_name} has schema_version '1' but model {fields['model']!r}, "
+            "which only schema_version '2' has"
+        )
+    if type_name == "Fit" and isinstance(raw, Mapping) and "residual" in raw:
+        raise ValueError(
+            "from_dict: Fit has schema_version '1' but carries a 'residual' key, which only "
+            "schema_version '2' has"
+        )
     if fields.get("direction") in _VERSION_2_DIRECTIONS:
         raise ValueError(
             f"from_dict: {type_name} has schema_version '1' but direction "
@@ -503,9 +573,11 @@ def _reject_version_2_content(
 
 def _fit_from_dict(data: object, card_version: str | None) -> Fit:
     fields = _validated_fields(Fit, data, tagged=True, card_version=card_version)
-    _reject_version_2_content(fields, type_name="Fit")
+    _reject_version_2_content(fields, type_name="Fit", raw=data)
     fields["axis"] = _axis_from_dict(fields["axis"], card_version)
-    fields["cells"] = tuple(_cell_from_dict(c, card_version) for c in fields["cells"])
+    gaussian = fields.get("model") == "gaussian"
+    build_cell = _continuous_cell_from_dict if gaussian else _cell_from_dict
+    fields["cells"] = tuple(build_cell(c, card_version) for c in fields["cells"])
     fields["status"] = Status(fields["status"])
     if fields.get("params") is not None:
         fields["params"] = {
@@ -520,7 +592,12 @@ def _fit_from_dict(data: object, card_version: str | None) -> Fit:
     # that omits either decodes with `None` and needs no special case beyond the nested-object
     # conversion below.
     if fields.get("diagnostics") is not None:
-        fields["diagnostics"] = _diagnostics_from_dict(fields["diagnostics"], card_version)
+        build_diagnostics = (
+            _continuous_diagnostics_from_dict if gaussian else _diagnostics_from_dict
+        )
+        fields["diagnostics"] = build_diagnostics(fields["diagnostics"], card_version)
+    if fields.get("residual") is not None:
+        fields["residual"] = _residual_from_dict(fields["residual"], card_version)
     if fields.get("monotonicity") is not None:
         fields["monotonicity"] = _monotonicity_check_from_dict(fields["monotonicity"], card_version)
     return Fit(**fields)

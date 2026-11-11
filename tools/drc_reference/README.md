@@ -48,6 +48,8 @@ own output; the fixture itself should never be the source of the imprecision.
 | `selenium_edcomp.json` | `EDcomp` with Fieller and delta intervals | `tests/reference/test_ratio_drc_edcomp.py` |
 | `estimated_asymptotes.json` | a seeded simulated binomial dataset (embedded raw data) fit with binomial `LN.3`/`LN.4` | `tests/reference/test_models_drc.py` |
 | `monotonicity_system_c_axis_1.json` | the one-sided Fisher exact p-value for the reversal between the two lowest levels of `tests/data/pooled_counts.csv`'s `system_c_axis_1` series | `tests/reference/test_monotonicity_drc.py` |
+| `ryegrass_ll4.json` | Gaussian `LL.4` (logit) and `LN.4` (probit) fits of the `ryegrass` data (embedded): coef, `vcov`, residual SD, df, RSS, `logLik`, `ED` delta (relative and absolute), `predict` confidence band | `tests/reference/test_continuous_drc.py` |
+| `salba_separate.json` | `S.alba`: one `LL.4` fit per herbicide, the ED50 ratio computed in R from the two separate fits (log-delta and Fieller, Welch-Satterthwaite t), and the pooled `EDcomp` for information only | `tests/reference/test_ratio_salba_separate.py` |
 
 ## Definitional notes (written here and in the fixtures themselves, never absorbed into a test tolerance)
 
@@ -128,3 +130,56 @@ of the two), `mu` uses an **absolute** tolerance of `1e-4` (its true simulated v
 rather than `1e-4`. No other test in this file is affected -- the fixed-asymptote GLM tests
 (`TestFinney71Probit`, `TestFinney71Logit`) still use the ordinary 1e-4 relative bound, because
 that path has an exact, fully-converged `glm`/drc reference to compare against.
+
+**Continuous outcomes: `ryegrass_ll4.json`.** The logit link corresponds to `LL.4` and the probit
+link to `LN.4`, with `mu = log(e)`, `upper = d`, `lower = c` and `s = |1/b|` for a decreasing
+outcome. The sign of `b` differs between the two (`LL.4`: `b > 0`; `LN.4`: `b < 0`), so each
+block records its `s_formula` and a `curve_check`: the curve recomputed from the mapped
+parameters against drc's `predict()`, verified inside `generate.R`. `mapped_vcov` is drc's `vcov`
+carried to `(mu, s, upper, lower)` by the delta method. The reference is a tight refit
+(`relTol = 1e-14`) from drc's default coefficients, because the default stopping rule can end
+short of the minimum; the default fit's RSS is recorded. `logLik_drc` is drc's `logLik()`;
+`logLik_gaussian_mle` is `-n/2 (log(2 pi RSS/n) + 1)`, the definition the tests use.
+
+Each fit (ryegrass `LL.4`/`LN.4` and each S.alba fit) also carries a `vcov_definitions` block
+with two candidate covariances next to drc's `vcov`: `nls_gauss_newton` (R `nls`'s
+`vcov()`, `sigma^2 (J'J)^-1`) and `observed_hessian` (`sigma^2 (1/2 d2 RSS)^-1`, numerical
+Hessian). `max_scaled_gap_drc_vs_*` is the largest entry-wise gap scaled by drc's own SDs, and
+`drc_vcov_equals` names the closer definition: a numeric verdict, never asserted in R.
+robustmargin's covariance is the observed Hessian and the Python tests compare it to drc's
+`vcov`. If drc's `vcov` matches the Gauss-Newton form instead, the gap is a definitional
+difference to record in the fixture, not to absorb into the tolerance. These blocks (and the
+two continuous JSON files) need R: regenerate with `Rscript generate.R`.
+
+drc's `ED(..., interval = "delta")` returns `Estimate +/- qt(0.975, df.residual) * SE` on the
+original concentration scale. robustmargin's delta interval is built on the log scale and
+exponentiated, so the tests compare `Estimate` and the standard error (as `SE / Estimate` on the
+log scale), never the endpoints. `type = "relative"` percentages map to `relative(p / 100)`, and
+`type = "absolute"` response levels map to `absolute(level)`.
+
+**Absolute-ED SE: two definitions.** drc's `ED(type = "absolute")` converts the level to a
+relative `p = (d - y)/(d - c)` at the fitted `(c, d)` and holds `p` fixed, so its delta gradient
+runs through `(b, e)` only. robustmargin uses the full delta method over all four parameters.
+`ED_absolute_two_ways` holds both, computed in R from drc's `coef`/`vcov` and the closed-form ED
+(`LL.4`: `e exp(log(p/(1-p))/b)`; `LN.4`: `e exp(qnorm(1-p)/b)`): `full_gradient` (SE, `se_log`,
+t(df) interval on the original scale) is the test reference, and `fixed_p` is drc's definition
+recomputed, asserted in `generate.R` to equal drc's SE to 1e-8 relative. The `ED_absolute` block
+is labelled as the fixed-`p` definition and stays pinned; the gap is recorded, never absorbed
+into a tolerance.
+
+**Continuous ratio: `salba_separate.json`.** The two herbicides are fitted separately (least
+squares separates by curve), so each has its own residual variance and df. The ratio of their
+ED50s is computed in R from those two fits, with a Welch-Satterthwaite t quantile:
+
+- log-delta: `La = (SE_a/ED_a)^2`, `Lb = (SE_b/ED_b)^2`, `nu = (La + Lb)^2 / (La^2/df_a +
+  Lb^2/df_b)`, interval `rho * exp(+-qt(0.975, nu) * sqrt(La + Lb))`.
+- Fieller (independent, `C = 0`): `Va = SE_a^2`, `Vb = SE_b^2` on the original scale,
+  `nu = (Va + rho^2 Vb)^2 / (Va^2/df_a + rho^4 Vb^2/df_b)` at `rho = ED_a/ED_b`, `t = qt(0.975,
+  nu)`, endpoints the roots of `(ED_b^2 - t^2 Vb) r^2 - 2 ED_a ED_b r + (ED_a^2 - t^2 Va) = 0`.
+
+The `info_only_pooled_sigma` block holds `EDcomp` on the pooled joint fit, which shares one
+residual variance across curves and so gives different intervals. It is recorded for information
+and is not a test reference for the intervals. drc's default joint fit stops short of the
+minimum, so the block also records `rss_default_fit`, `rss_tight_fit` and a `tight_refit`
+(`relTol = 1e-14`, `BFGS`, from the default coefficients) with its own `EDcomp` delta and Fieller
+tables; the point-estimate test reads the tight refit.

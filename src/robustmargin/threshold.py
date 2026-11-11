@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from robustmargin.censoring import _baseline_rate, classify
 from robustmargin.empirical import BaselineRate, GridBreakPoint
 from robustmargin.intervals import delta_interval, profile_interval, solve_value
-from robustmargin.models import Fit, _mirror_fit
+from robustmargin.models import Fit, _count_cells, _mirror_fit
 from robustmargin.types import (
     Axis,
     Cell,
@@ -35,6 +35,8 @@ _TERMINAL_STATUSES = frozenset(
 )
 _NONCONVERGENT_STATUSES = frozenset({Status.SEPARATION, Status.NOT_CONVERGED})
 _VALID_DIRECTIONS = frozenset({"decreasing", "increasing"})
+# A threshold on a Gaussian fit makes no exact claim: it is solved, unreachable, or the fit failed.
+_GAUSSIAN_THRESHOLD_STATUSES = frozenset({Status.OK, Status.UNREACHABLE, Status.NOT_CONVERGED})
 
 # A threshold with a value, with status OK, or with an open-sided censoring needs the fit
 # underneath it to have actually converged. UNREACHABLE does not: a target outside (0, 1) is
@@ -123,6 +125,19 @@ class Threshold:
     is only an estimate of the zero-severity rate, and exact claims against a target built from it
     carry no coverage guarantee for the quantity the definition names. For a covered claim on a
     failed fit, use ``absolute(a)``.
+
+    **A Gaussian (continuous-response) fit makes no exact claims.** A Clopper-Pearson rule has no
+    continuous counterpart without a distributional assumption, so a threshold on a Gaussian fit
+    is ``OK`` (``censoring`` ``NONE``, ``OPEN_UPPER`` or ``OPEN_LOWER``), ``UNREACHABLE`` (the
+    target is not strictly inside the fitted range of the response) or ``NOT_CONVERGED`` (the fit
+    failed: no value, no bound, no grid), and never ``FAILS_AT_BASELINE``, ``RIGHT``, ``LEFT`` or
+    ``SEPARATION``. ``interval_method`` is ``"exact_bound"`` on the last two, as for any threshold
+    that reports no model-based interval. Its intervals are calibrated on the residual degrees of
+    freedom: Student-t for ``delta``, ``F(1, df)`` for ``profile``. Targets are in response units:
+    ``absolute(a)`` takes any finite ``a``, ``baseline_fraction(p)`` requires a positive fitted
+    ``upper`` and ``baseline_multiple(k)`` a positive fitted ``lower``, and ``relative(p)`` is a
+    fraction of the fitted range. A value outside the nonzero tested range carries the
+    ``EXTRAPOLATED: `` warning described below.
 
     **Exact ties.** A claim is read non-strictly at the tested severities: a lower bound means the
     true rate there is at least the target, an upper bound that it is at most the target. If a
@@ -281,6 +296,25 @@ class Threshold:
             raise ValueError("Threshold.axis must equal Threshold.fit.axis")
         if self.direction != self.fit.direction:
             raise ValueError("Threshold.direction must equal Threshold.fit.direction")
+
+        if self.fit.model == "gaussian":
+            if self.status not in _GAUSSIAN_THRESHOLD_STATUSES:
+                raise ValueError(
+                    f"Threshold.status for a Gaussian fit must be one of "
+                    f"{sorted(s.value for s in _GAUSSIAN_THRESHOLD_STATUSES)}, got "
+                    f"{self.status!r}: a continuous response has no exact claims"
+                )
+            if self.censoring in (Censoring.RIGHT, Censoring.LEFT):
+                raise ValueError(
+                    f"Threshold.censoring for a Gaussian fit must not be {self.censoring!r}: "
+                    "a continuous response has no exact bound"
+                )
+            if self.baseline is not None or self.grid is not None:
+                raise ValueError("Threshold.baseline and .grid must be None for a Gaussian fit")
+            if self.status is Status.NOT_CONVERGED and (self.lo is not None or self.hi is not None):
+                raise ValueError(
+                    "Threshold.lo and .hi must be None for a Gaussian fit that did not converge"
+                )
 
         _check_value(self.value, label="value", scale=self.axis.scale)
         _check_value(self.lo, label="lo", scale=self.axis.scale)
@@ -462,7 +496,7 @@ _VALID_DEPENDENCE_INPUTS = frozenset({"independent"})
 
 
 def _control_cell_or_none(fit: Fit) -> Cell | None:
-    for cell in fit.cells:
+    for cell in _count_cells(fit):
         if cell.severity == 0.0:
             return cell
     return None
@@ -510,7 +544,20 @@ def _resolve_target(definition: Definition, *, fit: Fit) -> float:
         assert fit.params is not None
         upper = fit.params["upper"].value
         lower = fit.params["lower"].value
-        if definition.kind == "baseline_multiple" and fit.params["lower"].fixed and lower <= 0.0:
+        if fit.model == "gaussian":
+            if definition.kind == "baseline_fraction" and upper <= 0.0:
+                raise ValueError(
+                    "threshold: definition.kind='baseline_fraction' needs a positive fitted "
+                    f"upper asymptote (the response at zero severity), got {upper!r}; a fraction "
+                    "of a level at or below zero is not a threshold. Use absolute(a)"
+                )
+            if definition.kind == "baseline_multiple" and lower <= 0.0:
+                raise ValueError(
+                    "threshold: definition.kind='baseline_multiple' needs a positive fitted "
+                    f"lower asymptote (the response at zero severity), got {lower!r}; a multiple "
+                    "of a level at or below zero is not a threshold. Use absolute(a)"
+                )
+        elif definition.kind == "baseline_multiple" and fit.params["lower"].fixed and lower <= 0.0:
             raise ValueError(
                 "threshold: definition.kind='baseline_multiple' needs a baseline above zero, and "
                 f"this fit's lower asymptote (the rate at zero severity) is fixed at {lower!r}; a "
@@ -518,6 +565,13 @@ def _resolve_target(definition: Definition, *, fit: Fit) -> float:
                 "lower above zero"
             )
     else:
+        if fit.model == "gaussian":
+            raise ValueError(
+                f"threshold: definition.kind={definition.kind!r} is a multiple of the fitted "
+                f"response at zero severity, and fit.status is {fit.status.value} (no fitted "
+                "asymptotes). A Gaussian fit has no exact-bound fallback to take a baseline "
+                "from. Use absolute(a), or refit so that the fit converges"
+            )
         if definition.kind == "relative":
             # `relative(p)` needs BOTH asymptotes, and a failed fit has neither. Nothing in the
             # data speaks to the far asymptote, and substituting `0` for it would silently turn
@@ -588,6 +642,14 @@ def _solve_inputs(definition: Definition, *, fit: Fit) -> _SolveInputs:
     target = _resolve_target(definition, fit=fit)
     if fit.direction == "decreasing":
         return _SolveInputs(fit, definition, target, None)
+    if fit.model == "gaussian":
+        # The negated response: performance `-P`, so `absolute(a)` becomes `absolute(-a)`,
+        # `relative(p)` is unchanged, and `baseline_multiple(k)` (target `k * l`) becomes the
+        # target `k * u'` of the view, with `u' = -l`. Negation is exact.
+        negated = (
+            Definition.absolute(-definition.value) if definition.kind == "absolute" else definition
+        )
+        return _SolveInputs(_mirror_fit(fit), negated, -target, target)
     view_definition = (
         Definition.absolute(1.0 - definition.value) if definition.kind == "absolute" else definition
     )
@@ -635,6 +697,55 @@ def _extrapolation_warning(fit: Fit, *, value: float) -> str | None:
     )
 
 
+def _gaussian_not_converged(fit: Fit, *, definition: Definition, level: float) -> Threshold:
+    """The threshold of a Gaussian fit that did not converge: ``NOT_CONVERGED`` with no value, no
+    bound and no grid, carrying the fit's own reason. A Gaussian fit has no exact-bound fallback.
+
+    ``absolute(a)`` and ``relative(p)`` are accepted (neither needs an asymptote to be stated);
+    ``baseline_fraction`` and ``baseline_multiple`` are multiples of a fitted asymptote and raise.
+    """
+    if definition.kind in ("baseline_fraction", "baseline_multiple"):
+        _resolve_target(definition, fit=fit)  # raises, naming the direction rule or the failure
+    reasons = list(fit.warnings)
+    if fit.monotonicity is not None and fit.monotonicity.any_flagged:
+        reasons.insert(0, _non_monotone_warning(fit))
+    return Threshold(
+        axis=fit.axis,
+        definition=definition,
+        direction=fit.direction,
+        value=None,
+        lo=None,
+        hi=None,
+        level=level,
+        interval_method="exact_bound",
+        censoring=Censoring.NONE,
+        status=Status.NOT_CONVERGED,
+        dependence="independent",
+        fit=fit,
+        warnings=(
+            *reasons,
+            "threshold: the Gaussian fit did not converge, so no value or bound is reported; "
+            "there is no exact-bound fallback for a continuous response",
+        ),
+        baseline=None,
+        grid=None,
+    )
+
+
+def _non_monotone_warning(fit: Fit) -> str:
+    assert fit.monotonicity is not None
+    flagged_pairs = ", ".join(
+        f"({pair.severity_low!r}, {pair.severity_high!r})"
+        for pair in fit.monotonicity.pairs
+        if pair.flagged
+    )
+    return (
+        "NON_MONOTONE_DATA: threshold: fit.monotonicity flags an adjacent-level reversal "
+        f"at severity pair(s) {flagged_pairs}; every threshold rule and every fitted model "
+        "here assume the true performance curve is monotone in severity"
+    )
+
+
 def threshold(
     fit: Fit,
     *,
@@ -668,6 +779,15 @@ def threshold(
         Which target performance to solve for.
     interval_method
         ``"profile"`` (primary) or ``"delta"`` (cross-check). Required, with no default.
+        For ``Definition.absolute(a)`` on a fit with estimated asymptotes, the delta standard
+        error is the full delta method over every free parameter, the asymptotes included,
+        because the target ``a`` is fixed on the outcome's own scale and the fitted asymptotes
+        move the point it corresponds to. R ``drc``'s ``ED(type="absolute")`` instead converts
+        ``a`` to a relative level at the fitted asymptotes and holds that level fixed, which
+        leaves their uncertainty out; its standard error can differ noticeably (about 20% on
+        the ryegrass data). The point estimates agree with ``drc``. This applies to Gaussian
+        and binomial fits alike, whenever an asymptote is estimated; a fixed asymptote adds no
+        term.
     level
         The confidence level, strictly between 0 and 1.
     dependence
@@ -722,23 +842,16 @@ def threshold(
             "dependence='independent' explicitly"
         )
 
-    inputs = _solve_inputs(definition, fit=fit)
     collected_warnings: list[str] = []
+    if fit.model == "gaussian" and fit.status is not Status.OK:
+        return _gaussian_not_converged(fit, definition=definition, level=level)
+    inputs = _solve_inputs(definition, fit=fit)
 
     # Applies whatever the resulting censoring or status, because every threshold rule and every
     # fitted model assume the true performance curve is monotone in severity. Never changes
     # value/lo/hi/status/censoring -- only adds a warning.
     if fit.monotonicity is not None and fit.monotonicity.any_flagged:
-        flagged_pairs = ", ".join(
-            f"({pair.severity_low!r}, {pair.severity_high!r})"
-            for pair in fit.monotonicity.pairs
-            if pair.flagged
-        )
-        collected_warnings.append(
-            "NON_MONOTONE_DATA: threshold: fit.monotonicity flags an adjacent-level reversal "
-            f"at severity pair(s) {flagged_pairs}; every threshold rule and every fitted model "
-            "here assume the true performance curve is monotone in severity"
-        )
+        collected_warnings.append(_non_monotone_warning(fit))
 
     view = inputs.fit
     classification = classify(

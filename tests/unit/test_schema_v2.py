@@ -210,34 +210,67 @@ class TestSchemaFiles:
         assert v1["Threshold"]["properties"]["direction"]["enum"] == ["decreasing"]
         assert "baseline_multiple" not in v1["Definition"]["properties"]["kind"]["enum"]
 
-    def test_version_2_differs_from_version_1_in_exactly_the_three_places(self) -> None:
-        v2 = _schema("2")["$defs"]
+    def test_version_2_is_version_1_plus_three_edits_and_the_gaussian_additions(
+        self,
+    ) -> None:
+        v1 = _schema("1")
+        v2 = _schema("2")
+        d2 = v2["$defs"]
 
-        assert sorted(v2["Fit"]["properties"]["direction"]["enum"]) == [
+        # The three original edits.
+        assert sorted(d2["Fit"]["properties"]["direction"]["enum"]) == ["decreasing", "increasing"]
+        assert sorted(d2["Threshold"]["properties"]["direction"]["enum"]) == [
             "decreasing",
             "increasing",
         ]
-        assert sorted(v2["Threshold"]["properties"]["direction"]["enum"]) == [
-            "decreasing",
-            "increasing",
-        ]
-        assert sorted(v2["Definition"]["properties"]["kind"]["enum"]) == [
+        assert sorted(d2["Definition"]["properties"]["kind"]["enum"]) == [
             "absolute",
             "baseline_fraction",
             "baseline_multiple",
             "relative",
         ]
 
-        # Apply those three edits to version 1 and nothing else: the validation content must then
-        # be identical to version 2's.
-        edited = copy.deepcopy(_schema("1"))
-        edited["$defs"]["Fit"]["properties"]["direction"]["enum"] = ["decreasing", "increasing"]
+        # The Gaussian additions, pinned one by one.
+        assert set(d2) - set(v1["$defs"]) == {
+            "ContinuousAdjacentPair",
+            "ContinuousCell",
+            "ContinuousDiagnostics",
+            "Residual",
+        }
+        assert set(v1["$defs"]) - set(d2) == set()
+        assert d2["Fit"]["properties"]["model"]["enum"] == ["binomial", "gaussian"]
+        assert "residual" in d2["Fit"]["properties"]
+        assert "residual" not in d2["Fit"]["required"]
+        assert d2["Fit"]["required"] == v1["$defs"]["Fit"]["required"]
+        all_of = d2["Fit"]["allOf"]
+        assert len(all_of) == 1
+        assert all_of[0]["if"]["properties"]["model"] == {"const": "gaussian"}
+        assert all_of[0]["then"]["if"]["properties"]["status"] == {"const": "OK"}
+        assert all_of[0]["then"]["then"]["required"] == ["residual"]
+        assert "allOf" not in v1["$defs"]["Fit"]
+
+        # Apply exactly those edits to version 1 and nothing else: the validation content must
+        # then be identical to version 2's. The values of the new definitions and of the
+        # conditional are taken from version 2 (pinned above by name and shape).
+        edited = copy.deepcopy(v1)
+        fit = edited["$defs"]["Fit"]
+        fit["properties"]["direction"]["enum"] = ["decreasing", "increasing"]
         edited["$defs"]["Threshold"]["properties"]["direction"]["enum"] = [
             "decreasing",
             "increasing",
         ]
         edited["$defs"]["Definition"]["properties"]["kind"]["enum"].append("baseline_multiple")
-        assert _digest(edited, sort_enums=True) == _digest(_schema("2"), sort_enums=True)
+        fit["properties"]["model"]["enum"].append("gaussian")
+        fit["properties"]["cells"]["items"] = {"type": "object"}
+        fit["properties"]["diagnostics"]["anyOf"][1] = {"type": "object"}
+        fit["properties"]["residual"] = copy.deepcopy(d2["Fit"]["properties"]["residual"])
+        fit["allOf"] = copy.deepcopy(all_of)
+        mono = edited["$defs"]["MonotonicityCheck"]["properties"]
+        mono["method"] = copy.deepcopy(d2["MonotonicityCheck"]["properties"]["method"])
+        mono["pairs"] = copy.deepcopy(d2["MonotonicityCheck"]["properties"]["pairs"])
+        for name in set(d2) - set(v1["$defs"]):
+            edited["$defs"][name] = copy.deepcopy(d2[name])
+        assert _digest(edited, sort_enums=True) == _digest(v2, sort_enums=True)
 
     def test_the_version_2_descriptions_no_longer_say_increasing_is_unsupported(self) -> None:
         v2 = _schema("2")

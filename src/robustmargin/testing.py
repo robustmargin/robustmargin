@@ -6,30 +6,44 @@ objects so a consumer can write and run its own report-rendering and serialisati
 fitting any data. They are **not** statistical estimates of anything: every one of them carries
 a warning saying so, and nothing here should be read as a claim about what a real fit would
 produce for the same inputs.
+
+``fake_fit`` and ``fake_threshold`` build a binomial result by default and a Gaussian
+(continuous-response) one with ``model="gaussian"``.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import math
 from collections.abc import Mapping
 
 from scipy.stats import binomtest
+from scipy.stats import f as f_distribution
 
 from robustmargin.empirical import BaselineRate, GridBreakPoint
-from robustmargin.models import Covariance, Fit, Parameter
+from robustmargin.models import Covariance, Fit, Parameter, _count_cells
 from robustmargin.ratio import Ratio
 from robustmargin.threshold import Threshold
 from robustmargin.types import (
     Axis,
     Cell,
     Censoring,
+    ContinuousCell,
+    ContinuousObservations,
     Definition,
     IntervalShape,
     JSONValue,
     Observations,
+    Residual,
     Status,
 )
-from robustmargin.validation import Diagnostics, MonotonicityCheck, check_monotonicity, diagnose
+from robustmargin.validation import (
+    ContinuousDiagnostics,
+    Diagnostics,
+    MonotonicityCheck,
+    check_monotonicity,
+    diagnose,
+)
 
 __all__ = ["fake_fit", "fake_ratio", "fake_threshold"]
 
@@ -50,11 +64,12 @@ _UNSET = _Unset()
 def _observations_from_cells(fit: Fit) -> Observations:
     """Rebuild the :class:`~robustmargin.Observations` a fake ``fit`` "came from", so
     :func:`~robustmargin.check_monotonicity` can run on it the same way it would on real data."""
+    cells = _count_cells(fit)
     return Observations.from_counts(
         fit.axis,
-        severity=[c.severity for c in fit.cells],
-        successes=[c.successes for c in fit.cells],
-        trials=[c.trials for c in fit.cells],
+        severity=[c.severity for c in cells],
+        successes=[c.successes for c in cells],
+        trials=[c.trials for c in cells],
         outcome=fit.outcome,
         direction=fit.direction,
     )
@@ -106,6 +121,17 @@ _ALLOWED_THRESHOLD_COMBINATIONS: frozenset[tuple[Status, Censoring]] = frozenset
     }
 )
 
+# A Gaussian threshold makes no exact claim.
+_ALLOWED_GAUSSIAN_THRESHOLD_COMBINATIONS: frozenset[tuple[Status, Censoring]] = frozenset(
+    {
+        (Status.OK, Censoring.NONE),
+        (Status.OK, Censoring.OPEN_UPPER),
+        (Status.OK, Censoring.OPEN_LOWER),
+        (Status.UNREACHABLE, Censoring.NONE),
+        (Status.NOT_CONVERGED, Censoring.NONE),
+    }
+)
+
 # The default fit under a threshold. UNREACHABLE and FAILS_AT_BASELINE are properties of the
 # target and the data, not of how the fit went (the target performance is out of the fitted
 # curve's range or outside (0, 1), or the control already fails), so a `Threshold` accepts them
@@ -120,6 +146,11 @@ _FIT_STATUS_FOR_THRESHOLD_STATUS: dict[Status, Status] = {
     Status.NOT_CONVERGED: Status.NOT_CONVERGED,
     Status.CONTROL_INCOMPATIBLE: Status.CONTROL_INCOMPATIBLE,
 }
+
+
+def _check_model(model: str, *, function: str) -> None:
+    if model not in _VALID_MODELS:
+        raise ValueError(f"{function}: model must be one of {sorted(_VALID_MODELS)}, got {model!r}")
 
 
 def _check_direction(direction: str, *, function: str) -> None:
@@ -182,18 +213,147 @@ def _fake_ok_fit(
     )
 
 
+_VALID_MODELS = frozenset({"binomial", "gaussian"})
+# A Gaussian fake: a decreasing logit curve from 10 to 2 with its midpoint at severity 1, three
+# observations per level with a sample SD of 0.3. The increasing one rises from 2 to 10.
+_GAUSSIAN_MEANS_DECREASING = (10.0, 8.4, 6.0, 3.6, 2.5)
+_GAUSSIAN_MEANS_INCREASING = (2.0, 3.6, 6.0, 8.4, 9.5)
+_GAUSSIAN_SEVERITY = (0.0, 0.5, 1.0, 2.0, 4.0)
+_GAUSSIAN_RSS = 1.0
+_GAUSSIAN_PURE_ERROR_SS = 5 * 2 * 0.3 * 0.3
+
+
+def _gaussian_cells(direction: str) -> tuple[ContinuousCell, ...]:
+    means = _GAUSSIAN_MEANS_DECREASING if direction == "decreasing" else _GAUSSIAN_MEANS_INCREASING
+    return tuple(
+        ContinuousCell(severity=severity, n=3, mean=mean, sd=0.3)
+        for severity, mean in zip(_GAUSSIAN_SEVERITY, means, strict=True)
+    )
+
+
+def _gaussian_observations_from_cells(fit: Fit) -> ContinuousObservations:
+    """The :class:`~robustmargin.ContinuousObservations` a fake Gaussian ``fit`` "came from"."""
+    cells = [c for c in fit.cells if isinstance(c, ContinuousCell)]
+    return ContinuousObservations.from_summaries(
+        fit.axis,
+        severity=[c.severity for c in cells],
+        mean=[c.mean for c in cells],
+        sd=[c.sd for c in cells],
+        n=[c.n for c in cells],
+        outcome=fit.outcome,
+        direction=fit.direction,
+    )
+
+
+def _gaussian_fake_diagnostics() -> ContinuousDiagnostics:
+    pure_error_df = 10
+    lack_of_fit_df = 1
+    statistic = ((_GAUSSIAN_RSS - _GAUSSIAN_PURE_ERROR_SS) / lack_of_fit_df) / (
+        _GAUSSIAN_PURE_ERROR_SS / pure_error_df
+    )
+    return ContinuousDiagnostics(
+        rss=_GAUSSIAN_RSS,
+        df=11,
+        pure_error_ss=_GAUSSIAN_PURE_ERROR_SS,
+        pure_error_df=pure_error_df,
+        lack_of_fit_f=statistic,
+        lack_of_fit_p=float(f_distribution.sf(statistic, lack_of_fit_df, pure_error_df)),
+        link_aic={"probit": 21.0, "logit": 20.0, "cloglog": 24.0},
+        link_status={"probit": Status.OK, "logit": Status.OK, "cloglog": Status.OK},
+    )
+
+
+def _gaussian_fake_fit(
+    *,
+    status: Status,
+    direction: str,
+    provenance: Mapping[str, JSONValue] | None,
+    diagnostics: Diagnostics | ContinuousDiagnostics | None | _Unset,
+    monotonicity: MonotonicityCheck | None | _Unset,
+) -> Fit:
+    if status not in (Status.OK, Status.NOT_CONVERGED):
+        raise ValueError(
+            f"fake_fit: status={status!r} is not one a Gaussian fit has; the statuses are OK "
+            "and NOT_CONVERGED"
+        )
+    cells = _gaussian_cells(direction)
+    ok = status is Status.OK
+    params = (
+        {
+            "mu": Parameter(value=0.0, fixed=False),
+            "s": Parameter(value=0.5, fixed=False),
+            "upper": Parameter(value=10.0, fixed=False),
+            "lower": Parameter(value=2.0, fixed=False),
+        }
+        if ok
+        else None
+    )
+    covariance = (
+        Covariance(
+            names=("mu", "s", "upper", "lower"),
+            matrix=(
+                (0.01, 0.0, 0.0, 0.0),
+                (0.0, 0.005, 0.0, 0.0),
+                (0.0, 0.0, 0.04, 0.0),
+                (0.0, 0.0, 0.0, 0.03),
+            ),
+        )
+        if ok
+        else None
+    )
+    base = Fit(
+        axis=_AXIS,
+        outcome="response",
+        direction=direction,
+        model="gaussian",
+        link="logit",
+        params=params,
+        covariance=covariance,
+        log_likelihood=-0.5 * 15 * (math.log(2.0 * math.pi * _GAUSSIAN_RSS / 15) + 1.0)
+        if ok
+        else None,
+        cells=cells,
+        status=status,
+        cluster_ids=None,
+        warnings=(_FAKE_WARNING,),
+        provenance=_fake_provenance(provenance),
+        residual=Residual(sigma=math.sqrt(_GAUSSIAN_RSS / 11), df=11, rss=_GAUSSIAN_RSS)
+        if ok
+        else None,
+    )
+    resolved_diagnostics = (
+        (_gaussian_fake_diagnostics() if ok else None)
+        if isinstance(diagnostics, _Unset)
+        else diagnostics
+    )
+    resolved_monotonicity = (
+        check_monotonicity(_gaussian_observations_from_cells(base))
+        if isinstance(monotonicity, _Unset)
+        else monotonicity
+    )
+    return dataclasses.replace(
+        base, diagnostics=resolved_diagnostics, monotonicity=resolved_monotonicity
+    )
+
+
 def fake_fit(
     *,
+    model: str = "binomial",
     status: Status = Status.OK,
     direction: str = "decreasing",
     provenance: Mapping[str, JSONValue] | None = None,
-    diagnostics: Diagnostics | None | _Unset = _UNSET,
+    diagnostics: Diagnostics | ContinuousDiagnostics | None | _Unset = _UNSET,
     monotonicity: MonotonicityCheck | None | _Unset = _UNSET,
 ) -> Fit:
     """Build a deterministic, schema-valid :class:`~robustmargin.Fit`.
 
     Parameters
     ----------
+    model
+        ``"binomial"`` (the default) or ``"gaussian"``. A Gaussian fake is a logit fit on a neutral
+        ``severity`` axis with five levels of three observations, ``residual``,
+        :class:`~robustmargin.ContinuousDiagnostics` and a Welch monotonicity check. It accepts
+        only ``status`` ``OK`` and ``NOT_CONVERGED``, the two a Gaussian fit has.
     status
         The :class:`~robustmargin.Status` to build. Every member other than ``UNREACHABLE`` and
         ``FAILS_AT_BASELINE`` is accepted (those describe a threshold, not a fit, and
@@ -227,9 +387,22 @@ def fake_fit(
     Raises
     ------
     ValueError
-        If ``direction`` is not ``"decreasing"`` or ``"increasing"``.
+        If ``model`` is not ``"binomial"`` or ``"gaussian"``, ``direction`` is not
+        ``"decreasing"`` or ``"increasing"``, or ``model`` is ``"gaussian"`` and ``status`` is not
+        ``OK`` or ``NOT_CONVERGED``.
     """
+    _check_model(model, function="fake_fit")
     _check_direction(direction, function="fake_fit")
+    if model == "gaussian":
+        return _gaussian_fake_fit(
+            status=status,
+            direction=direction,
+            provenance=provenance,
+            diagnostics=diagnostics,
+            monotonicity=monotonicity,
+        )
+    if isinstance(diagnostics, ContinuousDiagnostics):
+        raise ValueError("fake_fit: ContinuousDiagnostics belong to model='gaussian'")
     cells = _CELLS if direction == "decreasing" else _CELLS_INCREASING
     if status is Status.OK:
         return _fake_ok_fit(
@@ -268,6 +441,7 @@ def fake_fit(
 
 def fake_threshold(
     *,
+    model: str = "binomial",
     status: Status = Status.OK,
     censoring: Censoring = Censoring.NONE,
     direction: str = "decreasing",
@@ -277,6 +451,11 @@ def fake_threshold(
 
     Parameters
     ----------
+    model
+        ``"binomial"`` (the default) or ``"gaussian"``. A Gaussian threshold is on a Gaussian fake
+        fit (see :func:`fake_fit`) and makes no exact claim: only ``(OK, NONE)``,
+        ``(OK, OPEN_UPPER)``, ``(OK, OPEN_LOWER)``, ``(UNREACHABLE, NONE)`` and
+        ``(NOT_CONVERGED, NONE)`` are buildable, the last two with no value and no bound.
     status
         The :class:`~robustmargin.Status` to build.
     censoring
@@ -296,17 +475,27 @@ def fake_threshold(
     Raises
     ------
     ValueError
-        If ``(status, censoring)`` is not one of the fourteen combinations a ``Threshold``
-        allows, or ``direction`` is not ``"decreasing"`` or ``"increasing"``.
+        If ``model`` is not ``"binomial"`` or ``"gaussian"``, ``(status, censoring)`` is not one
+        of the fourteen combinations a ``Threshold`` allows (or one of the five a Gaussian one
+        does), or ``direction`` is not ``"decreasing"`` or ``"increasing"``.
     """
+    _check_model(model, function="fake_threshold")
     _check_direction(direction, function="fake_threshold")
-    if (status, censoring) not in _ALLOWED_THRESHOLD_COMBINATIONS:
+    if (status, censoring) not in _ALLOWED_THRESHOLD_COMBINATIONS or (
+        model == "gaussian" and (status, censoring) not in _ALLOWED_GAUSSIAN_THRESHOLD_COMBINATIONS
+    ):
         raise ValueError(
             f"fake_threshold: status={status!r} with censoring={censoring!r} is not a "
-            "combination Threshold allows"
+            f"combination a {model} Threshold allows"
         )
 
-    fit = fake_fit(status=_FIT_STATUS_FOR_THRESHOLD_STATUS[status], direction=direction)
+    fit = fake_fit(
+        model=model, status=_FIT_STATUS_FOR_THRESHOLD_STATUS[status], direction=direction
+    )
+    if model == "gaussian":
+        return _gaussian_fake_threshold(
+            fit=fit, status=status, censoring=censoring, provenance=provenance
+        )
 
     value: float | None
     lo: float | None
@@ -380,6 +569,35 @@ def fake_threshold(
     )
 
 
+def _gaussian_fake_threshold(
+    *, fit: Fit, status: Status, censoring: Censoring, provenance: Mapping[str, JSONValue] | None
+) -> Threshold:
+    value: float | None = None
+    lo: float | None = None
+    hi: float | None = None
+    interval_method = "exact_bound"
+    if status is Status.OK:
+        value, interval_method = 1.0, "profile"
+        lo = None if censoring is Censoring.OPEN_LOWER else 0.8
+        hi = None if censoring is Censoring.OPEN_UPPER else 1.25
+    return Threshold(
+        axis=_AXIS,
+        definition=Definition.absolute(6.0),
+        direction=fit.direction,
+        value=value,
+        lo=lo,
+        hi=hi,
+        level=0.95,
+        interval_method=interval_method,
+        censoring=censoring,
+        status=status,
+        dependence="independent",
+        fit=fit,
+        warnings=(_FAKE_WARNING,),
+        provenance=_fake_provenance(provenance),
+    )
+
+
 def _fake_ok_threshold(*, fit: Fit, value: float, lo: float, hi: float) -> Threshold:
     return Threshold(
         axis=_AXIS,
@@ -401,6 +619,7 @@ def _fake_ok_threshold(*, fit: Fit, value: float, lo: float, hi: float) -> Thres
 
 def fake_ratio(
     *,
+    model: str = "binomial",
     shape: IntervalShape | None = None,
     status: Status = Status.OK,
     censoring: Censoring = Censoring.NONE,
@@ -414,6 +633,10 @@ def fake_ratio(
 
     Parameters
     ----------
+    model
+        ``"binomial"`` (the default) or ``"gaussian"``. A Gaussian ratio is of two Gaussian fake
+        thresholds (see :func:`fake_threshold`); both are built on the same Gaussian fake cells,
+        so unlike the binomial one their data are not disjoint.
     shape
         The :class:`~robustmargin.IntervalShape` to build. ``None`` (the default) means
         ``BOUNDED`` when ``status`` is ``OK`` and ``censoring`` is ``NONE``, and means "no
@@ -443,9 +666,10 @@ def fake_ratio(
     Raises
     ------
     ValueError
-        If ``shape`` is given explicitly while ``status`` is not ``OK`` or ``censoring`` is not
-        ``NONE``.
+        If ``model`` is not ``"binomial"`` or ``"gaussian"``, or ``shape`` is given explicitly
+        while ``status`` is not ``OK`` or ``censoring`` is not ``NONE``.
     """
+    _check_model(model, function="fake_ratio")
     is_ok_none = status is Status.OK and censoring is Censoring.NONE
     if not is_ok_none and shape is not None:
         raise ValueError(
@@ -455,8 +679,17 @@ def fake_ratio(
 
     value_a, lo_a, hi_a = 0.05, 0.03, 0.08
     value_b, lo_b, hi_b = 0.1, 0.06, 0.16
-    threshold_a = _fake_ok_threshold(fit=_fake_ok_fit(_CELLS_A), value=value_a, lo=lo_a, hi=hi_a)
-    threshold_b = _fake_ok_threshold(fit=_fake_ok_fit(_CELLS_B), value=value_b, lo=lo_b, hi=hi_b)
+    if model == "gaussian":
+        base = fake_threshold(model="gaussian")
+        threshold_a = dataclasses.replace(base, value=value_a, lo=lo_a, hi=hi_a)
+        threshold_b = dataclasses.replace(base, value=value_b, lo=lo_b, hi=hi_b)
+    else:
+        threshold_a = _fake_ok_threshold(
+            fit=_fake_ok_fit(_CELLS_A), value=value_a, lo=lo_a, hi=hi_a
+        )
+        threshold_b = _fake_ok_threshold(
+            fit=_fake_ok_fit(_CELLS_B), value=value_b, lo=lo_b, hi=hi_b
+        )
 
     resolved_shape: IntervalShape | None
     estimate: float | None

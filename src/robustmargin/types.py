@@ -3,9 +3,11 @@
 ``Censoring`` is the model-based and grid-rule censoring classification (documented on the
 class itself). Everything else here is new to robustmargin: ``Axis`` describes the
 severity axis a series of observations was measured on; ``Observations`` holds the raw
-aggregated-or-per-observation data a fit is built from; ``Definition`` names which
+aggregated-or-per-observation counts a binomial fit is built from, and ``ContinuousObservations``
+the real-valued responses a Gaussian fit is built from; ``Definition`` names which
 target-performance definition a threshold solves for; ``Cell`` is one pooled row of counts at
-a single severity; ``Status`` and ``IntervalShape`` are the enums results report through.
+a single severity and ``ContinuousCell`` its real-valued counterpart; ``Residual`` is a Gaussian
+fit's residual variance; ``Status`` and ``IntervalShape`` are the enums results report through.
 """
 
 from __future__ import annotations
@@ -19,10 +21,13 @@ __all__ = [
     "Axis",
     "Cell",
     "Censoring",
+    "ContinuousCell",
+    "ContinuousObservations",
     "Definition",
     "IntervalShape",
     "JSONValue",
     "Observations",
+    "Residual",
     "Status",
 ]
 
@@ -97,7 +102,9 @@ class Status(StrEnum):
         falls back to the exact censoring bound.
     NOT_CONVERGED
         The optimizer did not converge, or converged to a point where the Hessian is not
-        positive-definite. Same fallback as ``SEPARATION``.
+        positive-definite. Same fallback as ``SEPARATION``. A Gaussian (continuous-outcome) fit
+        that cannot be identified is also ``NOT_CONVERGED``, with the reason in ``warnings``; it
+        has no exact-bound fallback, so a threshold on it carries no number at all.
     UNREACHABLE
         No severity solves for the target performance implied by a threshold's
         ``Definition``. Either the target lies at or below 0 or at or above 1, which no
@@ -579,6 +586,405 @@ class Observations:
             Cell(severity=severity, successes=successes, trials=trials)
             for severity, (successes, trials) in sorted(pooled.items())
         )
+
+    @property
+    def is_clustered(self) -> bool:
+        """Whether this series carries cluster ids."""
+        return self.cluster is not None
+
+
+@dataclass(frozen=True, kw_only=True)
+class ContinuousCell:
+    """One pooled row of real-valued responses at a single severity: the unit
+    :meth:`ContinuousObservations.cells` returns and a Gaussian :class:`robustmargin.Fit` stores
+    its per-level table as.
+
+    Attributes
+    ----------
+    severity
+        The (non-negative, finite) severity level this cell was pooled at. Must not be a
+        ``bool``.
+    n
+        The number of observations pooled at this level, a whole number of at least 1. Accepts a
+        whole-number ``float`` (for example ``3.0``); the stored value is a genuine ``int``.
+    mean
+        The mean response at this level. Finite.
+    sd
+        The sample standard deviation (``ddof=1``) of the responses at this level. Finite and
+        non-negative, and exactly ``0.0`` when ``n == 1``, where no spread can be measured.
+
+    Raises
+    ------
+    ValueError
+        If any field breaks the rules above.
+    """
+
+    severity: float
+    n: int
+    mean: float
+    sd: float
+
+    def __post_init__(self) -> None:
+        _check_finite_number(self.severity, label="ContinuousCell.severity")
+        if self.severity < 0.0:
+            raise ValueError(f"ContinuousCell.severity must be non-negative, got {self.severity!r}")
+        n = _as_whole_int(self.n, label="ContinuousCell.n")
+        if n < 1:
+            raise ValueError(f"ContinuousCell.n must be >= 1, got {n!r}")
+        _check_finite_number(self.mean, label="ContinuousCell.mean")
+        _check_finite_number(self.sd, label="ContinuousCell.sd")
+        if self.sd < 0.0:
+            raise ValueError(f"ContinuousCell.sd must be non-negative, got {self.sd!r}")
+        if n == 1 and self.sd != 0.0:
+            raise ValueError(
+                f"ContinuousCell.sd must be exactly 0.0 for a single observation, got {self.sd!r}"
+            )
+        object.__setattr__(self, "n", n)
+
+
+@dataclass(frozen=True, kw_only=True)
+class Residual:
+    """The residual variance of a Gaussian fit: what its t and F calibration is built from.
+
+    Attributes
+    ----------
+    sigma
+        The residual standard deviation, ``sqrt(rss / df)``. Finite and non-negative.
+    df
+        The residual degrees of freedom: the number of observations minus the number of
+        estimated curve parameters. At least 1.
+    rss
+        The residual sum of squares over every observation, finite and non-negative. It includes
+        the within-level (pure-error) part.
+
+    Raises
+    ------
+    ValueError
+        If a field is not finite, ``df`` is not a whole number of at least 1, ``rss`` is
+        negative, or ``sigma`` is not ``sqrt(rss / df)`` to a relative ``1e-9``.
+    """
+
+    sigma: float
+    df: int
+    rss: float
+
+    def __post_init__(self) -> None:
+        _check_finite_number(self.sigma, label="Residual.sigma")
+        _check_finite_number(self.rss, label="Residual.rss")
+        df = _as_whole_int(self.df, label="Residual.df")
+        if df < 1:
+            raise ValueError(f"Residual.df must be >= 1, got {df!r}")
+        if self.rss < 0.0 or self.sigma < 0.0:
+            raise ValueError(
+                f"Residual.rss and Residual.sigma must be non-negative, got rss={self.rss!r}, "
+                f"sigma={self.sigma!r}"
+            )
+        if not math.isclose(self.sigma, math.sqrt(self.rss / df), rel_tol=1e-9, abs_tol=0.0):
+            raise ValueError(
+                f"Residual.sigma must equal sqrt(rss / df) = {math.sqrt(self.rss / df)!r}, "
+                f"got {self.sigma!r}"
+            )
+        object.__setattr__(self, "df", df)
+
+
+def _check_cluster_ids(cluster: tuple[str | int, ...], *, n: int, label: str) -> None:
+    if len(cluster) != n:
+        raise ValueError(
+            f"{label}.cluster must have length {n} to match severity, got {len(cluster)}"
+        )
+    for cluster_id in cluster:
+        if cluster_id is None or isinstance(cluster_id, bool):
+            raise ValueError(
+                f"{label}.cluster ids must be a str or int, never None or bool, got {cluster_id!r}"
+            )
+        if not isinstance(cluster_id, (str, int)):
+            raise ValueError(f"{label}.cluster ids must be a str or int, got {cluster_id!r}")
+
+
+@dataclass(frozen=True, kw_only=True)
+class ContinuousObservations:
+    """Raw severity and real-valued response data for one series, either one row per observation
+    or aggregated cells of ``(mean, sd, n)``.
+
+    Every row is stored as ``(n, mean, within-sum-of-squares)``: an observation is ``n = 1`` with
+    no spread, an aggregated cell carries its own count, mean and ``sd ** 2 * (n - 1)``. Rows at
+    one severity are pooled exactly, so a series given as observations and the same series given
+    as per-level summaries describe the same data and give the same fit.
+
+    Severity is non-negative. On a log axis a severity of exactly ``0.0`` is the zero-severity
+    control, handled in the fitted curve and never through ``log(0)``. The response is any finite
+    real number: negative values and zero are valid.
+
+    Attributes
+    ----------
+    axis
+        The :class:`Axis` this series was measured on.
+    outcome
+        A short, non-empty, domain-neutral name for the response (for example ``"score"``).
+        Required, with no default.
+    direction
+        ``"decreasing"`` (the response falls as severity rises) or ``"increasing"``. Required,
+        with no default: a wrong default would silently flip a threshold.
+    severity
+        One entry per row, non-negative and finite. Must not be a ``bool``.
+    n
+        One entry per row, the number of observations the row summarises (a whole number of at
+        least 1; a whole-number ``float`` is accepted).
+    mean
+        One entry per row, the mean response of the row. Finite.
+    within_ss
+        One entry per row, the sum of squared deviations of the row's observations about the
+        row's own mean. Finite and non-negative, and exactly ``0.0`` when ``n == 1``.
+    cluster
+        Optional cluster ids, one per row, each a ``str`` or non-bool ``int``. Any method that
+        assumes independence refuses clustered input unless the caller passes
+        ``dependence="independent"``.
+
+    Raises
+    ------
+    ValueError
+        If the series is empty, the per-row sequences differ in length, a value is not finite,
+        a severity is negative, a count is not a whole number of at least 1, ``direction`` is
+        not one of the two values, ``outcome`` is empty, or a cluster id is ``None`` or a
+        ``bool``.
+    """
+
+    axis: Axis
+    outcome: str
+    direction: str
+    severity: tuple[float, ...]
+    n: tuple[int, ...]
+    mean: tuple[float, ...]
+    within_ss: tuple[float, ...]
+    cluster: tuple[str | int, ...] | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "severity", tuple(self.severity))
+        object.__setattr__(self, "n", tuple(self.n))
+        object.__setattr__(self, "mean", tuple(self.mean))
+        object.__setattr__(self, "within_ss", tuple(self.within_ss))
+        if self.cluster is not None:
+            object.__setattr__(self, "cluster", tuple(self.cluster))
+
+        if not self.outcome:
+            raise ValueError("ContinuousObservations.outcome must be non-empty")
+        if self.direction not in _VALID_DIRECTIONS:
+            raise ValueError(
+                f"ContinuousObservations.direction must be one of {sorted(_VALID_DIRECTIONS)}, "
+                f"got {self.direction!r}"
+            )
+        rows = len(self.severity)
+        if rows == 0:
+            raise ValueError("ContinuousObservations must not be empty")
+        if not (len(self.n) == len(self.mean) == len(self.within_ss) == rows):
+            raise ValueError(
+                "ContinuousObservations severity, n, mean and within_ss must have equal length: "
+                f"got {rows}, {len(self.n)}, {len(self.mean)}, {len(self.within_ss)}"
+            )
+        counts: list[int] = []
+        for severity, n, mean, within_ss in zip(
+            self.severity, self.n, self.mean, self.within_ss, strict=True
+        ):
+            _check_finite_number(severity, label="ContinuousObservations.severity")
+            if severity < 0.0:
+                raise ValueError(
+                    f"ContinuousObservations.severity must be non-negative, got {severity!r}"
+                )
+            count = _as_whole_int(n, label="ContinuousObservations.n")
+            if count < 1:
+                raise ValueError(f"ContinuousObservations.n must be >= 1, got {count!r}")
+            counts.append(count)
+            _check_finite_number(mean, label="ContinuousObservations.mean")
+            _check_finite_number(within_ss, label="ContinuousObservations.within_ss")
+            if within_ss < 0.0:
+                raise ValueError(
+                    f"ContinuousObservations.within_ss must be non-negative, got {within_ss!r}"
+                )
+            if count == 1 and within_ss != 0.0:
+                raise ValueError(
+                    "ContinuousObservations: a single observation has no spread, so its "
+                    f"within-sum-of-squares must be exactly 0.0, got {within_ss!r}"
+                )
+        object.__setattr__(self, "n", tuple(counts))
+        if self.cluster is not None:
+            _check_cluster_ids(self.cluster, n=rows, label="ContinuousObservations")
+
+    @classmethod
+    def from_observations(
+        cls,
+        axis: Axis,
+        *,
+        severity: Sequence[float],
+        value: Sequence[float],
+        outcome: str,
+        direction: str,
+        cluster: Sequence[str | int] | None = None,
+    ) -> ContinuousObservations:
+        """Build ``ContinuousObservations`` from one real-valued response per observation.
+
+        Parameters
+        ----------
+        axis
+            The severity axis.
+        severity
+            The severity of each observation: finite, non-negative, not a ``bool``.
+        value
+            The response of each observation: finite, not a ``bool``. Negative values are valid.
+        outcome, direction
+            As on :class:`ContinuousObservations`. Required.
+        cluster
+            Optional cluster ids, one per observation.
+
+        Returns
+        -------
+        ContinuousObservations
+
+        Raises
+        ------
+        ValueError
+            If the two sequences differ in length or are empty, an entry is a ``bool`` or not
+            finite, a severity is negative, or any other rule of :class:`ContinuousObservations`
+            is broken.
+        """
+        if len(severity) != len(value):
+            raise ValueError(
+                "ContinuousObservations.from_observations: severity and value must have equal "
+                f"length, got {len(severity)} and {len(value)}"
+            )
+        for entry in (*severity, *value):
+            if isinstance(entry, bool):
+                raise ValueError(
+                    "ContinuousObservations.from_observations: entries must not be a bool, "
+                    f"got {entry!r}"
+                )
+        return cls(
+            axis=axis,
+            outcome=outcome,
+            direction=direction,
+            severity=tuple(float(v) for v in severity),
+            n=tuple(1 for _ in value),
+            mean=tuple(float(v) for v in value),
+            within_ss=tuple(0.0 for _ in value),
+            cluster=tuple(cluster) if cluster is not None else None,
+        )
+
+    @classmethod
+    def from_summaries(
+        cls,
+        axis: Axis,
+        *,
+        severity: Sequence[float],
+        mean: Sequence[float],
+        sd: Sequence[float],
+        n: Sequence[float],
+        outcome: str,
+        direction: str,
+    ) -> ContinuousObservations:
+        """Build ``ContinuousObservations`` from aggregated cells of ``(mean, sd, n)``.
+
+        Parameters
+        ----------
+        axis
+            The severity axis.
+        severity
+            The severity of each cell: finite, non-negative.
+        mean
+            The mean response of each cell: finite.
+        sd
+            The sample standard deviation (``ddof=1``) of each cell: finite and non-negative, and
+            exactly ``0.0`` for a cell of one observation.
+        n
+            The number of observations in each cell: a whole number of at least 1 (a
+            whole-number ``float`` is accepted).
+        outcome, direction
+            As on :class:`ContinuousObservations`. Required.
+
+        Returns
+        -------
+        ContinuousObservations
+            Several cells at one severity are pooled by :meth:`cells`, as rows are.
+
+        Raises
+        ------
+        ValueError
+            If the sequences differ in length or are empty, an entry is a ``bool`` or not
+            finite, ``sd`` is negative, ``n`` is not a whole number of at least 1, or a one
+            observation cell has a non-zero ``sd``.
+        """
+        if not (len(severity) == len(mean) == len(sd) == len(n)):
+            raise ValueError(
+                "ContinuousObservations.from_summaries: severity, mean, sd and n must have equal "
+                f"length, got {len(severity)}, {len(mean)}, {len(sd)}, {len(n)}"
+            )
+        counts = [_as_whole_int(v, label="n") for v in n]
+        within: list[float] = []
+        for spread, count in zip(sd, counts, strict=True):
+            _check_finite_number(spread, label="sd")
+            if spread < 0.0:
+                raise ValueError(
+                    "ContinuousObservations.from_summaries: sd must be non-negative, got "
+                    f"{spread!r}"
+                )
+            if count == 1 and spread != 0.0:
+                raise ValueError(
+                    "ContinuousObservations.from_summaries: a cell of one observation has no "
+                    f"spread, so its sd must be exactly 0.0, got {spread!r}"
+                )
+            within.append(float(spread) * float(spread) * (count - 1))
+        for entry in (*severity, *mean):
+            if isinstance(entry, bool):
+                raise ValueError(
+                    "ContinuousObservations.from_summaries: entries must not be a bool, got "
+                    f"{entry!r}"
+                )
+        return cls(
+            axis=axis,
+            outcome=outcome,
+            direction=direction,
+            severity=tuple(float(v) for v in severity),
+            n=tuple(counts),
+            mean=tuple(float(v) for v in mean),
+            within_ss=tuple(within),
+        )
+
+    def cells(self) -> tuple[ContinuousCell, ...]:
+        """Pool rows with exactly equal severity, sorted ascending.
+
+        Rows at one severity are combined from their counts, means and within-sums-of-squares:
+        the pooled mean is the count-weighted mean, and the pooled sum of squares is the rows'
+        own sums of squares plus the count-weighted squared deviations of their means about the
+        pooled mean, corrected for the rounding error of that mean (the corrected two-pass
+        update of Chan, Golub and LeVeque, 1983, "Algorithms for computing the sample variance",
+        *The American Statistician* 37:242-247). It stays accurate where the textbook
+        sum-of-squares formula loses every digit, for a mean far larger than the spread.
+
+        Returns
+        -------
+        tuple[ContinuousCell, ...]
+            One :class:`ContinuousCell` per distinct severity value, ascending.
+
+        Raises
+        ------
+        None
+            Construction already validated every row, so pooling cannot fail.
+        """
+        groups: dict[float, list[int]] = {}
+        for index, severity in enumerate(self.severity):
+            groups.setdefault(severity, []).append(index)
+        pooled: list[ContinuousCell] = []
+        for severity in sorted(groups):
+            rows = groups[severity]
+            total = sum(self.n[i] for i in rows)
+            center = math.fsum(self.n[i] * self.mean[i] for i in rows) / total
+            deviations = [self.mean[i] - center for i in rows]
+            drift = math.fsum(self.n[i] * d for i, d in zip(rows, deviations, strict=True))
+            spread = math.fsum(self.within_ss[i] for i in rows) + math.fsum(
+                self.n[i] * d * d for i, d in zip(rows, deviations, strict=True)
+            )
+            spread -= drift * drift / total
+            sd = math.sqrt(max(spread, 0.0) / (total - 1)) if total > 1 else 0.0
+            pooled.append(ContinuousCell(severity=severity, n=total, mean=center, sd=sd))
+        return tuple(pooled)
 
     @property
     def is_clustered(self) -> bool:

@@ -1,7 +1,8 @@
 """Robustness-margin estimation: thresholds with confidence intervals.
 
 The package exports the vocabulary types (:class:`Axis`, :class:`Observations`,
-:class:`Definition`, :class:`Cell`), the status and interval-shape enums (:class:`Status`,
+:class:`ContinuousObservations`, :class:`Definition`, :class:`Cell`, :class:`ContinuousCell`,
+:class:`Residual`), the status and interval-shape enums (:class:`Status`,
 :class:`IntervalShape`, alongside :class:`Censoring`), the result dataclasses (:class:`Fit`,
 :class:`Threshold`, :class:`Ratio`, :class:`Scorecard`), the grid break-point rule
 (:func:`grid_break_point`, returning :class:`GridBreakPoint`), and the dose-response fitter
@@ -17,11 +18,12 @@ attaches an interval or an explicit censoring label, together with :class:`Basel
 log-delta confidence interval.
 
 :class:`Diagnostics` and :func:`diagnose` give model-only goodness of fit, dispersion and link
-comparison for a converged :class:`Fit`. :class:`MonotonicityCheck`, :class:`AdjacentPair` and
+comparison for a converged :class:`Fit` (:class:`ContinuousDiagnostics` for a Gaussian one).
+:class:`MonotonicityCheck`, :class:`AdjacentPair`, :class:`ContinuousAdjacentPair` and
 :func:`check_monotonicity` are a data-only adjacent-severity-level check that needs only raw
-counts, computed on every :func:`fit_dose_response` return path regardless of ``Status``. Both are
-reported and never acted on automatically: neither changes a fitted parameter, a reported
-threshold, or which link a caller chose.
+counts or responses, computed on every :func:`fit_dose_response` return path regardless of
+``Status``. Both are reported and never acted on automatically: neither changes a fitted
+parameter, a reported threshold, or which link a caller chose.
 
 Note that ``robustmargin.threshold`` is the *function*, not the submodule.
 """
@@ -43,13 +45,18 @@ from robustmargin.types import (
     Axis,
     Cell,
     Censoring,
+    ContinuousCell,
+    ContinuousObservations,
     Definition,
     IntervalShape,
     Observations,
+    Residual,
     Status,
 )
 from robustmargin.validation import (
     AdjacentPair,
+    ContinuousAdjacentPair,
+    ContinuousDiagnostics,
     Diagnostics,
     MonotonicityCheck,
     check_monotonicity,
@@ -64,6 +71,10 @@ __all__ = [
     "BaselineRate",
     "Cell",
     "Censoring",
+    "ContinuousAdjacentPair",
+    "ContinuousCell",
+    "ContinuousDiagnostics",
+    "ContinuousObservations",
     "Covariance",
     "Definition",
     "Diagnostics",
@@ -76,6 +87,7 @@ __all__ = [
     "Parameter",
     "Prediction",
     "Ratio",
+    "Residual",
     "Scorecard",
     "Status",
     "Threshold",

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:robustmargin:schema:scorecard-v2",
   "title": "robustmargin score card (v2)",
-  "description": "A robustmargin Scorecard: a collection of GridBreakPoint, Fit, Threshold and Ratio results plus provenance metadata. This is schema version \"2\", the version robustmargin writes; robustmargin also reads version \"1\", which differs only in admitting decreasing outcomes and no baseline_multiple definition. Fit.diagnostics is an object or null, set only when the fit's own status is OK (model-only goodness of fit, dispersion and link comparison -- see the Diagnostics def, which deliberately has no monotonicity entry of its own); Fit.monotonicity is an object or null, set on every fresh Fit regardless of status (a data-only adjacent-severity-level check on raw counts -- see the MonotonicityCheck and AdjacentPair defs). Neither field is required on Fit: a payload that omits either still validates and still loads through from_dict with that field None. IntervalShape.HALF_OPEN is valid; Fit.model accepts only \"binomial\", Fit.direction and Threshold.direction accept \"decreasing\" and \"increasing\" (an outcome that rises with severity), and Ratio.dependence accepts only \"independent\". Adding a result family or an enum value (for example ll4, isotonic or paired) is a schema_version change, not a silent extension of this one. Each object's `properties` keys match its dataclass's field names exactly (plus `type` for the five tagged result types). additionalProperties is false everywhere: an unrecognised field is a reader/writer version mismatch, not a safe extension, in this schema version.",
+  "description": "A robustmargin Scorecard: a collection of GridBreakPoint, Fit, Threshold and Ratio results plus provenance metadata. This is schema version \"2\", the version robustmargin writes; robustmargin also reads version \"1\", which differs only in admitting decreasing outcomes, no baseline_multiple definition and no Gaussian fit. Fit.model is \"binomial\" (counts) or \"gaussian\" (real-valued responses, with Fit.cells as ContinuousCell, Fit.residual set, Fit.diagnostics a ContinuousDiagnostics, and Fit.params.upper and .lower any finite response values; a binomial fit has Cell cells, no residual, and upper and lower probabilities in [0, 1]). A Gaussian fit's status is OK or NOT_CONVERGED, and a Threshold on one makes no exact claim: its censoring is never RIGHT or LEFT. Fit.diagnostics is an object or null, set only when the fit's own status is OK (model-only goodness of fit and link comparison -- see the Diagnostics and ContinuousDiagnostics defs, which deliberately have no monotonicity entry of their own); Fit.monotonicity is an object or null, set on every fresh Fit regardless of status (a data-only adjacent-severity-level check on the raw data -- see the MonotonicityCheck, AdjacentPair and ContinuousAdjacentPair defs). Neither field is required on Fit: a payload that omits either still validates and still loads through from_dict with that field None; the same holds for Fit.residual, which a binomial fit omits. IntervalShape.HALF_OPEN is valid; Fit.direction and Threshold.direction accept \"decreasing\" and \"increasing\" (an outcome that rises with severity), and Ratio.dependence accepts only \"independent\". Adding a result family or an enum value (for example isotonic or paired) is a schema_version change, not a silent extension of this one. Each object's `properties` keys match its dataclass's field names exactly (plus `type` for the five tagged result types). additionalProperties is false everywhere: an unrecognised field is a reader/writer version mismatch, not a safe extension, in this schema version.",
   "type": "object",
   "properties": {
     "type": {
@@ -85,7 +85,7 @@
     },
     "Fit": {
       "type": "object",
-      "description": "robustmargin.Fit: a dose-response fit, or an explicit record of why one was not obtained. This schema is binomial-only: model accepts only \"binomial\"; direction is \"decreasing\" or \"increasing\", and for an increasing outcome params and cells are on the scale of the outcome as counted. params are on the natural scale, never the optimiser's reparametrisation.",
+      "description": "robustmargin.Fit: a dose-response fit, or an explicit record of why one was not obtained. model is \"binomial\" or \"gaussian\"; a Gaussian fit is a least-squares fit of a real-valued response and carries residual (sigma, df, rss) when its status is OK. direction is \"decreasing\" or \"increasing\", and for an increasing outcome params and cells are on the scale of the outcome as given. params are on the natural scale, never the optimiser's reparametrisation. Which shape cells, diagnostics, residual and the bounds on params.upper and params.lower take depends on model; the allOf below states it.",
       "properties": {
         "type": {
           "const": "Fit"
@@ -104,7 +104,8 @@
         },
         "model": {
           "enum": [
-            "binomial"
+            "binomial",
+            "gaussian"
           ]
         },
         "link": {
@@ -164,7 +165,7 @@
         "cells": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/Cell"
+            "type": "object"
           }
         },
         "status": {
@@ -197,24 +198,35 @@
           "type": "object"
         },
         "diagnostics": {
-          "description": "Model-only goodness of fit, dispersion and link comparison. Set exactly when this Fit's own status is OK; null otherwise.",
+          "description": "Model-only goodness of fit and link comparison: a Diagnostics for a binomial fit, a ContinuousDiagnostics for a Gaussian one. Set exactly when this Fit's own status is OK; null otherwise.",
           "anyOf": [
             {
               "type": "null"
             },
             {
-              "$ref": "#/$defs/Diagnostics"
+              "type": "object"
             }
           ]
         },
         "monotonicity": {
-          "description": "A data-only adjacent-severity-level monotonicity check, computed from the raw Observations before a fitting path was chosen. Set on every freshly-built Fit regardless of status; null only when a payload omits it.",
+          "description": "A data-only adjacent-severity-level monotonicity check, computed from the raw observations before a fitting path was chosen. Set on every freshly-built Fit regardless of status; null only when a payload omits it.",
           "anyOf": [
             {
               "type": "null"
             },
             {
               "$ref": "#/$defs/MonotonicityCheck"
+            }
+          ]
+        },
+        "residual": {
+          "description": "A Gaussian fit's residual variance (sigma, df, rss). Required, and not null, when model is gaussian and status is OK; absent or null otherwise.",
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Residual"
             }
           ]
         }
@@ -232,7 +244,116 @@
         "cells",
         "status"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "model": {
+                "const": "gaussian"
+              }
+            },
+            "required": [
+              "model"
+            ]
+          },
+          "then": {
+            "properties": {
+              "cells": {
+                "items": {
+                  "$ref": "#/$defs/ContinuousCell"
+                }
+              },
+              "diagnostics": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/$defs/ContinuousDiagnostics"
+                  }
+                ]
+              },
+              "status": {
+                "enum": [
+                  "OK",
+                  "NOT_CONVERGED"
+                ]
+              }
+            },
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "OK"
+                }
+              },
+              "required": [
+                "status"
+              ]
+            },
+            "then": {
+              "required": [
+                "residual"
+              ],
+              "properties": {
+                "residual": {
+                  "$ref": "#/$defs/Residual"
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "cells": {
+                "items": {
+                  "$ref": "#/$defs/Cell"
+                }
+              },
+              "diagnostics": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/$defs/Diagnostics"
+                  }
+                ]
+              },
+              "residual": {
+                "type": "null"
+              },
+              "params": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "upper": {
+                        "properties": {
+                          "value": {
+                            "minimum": 0,
+                            "maximum": 1
+                          }
+                        }
+                      },
+                      "lower": {
+                        "properties": {
+                          "value": {
+                            "minimum": 0,
+                            "maximum": 1
+                          }
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
     },
     "Threshold": {
       "type": "object",
@@ -553,6 +674,58 @@
       ],
       "additionalProperties": false
     },
+    "ContinuousCell": {
+      "type": "object",
+      "description": "robustmargin.ContinuousCell: one pooled row of real-valued responses at a single severity: its count, mean and sample standard deviation (ddof=1). sd is exactly 0 when n is 1.",
+      "properties": {
+        "severity": {
+          "type": "number",
+          "minimum": 0
+        },
+        "n": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "mean": {
+          "type": "number"
+        },
+        "sd": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "severity",
+        "n",
+        "mean",
+        "sd"
+      ],
+      "additionalProperties": false
+    },
+    "Residual": {
+      "type": "object",
+      "description": "robustmargin.Residual: the residual variance of a Gaussian fit, from which its t and F calibration is built. sigma is sqrt(rss / df); df is the number of observations minus the number of estimated curve parameters.",
+      "properties": {
+        "sigma": {
+          "type": "number",
+          "minimum": 0
+        },
+        "df": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "rss": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "sigma",
+        "df",
+        "rss"
+      ],
+      "additionalProperties": false
+    },
     "Censoring": {
       "type": "string",
       "enum": [
@@ -682,6 +855,72 @@
       ],
       "additionalProperties": false
     },
+    "ContinuousDiagnostics": {
+      "type": "object",
+      "description": "robustmargin.ContinuousDiagnostics: model-only diagnostics of a Gaussian fit -- the residual sum of squares, a pure-error lack-of-fit F test when the design has replicates, and the link comparison by AIC. Reported and never acted on. An untagged helper: it appears only as Fit.diagnostics, and only when that Fit's own status is OK.",
+      "properties": {
+        "rss": {
+          "type": "number",
+          "minimum": 0
+        },
+        "df": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "pure_error_ss": {
+          "type": "number",
+          "minimum": 0
+        },
+        "pure_error_df": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lack_of_fit_f": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "lack_of_fit_p": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "link_aic": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "link_status": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Status"
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "rss",
+        "df",
+        "pure_error_ss",
+        "pure_error_df",
+        "lack_of_fit_f",
+        "lack_of_fit_p",
+        "link_aic",
+        "link_status"
+      ],
+      "additionalProperties": false
+    },
     "AdjacentPair": {
       "type": "object",
       "description": "robustmargin.AdjacentPair: one adjacent-severity-level pair from a MonotonicityCheck, with its raw counts, one-sided Fisher exact p-value and Holm-adjusted p-value.",
@@ -727,9 +966,80 @@
       ],
       "additionalProperties": false
     },
+    "ContinuousAdjacentPair": {
+      "type": "object",
+      "description": "robustmargin.ContinuousAdjacentPair: one adjacent-severity-level pair from a Gaussian MonotonicityCheck, with each level's count, mean and sample SD, the one-sided Welch t statistic and Satterthwaite degrees of freedom (null when the pair is not testable) and the raw and Holm-adjusted p-values.",
+      "properties": {
+        "severity_low": {
+          "type": "number"
+        },
+        "severity_high": {
+          "type": "number"
+        },
+        "n_low": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "mean_low": {
+          "type": "number"
+        },
+        "sd_low": {
+          "type": "number",
+          "minimum": 0
+        },
+        "n_high": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "mean_high": {
+          "type": "number"
+        },
+        "sd_high": {
+          "type": "number",
+          "minimum": 0
+        },
+        "statistic": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "df": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "p_value": {
+          "type": "number"
+        },
+        "holm_adjusted_p": {
+          "type": "number"
+        },
+        "flagged": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "severity_low",
+        "severity_high",
+        "n_low",
+        "mean_low",
+        "sd_low",
+        "n_high",
+        "mean_high",
+        "sd_high",
+        "statistic",
+        "df",
+        "p_value",
+        "holm_adjusted_p",
+        "flagged"
+      ],
+      "additionalProperties": false
+    },
     "MonotonicityCheck": {
       "type": "object",
-      "description": "robustmargin.MonotonicityCheck: a data-only adjacent-level monotonicity check on raw counts -- populated on every fit_dose_response return path, whatever the Status, since it needs only counts, never a fitted curve. An untagged helper, like BaselineRate: it appears only as Fit.monotonicity.",
+      "description": "robustmargin.MonotonicityCheck: a data-only adjacent-level monotonicity check on the raw data -- populated on every fit_dose_response return path, whatever the Status, since it needs only the data, never a fitted curve. Counts are tested with a one-sided Fisher exact test (AdjacentPair) and real-valued responses with a one-sided Welch t-test (ContinuousAdjacentPair), both Holm-corrected. An untagged helper, like BaselineRate: it appears only as Fit.monotonicity.",
       "properties": {
         "direction": {
           "enum": [
@@ -750,7 +1060,14 @@
         "pairs": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/AdjacentPair"
+            "oneOf": [
+              {
+                "$ref": "#/$defs/AdjacentPair"
+              },
+              {
+                "$ref": "#/$defs/ContinuousAdjacentPair"
+              }
+            ]
           }
         },
         "any_flagged": {
@@ -758,7 +1075,10 @@
         },
         "method": {
           "type": "string",
-          "const": "fisher_exact_one_sided_holm"
+          "enum": [
+            "fisher_exact_one_sided_holm",
+            "welch_t_one_sided_holm"
+          ]
         },
         "warnings": {
           "type": "array",
