@@ -7,7 +7,7 @@ minor release may change the public API, and every such change carries a migrati
 
 ## [Unreleased]
 
-## [0.3.0] — 2026-11-10
+## [0.3.0] — 2026-11-11
 
 ### Added
 - **Outcomes that rise with severity.** `Observations(direction="increasing")` now fits and
