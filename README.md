@@ -22,9 +22,9 @@ GPU and no ML framework. That makes it usable wherever robustness and safety car
 
 > **Status: latest release `0.2.1`.** Binomial dose-response fits, thresholds with profile-likelihood or delta
 > confidence intervals, censoring, ratios of two thresholds with Fieller or log-delta intervals,
-> fit diagnostics, and the grid break-point rule. Continuous outcomes, clustered and paired
-> inference, and design helpers are planned for `0.3`. While the version is below 1.0, a minor
-> release may change the public API.
+> fit diagnostics, and the grid break-point rule. Continuous responses (Gaussian least-squares
+> fits) are in the development version. Clustered and paired inference, and design helpers, are
+> planned for `0.3`. While the version is below 1.0, a minor release may change the public API.
 
 ## What it does
 
@@ -330,6 +330,62 @@ crossing read upward. `Definition.baseline_fraction(p)` belongs to a decreasing 
 `threshold` raises if you pair it with an increasing fit (and `baseline_multiple` with a
 decreasing one). For an increasing outcome, `RIGHT` reads "still passes at the highest level
 tested": the rate is confidently below the target there.
+
+### A continuous response
+
+When each run gives a real-valued score instead of a pass or fail, build
+`ContinuousObservations` and fit with `model="gaussian"`. The curve is the same, now with
+independent normal errors fitted by least squares, and `link` still names the shape of the
+transition (`"logit"`, `"probit"` and `"cloglog"` are R `drc`'s `LL.4`, `LN.4` and `W1.4`).
+`ContinuousObservations.from_observations` takes one response per observation and `from_summaries` takes
+a mean, a sample SD and a count per level; both describe the same data and give the same fit.
+
+`upper` and `lower` are in the units of the response, so a threshold target such as
+`Definition.absolute(0.7)` is too. Intervals are calibrated on the fit's residual degrees of
+freedom: the delta interval uses a Student-t quantile and the profile uses the F distribution on
+the change in the residual sum of squares. A continuous response has no exact bounds, so a
+threshold is `OK`, `UNREACHABLE` (the target lies outside the fitted range of the response) or
+`NOT_CONVERGED`, and a value beyond the tested range carries an `EXTRAPOLATED:` warning. A fit that
+cannot be identified (a transition wider than the tested range, a step between two levels, no
+residual degrees of freedom, a response that does not move the way `direction` says) is
+`NOT_CONVERGED` with the reason in `warnings` and no number.
+
+```python
+from robustmargin import (
+    Axis,
+    ContinuousObservations,
+    Definition,
+    Status,
+    fit_dose_response,
+    threshold,
+)
+
+severity = [x for x in (0.0, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0) for _ in range(3)]
+score = [
+    0.95, 0.96, 0.94, 0.87, 0.88, 0.87, 0.80, 0.84, 0.78, 0.59, 0.63, 0.62,
+    0.39, 0.36, 0.39, 0.27, 0.20, 0.23, 0.13, 0.14, 0.13,
+]  # fmt: skip
+
+obs = ContinuousObservations.from_observations(
+    Axis(name="severity", unit="unit", scale="log"),
+    severity=severity,
+    value=score,
+    outcome="score",
+    direction="decreasing",
+)
+fit = fit_dose_response(obs, model="gaussian", link="logit", upper="estimate", lower="estimate")
+assert fit.status is Status.OK
+assert fit.residual.df == 17  # 21 observations, 4 estimated parameters
+
+# The severity at which the score has fallen to 0.7, with a 95% profile interval.
+margin = threshold(fit, definition=Definition.absolute(0.7), interval_method="profile", level=0.95)
+assert margin.status is Status.OK
+assert 0.6 < margin.lo < margin.value < margin.hi < 0.9
+assert abs(fit.predict(margin.value).estimate - 0.7) < 1e-6
+```
+
+A ratio of two continuous thresholds uses a Student-t quantile on Welch-Satterthwaite degrees of
+freedom, and `ratio_interval` raises `ValueError` for a count threshold against a continuous one.
 
 ## Grid break-point rule
 

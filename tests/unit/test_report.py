@@ -377,10 +377,10 @@ class TestSchemaIsStrict:
 
         assert errors
 
-    def test_fit_model_enum_is_exactly_binomial(self) -> None:
+    def test_fit_model_enum_is_exactly_binomial_and_gaussian(self) -> None:
         schema = load_schema()
 
-        assert schema["$defs"]["Fit"]["properties"]["model"]["enum"] == ["binomial"]
+        assert schema["$defs"]["Fit"]["properties"]["model"]["enum"] == ["binomial", "gaussian"]
 
 
 class TestSchemaFieldParity:
@@ -591,10 +591,25 @@ class TestFromDictRequiredKeyParityWithSchema:
 
     @pytest.mark.parametrize(("type_name", "key"), _non_required_key_cases())
     def test_deleting_a_key_outside_required_still_loads(self, type_name: str, key: str) -> None:
-        payload = to_dict(_instance_for(type_name))
-        del payload[key]
+        # ``residual`` exists only on a Gaussian fit, and the writer leaves the key out unless it
+        # is set. A failed Gaussian fit has no residual, so its payload loads without the key
+        # (the key is absent already). An OK Gaussian fit requires it: see the next test.
+        if (type_name, key) == ("Fit", "residual"):
+            payload = to_dict(fake_fit(model="gaussian", status=Status.NOT_CONVERGED))
+            payload.pop(key, None)
+        else:
+            payload = to_dict(_instance_for(type_name))
+            del payload[key]
 
         from_dict(payload)
+
+    def test_deleting_residual_from_an_ok_gaussian_fit_raises(self) -> None:
+        payload = to_dict(fake_fit(model="gaussian"))
+        assert "residual" in payload
+        del payload["residual"]
+
+        with pytest.raises(ValueError, match="residual"):
+            from_dict(payload)
 
 
 # ------------------------------------------------------------------------------------------

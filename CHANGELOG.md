@@ -39,18 +39,75 @@ minor release may change the public API, and every such change carries a migrati
   - `Threshold` itself refuses a `baseline_multiple` definition with a decreasing direction and a
     `baseline_fraction` definition with an increasing one, whether built directly, by
     `dataclasses.replace` or read back through `from_dict`.
-- **Score-card schema `"2"`** (`schema/scorecard-v2.json`), which differs from `"1"` only in
-  admitting `"increasing"` for `Fit.direction` and `Threshold.direction` and
-  `"baseline_multiple"` for `Definition.kind`. `schema/scorecard-v1.json` is unchanged and
-  `load_schema("1")` still loads it. `from_dict` reads both versions, and rejects a result tagged
-  `"1"` that carries an increasing direction or a `baseline_multiple` definition. The check is per
-  object: it looks at each `Fit` or `Threshold` and its own `schema_version`, not at the card as a
-  whole.
+- **Score-card schema `"2"`** (`schema/scorecard-v2.json`), which differs from `"1"` in
+  admitting `"increasing"` for `Fit.direction` and `Threshold.direction`, `"baseline_multiple"`
+  for `Definition.kind`, and Gaussian (continuous-response) fits (see below).
+  `schema/scorecard-v1.json` is unchanged and `load_schema("1")` still loads it. `from_dict` reads
+  both versions, and rejects a result tagged `"1"` that carries an increasing direction, a
+  `baseline_multiple` definition or a Gaussian fit. The check is per object: it looks at each
+  `Fit` or `Threshold` and its own `schema_version`, not at the card as a whole.
 - `robustmargin.testing.fake_fit` and `fake_threshold` take a keyword-only `direction`
   (`"decreasing"` by default, so existing calls are unchanged); `"increasing"` builds a schema-valid
   increasing-outcome result.
 - `ratio_interval` accepts two thresholds of different directions on the same axis and definition;
   the ratio of severities does not depend on which way each outcome runs.
+- **Continuous responses: `model="gaussian"`.** `fit_dose_response` fits the same four-parameter
+  curve to real-valued responses by nonlinear least squares with independent normal errors
+  (`ContinuousObservations`), and `threshold` and `ratio_interval` work on the result. `logit`,
+  `probit` and `cloglog` are R `drc`'s `LL.4`, `LN.4` and `W1.4`.
+  - **Data.** `ContinuousObservations.from_observations` takes one response per observation and
+    `from_summaries` a mean, a sample SD (`ddof=1`) and a count per level; the two give the same
+    fit. `ContinuousCell` is a pooled level, and `cells()` pools rows at one severity accurately
+    where the sum-of-squares shortcut loses every digit. `fit_dose_response` raises `ValueError`
+    for `ContinuousObservations` with `model="binomial"` and for `Observations` with
+    `model="gaussian"`.
+  - **Fit.** `Fit.residual` (new, `Residual(sigma, df, rss)`) is set exactly for an `OK` Gaussian
+    fit and is `None` for a binomial one. The covariance is the residual variance `rss / df` times
+    the inverse of the observed Hessian of the residual sum of squares on the natural parameters,
+    computed analytically.
+    `upper` and `lower` are any finite response values with `upper > lower` (a fixed one costs no
+    degree of freedom). An increasing response is the exact negation of the decreasing fit of the
+    negated response, so the two agree bit for bit. `Fit.cells` holds `ContinuousCell`,
+    `Fit.diagnostics` is a `ContinuousDiagnostics` (residual sum of squares, a pure-error
+    lack-of-fit F test when levels are replicated, and the AIC of the three links), and
+    `Fit.monotonicity` is a one-sided Welch test between adjacent levels, Holm-corrected
+    (`ContinuousAdjacentPair`). **These are now unions.** `Fit.cells`, `Fit.diagnostics`,
+    `diagnose()` and `MonotonicityCheck.pairs` hold the binomial or the continuous type by
+    `Fit.model`, so a caller that reads `.successes`, `.deviance` or `.successes_low` needs an
+    `isinstance` check (or a test of `fit.model`) first.
+  - **Failure is a flag.** A Gaussian fit that cannot be identified is `NOT_CONVERGED` with no
+    parameter, covariance, likelihood, residual or diagnostics, and one of these reasons in
+    `warnings`: `df`, `boundary`, `flat`, `step`, `singular`, `optimizer` or `zero residual`. The unidentified cases are one test: the fit is no better than a supremum of the closure of
+    the curve family, whatever its scale. Responses are unbounded, so a free asymptote can run to
+    infinity, and the suprema are the `s -> 0` step (`step`), the `s -> infinity` line or constant
+    (`flat`) and the exponential tails `a - A exp(lam t)` and `a + A exp(-lam t)` (`unbounded
+    asymptote`). The same limits apply when no start converged. There
+    is no separation, no exact bound and no fallback to another model.
+  - **Intervals are calibrated on the residual degrees of freedom.** The delta interval is
+    `theta ± t(df) · se` (on the log scale, so positive on every axis), and the profile interval
+    uses `(RSS(theta) − RSS) / (RSS / df)` against `F(1, df)`. `Fit.predict` gives a Student-t band
+    on the response scale, not clipped to the unit interval.
+  - **No exact claims.** `FAILS_AT_BASELINE`, `RIGHT` and `LEFT` are never produced. A Gaussian
+    threshold is `OK`, `UNREACHABLE` (the target is not strictly inside the fitted `(lower,
+    upper)`) or `NOT_CONVERGED` (no value, bound or grid). A value outside the tested range carries
+    an `EXTRAPOLATED:` warning, and an unclosed profile side is `OPEN_UPPER` or `OPEN_LOWER`
+    (the delta interval is built on the log scale on every axis, so it is positive).
+    `absolute(a)` takes any finite `a` in response units; `baseline_fraction(p)` raises when the
+    fitted `upper` is not positive and `baseline_multiple(k)` when the fitted `lower` is not.
+  - **Ratios.** Two Gaussian thresholds use a Student-t quantile on Welch-Satterthwaite degrees of
+    freedom: `log_delta` at the degrees of freedom of `Va + Vb`, and `fieller` at those of its
+    pivot, evaluated at the ratio estimate. A count threshold and a continuous one are not
+    comparable, and `ratio_interval` raises `ValueError`.
+  - **Delta standard error for `absolute(a)`.** It uses the full delta method over every free
+    parameter, the asymptotes included. R `drc`'s `ED(type="absolute")` converts `a` to a relative
+    level at the fitted asymptotes and holds it fixed, so its standard error can differ (about 20%
+    on the ryegrass data). Point estimates agree with `drc`.
+  - **Schema and fakes.** Schema `"2"` gains `ContinuousCell`, `Residual`, `ContinuousDiagnostics`
+    and `ContinuousAdjacentPair`, `Fit.model` accepts `"gaussian"`, and the shape of `cells`,
+    `diagnostics`, `residual` and the bounds on `upper` and `lower` depend on the model. A binomial
+    `Fit` writes no `residual` key, so its serialised form is unchanged.
+    `robustmargin.testing.fake_fit` and `fake_threshold` take a keyword-only `model` (`"binomial"`
+    by default) and build Gaussian results with `model="gaussian"`.
 
 ### Changed
 - **Breaking change: `baseline_fraction` refuses on a failed fit.** `threshold()` with

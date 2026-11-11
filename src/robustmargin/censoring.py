@@ -78,6 +78,14 @@ the sequence):
    exactly one set is a one-sided bound at ``c``, with a warning naming the side and ``c``;
    neither set reports no bounds. Nothing is rescanned at ``level`` and no bound is ever at the
    control. All of this is against the resolved target.
+
+A converged Gaussian (continuous-outcome) fit skips all of the above except the reachability test.
+Exact Clopper-Pearson claims have no continuous counterpart without a distributional assumption,
+so ``FAILS_AT_BASELINE``, ``RIGHT`` and ``LEFT`` are never produced for one. It is ``UNREACHABLE``
+when the target is not strictly inside the fitted ``(l, u)``, and is solved otherwise, whatever the
+tested range; a value beyond it is flagged by the caller as extrapolated. A Gaussian fit that did
+not converge has no exact-bound fallback and never reaches this module: it is ``NOT_CONVERGED``
+with no bound and no grid.
 """
 
 from __future__ import annotations
@@ -88,7 +96,7 @@ from typing import Literal
 from scipy.stats import binomtest
 
 from robustmargin.empirical import BaselineRate, GridBreakPoint, grid_break_point
-from robustmargin.models import Fit
+from robustmargin.models import Fit, _count_cells
 from robustmargin.types import Cell, Censoring, Status, _check_finite_number
 
 __all__ = ["Classification", "classify", "exact_one_sided_bound"]
@@ -765,6 +773,37 @@ def _with_grid(
     )
 
 
+def _classify_gaussian(fit: Fit, *, target: float, shown_target: float) -> Classification:
+    """:func:`classify` for a converged Gaussian fit: reachability against the fitted ``(l, u)``,
+    and nothing that claims more than the model does. ``shown_target`` is the target as the
+    caller stated it. A Gaussian fit that did not converge never gets here:
+    :func:`robustmargin.threshold` reports it as ``NOT_CONVERGED`` before any target is resolved.
+    """
+    assert fit.status is Status.OK
+    unreachable = _unreachable(fit, target=target)
+    if unreachable is not None:
+        assert fit.params is not None
+        low, high = fit.params["lower"].value, fit.params["upper"].value
+        if fit.direction == "increasing":  # the view is the negated response
+            low, high = -high, -low
+        return replace(
+            unreachable,
+            warnings=(
+                f"threshold: the target {shown_target!r} is not strictly inside the fitted "
+                f"range of the response ({low!r}, {high!r}), so the curve never crosses it",
+            ),
+        )
+    return Classification(
+        status=Status.OK,
+        censoring=Censoring.NONE,
+        lo=None,
+        hi=None,
+        baseline=None,
+        grid=None,
+        solve=True,
+    )
+
+
 def classify(
     fit: Fit, *, target: float, level: float, original_target: float | None = None
 ) -> Classification:
@@ -794,6 +833,8 @@ def classify(
     """
     mirrored = original_target is not None
     shown_target = original_target if original_target is not None else target
+    if fit.model == "gaussian":
+        return _classify_gaussian(fit, target=target, shown_target=shown_target)
     if fit.status is Status.CONTROL_INCOMPATIBLE:
         return Classification(
             status=Status.CONTROL_INCOMPATIBLE,
@@ -810,7 +851,7 @@ def classify(
     if out_of_range is not None:
         return out_of_range
 
-    cells = fit.cells
+    cells = _count_cells(fit)
     confidence = _exact_claim_confidence(level)
 
     fails_at_baseline = _fails_at_baseline(cells, target=target, level=level, confidence=confidence)

@@ -47,6 +47,20 @@ fixed ``theta``, never trusted for the log-likelihood value itself, so the two n
 found between are always computed the same way (GLM deviance, ``Fit.log_likelihood`` and the
 log-axis control row otherwise do not agree term for term).
 
+**Gaussian fits.** A Gaussian (continuous-response) fit uses the same ``theta = mu + s * z*`` and
+the same delta-method gradient, with the Student-t quantile on the residual degrees of freedom in
+place of the normal one; the interval is on the log scale on either axis. Its profile
+is an F profile: the constrained residual sum of squares at ``theta`` replaces the constrained
+log-likelihood, and a bound sits where ``(RSS(theta) - RSS) / (RSS / df)`` reaches the
+``F(1, df)`` quantile (Bates and Watts, 1988, *Nonlinear Regression Analysis and Its
+Applications*, Wiley). The constrained fit is found in the chart ``(log s, z*)``, where
+``z* = F^-1((u - P*) / (u - l))`` and ``mu = theta - s * z*``: given those two numbers the free
+asymptotes are the solution of a linear least-squares problem under the linear constraint
+``P*(u, l) = u - (u - l) * F(z*)``, in closed form. ``relative(p)`` and two fixed asymptotes pin
+``z*``, leaving a search over ``log s``; otherwise the search is over both. Each search is a
+deterministic grid, with the reachability wall (``|z*|`` large) as an edge, followed by a bounded
+``scipy.optimize.least_squares`` polish.
+
 **Delta method.** ``theta = mu + s * z*``, so ``d(theta)/d(mu) = 1``, ``d(theta)/d(s) = z*``,
 and -- when an asymptote is estimated -- ``d(theta)/d(u) = s * (1 / f(z*)) * d(q)/d(u)``
 (mirrored for ``l``), where ``q = (u - P*) / (u - l)`` and ``f`` is the link's density. The
@@ -69,23 +83,32 @@ from typing import Any, Literal, cast
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.optimize import brentq
+from scipy.optimize import brentq, least_squares
 from scipy.special import expit, log_ndtr, ndtr
 from scipy.special import logit as _logit
 from scipy.stats import chi2, norm
+from scipy.stats import f as f_distribution
+from scipy.stats import t as student_t
 from statsmodels.base.model import GenericLikelihoodModel
 from statsmodels.genmod import families
 from statsmodels.genmod.generalized_linear_model import GLM
 from statsmodels.tools.sm_exceptions import PerfectSeparationWarning
 
 from robustmargin.models import (
+    _GAUSSIAN_LOG_S_ABOVE,
+    _GAUSSIAN_LOG_S_BELOW,
     _NEWTON_DECREMENT_TOLERANCE,
     _STATSMODELS_LINKS,
     Fit,
     _cells_to_arrays,
+    _count_cells,
+    _f_cdf,
     _f_log_cdf,
     _f_log_survival,
+    _f_survival,
     _full_binomial_log_likelihood,
+    _gaussian_problem,
+    _gaussian_projected_asymptotes,
     _newton_decrement_half,
     _scan_log_s_grid,
     _share_logits,
@@ -93,7 +116,14 @@ from robustmargin.models import (
     fit_dose_response,
 )
 from robustmargin.models import _top_local_maxima as _top_maxima
-from robustmargin.types import Censoring, Definition, Observations, Status, _check_finite_number
+from robustmargin.types import (
+    Censoring,
+    ContinuousCell,
+    Definition,
+    Observations,
+    Status,
+    _check_finite_number,
+)
 
 __all__ = ["IntervalResult", "delta_interval", "profile_interval", "solve_value"]
 
@@ -228,11 +258,24 @@ def _target_for(definition: Definition, *, upper: float, lower: float) -> float:
     return upper - definition.value * (upper - lower)  # relative
 
 
-def _dq_du_dl(definition: Definition, *, upper: float, lower: float) -> tuple[float, float]:
+def _dq_du_dl(
+    definition: Definition, *, upper: float, lower: float, gaussian: bool = False
+) -> tuple[float, float]:
     """``d(q)/d(upper)`` and ``d(q)/d(lower)`` for ``q = (upper - P*) / (upper - lower)``, per
     definition kind (this module's docstring). For ``baseline_multiple(k)`` the asymptotes are the
-    mirrored ones (:func:`_target_for`), where ``upper - P* = (k - 1) * (1 - upper)``."""
+    mirrored ones (:func:`_target_for`), where ``upper - P* = (k - 1) * (1 - upper)``.
+
+    For a Gaussian fit the target is ``P* = c0 + cu u + cl l`` on the decreasing view
+    (:func:`_gaussian_target_coefficients`), so ``q = ((1 - cu) u - cl l - c0) / (u - l)`` and
+    ``dq/du = (c0 + (cl - 1 + cu) l) / (u - l)^2``, ``dq/dl = ((1 - cu - cl) u - c0) / (u -
+    l)^2``."""
     spread = upper - lower
+    if gaussian:
+        c0, cu, cl = _gaussian_target_coefficients(definition)
+        return (
+            (c0 + (cl - (1.0 - cu)) * lower) / spread**2,
+            ((1.0 - cu - cl) * upper - c0) / spread**2,
+        )
     if definition.kind == "absolute":
         a = definition.value
         return (a - lower) / spread**2, (upper - a) / spread**2
@@ -317,7 +360,9 @@ def _theta_variance(fit: Fit, *, definition: Definition, target: float) -> float
     gradient_by_name = {"mu": 1.0, "s": z_star}
     if "upper" in names or "lower" in names:
         density = _link_density(z_star, fit.link)
-        dq_du, dq_dl = _dq_du_dl(definition, upper=upper, lower=lower)
+        dq_du, dq_dl = _dq_du_dl(
+            definition, upper=upper, lower=lower, gaussian=fit.model == "gaussian"
+        )
         s = fit.params["s"].value
         if "upper" in names:
             gradient_by_name["upper"] = s * dq_du / density
@@ -331,7 +376,7 @@ def _theta_variance(fit: Fit, *, definition: Definition, target: float) -> float
 
 def _llf_hat(fit: Fit) -> float:
     assert fit.params is not None
-    severity, successes, trials = _cells_to_arrays(fit.cells)
+    severity, successes, trials = _cells_to_arrays(_count_cells(fit))
     return _full_binomial_log_likelihood(
         severity,
         successes,
@@ -659,9 +704,9 @@ def _profile_interval_fixed(
     z_star = _z_star(fit.link, upper=upper, lower=lower, target=target)
     assert z_star is not None, "the caller must have already checked reachability"
 
-    all_severity, all_successes, all_trials = _cells_to_arrays(fit.cells)
+    all_severity, all_successes, all_trials = _cells_to_arrays(_count_cells(fit))
     nonzero_cells = tuple(
-        c for c in fit.cells if not (fit.axis.scale == "log" and c.severity == 0.0)
+        c for c in _count_cells(fit) if not (fit.axis.scale == "log" and c.severity == 0.0)
     )
     nz_severity, nz_successes, nz_trials = _cells_to_arrays(nonzero_cells)
 
@@ -1215,7 +1260,7 @@ class _FaceLogLikelihood:
 def _tested_span(fit: Fit) -> float:
     """The range of the finite tested levels on the axis scale (a log-axis zero control has no
     finite level), or ``1.0`` when there are fewer than two distinct ones."""
-    severity, _, _ = _cells_to_arrays(fit.cells)
+    severity, _, _ = _cells_to_arrays(_count_cells(fit))
     levels = severity[severity > 0.0] if fit.axis.scale == "log" else severity
     transformed = _transform(levels, scale=fit.axis.scale)
     if transformed.size < 2:
@@ -1359,7 +1404,7 @@ class _WallCurve:
         if self.definition.kind != "absolute" or fit.params is None or fit.params["lower"].fixed:
             return None, False
         upper_param = fit.params["upper"]
-        cells = fit.cells
+        cells = _count_cells(fit)
         try:
             obs = Observations.from_counts(
                 fit.axis,
@@ -1720,7 +1765,7 @@ def _estimated_profile_llf(
     both unset where the value itself is used, as at the estimate.
     """
     assert fit.params is not None
-    severity, successes, trials = _cells_to_arrays(fit.cells)
+    severity, successes, trials = _cells_to_arrays(_count_cells(fit))
     lower_param = fit.params["lower"]
     upper_param = fit.params["upper"]
     loglike_fn = _MuSubstitutedLogLikelihood(
@@ -1861,6 +1906,314 @@ def _profile_interval_estimated(
     return replace(result, warnings=(*result.warnings, *notes))
 
 
+# ------------------------------------------------------------------------------------------
+# Profile likelihood: the Gaussian model (an F profile on the residual sum of squares).
+# ------------------------------------------------------------------------------------------
+#
+# For `theta` (the transformed severity of the crossing) the constrained fit minimises the residual
+# sum of squares over every curve with `f(theta) = target`, where the target may depend on the
+# asymptotes. The constraint is parametrised by `(log s, z*)`, `z* = F^-1(q)` with
+# `q = (u - P*) / (u - l)`, so that `mu = theta - s z*`; given `(s, z*)` the free asymptotes enter
+# the mean linearly and
+# the constraint `P*(u, l) = u - q (u - l)` is linear in them too, so they are the solution of a
+# small equality-constrained linear least-squares problem, in closed form. `relative(p)` pins
+# `q = p`, and so do two fixed asymptotes, which leaves a search over `log s` alone. The search is a
+# deterministic grid, with the reachability wall (`|z*|` large, where an asymptote reaches the
+# target) as its edge, followed by a bounded `scipy.optimize.least_squares` polish.
+#
+# Where the free asymptotes would make `u <= l` the constrained infimum lies on the constant curve,
+# which satisfies the constraint trivially; that closure is used rather than a number invented for
+# an infeasible point.
+
+_GAUSSIAN_PROFILE_LOG_S_STEP_1D = 0.1
+_GAUSSIAN_PROFILE_LOG_S_STEP_2D = 0.4
+_GAUSSIAN_PROFILE_Z_STAR_FINE = 8.0
+_GAUSSIAN_PROFILE_Z_STAR_STEP = 0.5
+_GAUSSIAN_PROFILE_Z_STAR_FAR = (10.0, 12.0, 16.0, 20.0, 25.0, 30.0, 35.0)
+# The cloglog survival function underflows beyond this `z*`.
+_GAUSSIAN_PROFILE_CLOGLOG_Z_STAR_MAX = 6.0
+# A free upper asymptote with the lower one fixed is `(K - q l) / (1 - q - cu)` for a target
+# `P* = cu u + ...`: it runs to infinity at `q = 1 - cu`, a point inside `(0, 1)` for
+# `baseline_fraction`, and the cost changes fastest right next to it. The scan adds these offsets
+# in `z*` around that point.
+_GAUSSIAN_PROFILE_SINGULAR_OFFSETS = (0.02, 0.05, 0.1, 0.2, 0.35, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0)
+_GAUSSIAN_PROFILE_BASINS = 2
+# A constrained fit at the estimate that beats the reported fit by more than this fraction of its
+# residual sum of squares means the fit is not at its minimum.
+_GAUSSIAN_PROFILE_POINT_TOLERANCE = 1.0e-6
+_GAUSSIAN_PROFILE_POLISH_TOLERANCE = 1.0e-12
+_GAUSSIAN_PROFILE_HUGE_RESIDUAL = 1.0e100
+
+
+def _gaussian_target_coefficients(definition: Definition) -> tuple[float, float, float]:
+    """``(c0, cu, cl)`` with ``P* = c0 + cu u + cl l`` for a definition on the decreasing view of
+    a Gaussian fit. ``baseline_multiple(k)`` is carried on the view of an increasing fit, where
+    its target ``-k * l`` is ``k u'``."""
+    if definition.kind == "absolute":
+        return definition.value, 0.0, 0.0
+    if definition.kind in ("baseline_fraction", "baseline_multiple"):
+        return 0.0, definition.value, 0.0
+    return 0.0, 1.0 - definition.value, definition.value  # relative
+
+
+def _gaussian_z_star_grid(link: str) -> NDArray[np.float64]:
+    """The ``z*`` values the two-coordinate search is scanned over, to the reachability wall."""
+    fine = np.arange(
+        -_GAUSSIAN_PROFILE_Z_STAR_FINE,
+        _GAUSSIAN_PROFILE_Z_STAR_FINE + 0.5 * _GAUSSIAN_PROFILE_Z_STAR_STEP,
+        _GAUSSIAN_PROFILE_Z_STAR_STEP,
+    )
+    far = np.array(_GAUSSIAN_PROFILE_Z_STAR_FAR)
+    grid = np.unique(np.concatenate([-far, fine, far]))
+    if link == "cloglog":
+        grid = grid[grid <= _GAUSSIAN_PROFILE_CLOGLOG_Z_STAR_MAX]
+        return np.unique(np.append(grid, _GAUSSIAN_PROFILE_CLOGLOG_Z_STAR_MAX))
+    return grid
+
+
+class _GaussianProfile:
+    """The constrained residual sum of squares of a Gaussian fit at a given ``theta``."""
+
+    def __init__(self, fit: Fit, definition: Definition) -> None:
+        assert fit.params is not None
+        cells = tuple(c for c in fit.cells if isinstance(c, ContinuousCell))
+        self.problem = _gaussian_problem(cells, axis=fit.axis, link=fit.link)
+        self.link = fit.link
+        upper, lower = fit.params["upper"], fit.params["lower"]
+        self.fixed_upper = upper.value if upper.fixed else None
+        self.fixed_lower = lower.value if lower.fixed else None
+        self.c0, self.cu, self.cl = _gaussian_target_coefficients(definition)
+        both_fixed = self.fixed_upper is not None and self.fixed_lower is not None
+        self.fixed_q: float | None = None
+        if both_fixed:
+            assert self.fixed_upper is not None and self.fixed_lower is not None
+            target = self.c0 + self.cu * self.fixed_upper + self.cl * self.fixed_lower
+            self.fixed_q = (self.fixed_upper - target) / (self.fixed_upper - self.fixed_lower)
+        elif definition.kind == "relative":
+            self.fixed_q = definition.value
+        self.z_star_pinned = (
+            _link_inverse_cdf(self.fixed_q, self.link) if self.fixed_q is not None else None
+        )
+        levels = self.problem.levels
+        low = math.log(float(levels[-1] - levels[0]) if levels[-1] > levels[0] else 1.0)
+        self.log_s_grid_1d = self._log_s_grid(low, _GAUSSIAN_PROFILE_LOG_S_STEP_1D)
+        self.log_s_grid_2d = self._log_s_grid(low, _GAUSSIAN_PROFILE_LOG_S_STEP_2D)
+        self.z_star_grid = _gaussian_z_star_grid(self.link)
+        if self.fixed_lower is not None and self.fixed_upper is None and 0.0 < 1.0 - self.cu < 1.0:
+            singular = _link_inverse_cdf(1.0 - self.cu, self.link)
+            offsets = np.array(_GAUSSIAN_PROFILE_SINGULAR_OFFSETS)
+            extra = singular + np.concatenate([-offsets, offsets])
+            low, high = self.z_star_grid[0], self.z_star_grid[-1]
+            self.z_star_grid = np.unique(
+                np.concatenate([self.z_star_grid, extra[(extra > low) & (extra < high)]])
+            )
+
+    @staticmethod
+    def _log_s_grid(log_span: float, step: float) -> NDArray[np.float64]:
+        low = log_span - _GAUSSIAN_LOG_S_BELOW
+        high = log_span + _GAUSSIAN_LOG_S_ABOVE
+        return low + step * np.arange(math.floor((high - low) / step) + 1, dtype=np.float64)
+
+    # -- the constrained least-squares solution at (log s, z*) -------------------------------
+
+    def _solve(
+        self, theta: float, log_s: NDArray[np.float64], z_star: NDArray[np.float64]
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
+        """``(cost, u, l)`` for each ``(log s, z*)`` (same shape): the cell-level sum of squares of
+        the best asymptotes on the constraint, ``inf`` where none is admissible."""
+        problem = self.problem
+        w, y = problem.weights, problem.means
+        s = np.exp(log_s)
+        with np.errstate(all="ignore"):
+            z = (problem.t - theta) / s[..., None] + z_star[..., None]
+            c = np.where(problem.control, 0.0, _f_cdf(z, self.link))
+            cb = np.where(problem.control, 1.0, _f_survival(z, self.link))
+            q = _f_cdf(z_star, self.link)
+            qb = _f_survival(z_star, self.link)
+        fixed_u, fixed_l = self.fixed_upper, self.fixed_lower
+
+        def total(level: float | NDArray[np.float64]) -> NDArray[np.float64]:
+            return np.asarray(np.einsum("k,...k->...", w, (y - np.asarray(level)[..., None]) ** 2))
+
+        if fixed_u is not None and fixed_l is not None:
+            fitted = fixed_u * cb + fixed_l * c
+            cost = np.einsum("k,...k->...", w, (y - fitted) ** 2)
+            return cost, np.full(log_s.shape, fixed_u), np.full(log_s.shape, fixed_l)
+
+        if self.fixed_q is not None:  # q is pinned: `relative`
+            upper, lower, cost = _gaussian_projected_asymptotes(
+                problem, c, cb, fixed_upper=fixed_u, fixed_lower=fixed_l
+            )
+            feasible = np.isfinite(cost)
+            closure = float(np.sum(w * y) / np.sum(w))
+            if fixed_u is not None:
+                closure = fixed_u
+            elif fixed_l is not None:
+                closure = fixed_l
+            flat = total(np.full(log_s.shape, closure))
+            return (
+                np.where(feasible, cost, flat),
+                np.where(feasible, upper, closure),
+                np.where(feasible, lower, closure),
+            )
+
+        alpha = qb - self.cu  # alpha u + beta l = c0 is the constraint P*(u, l) = u - q (u - l)
+        beta = q - self.cl
+        with np.errstate(all="ignore"):
+            if fixed_u is not None:
+                lower = (self.c0 - alpha * fixed_u) / beta
+                upper = np.full(log_s.shape, fixed_u)
+                admissible = np.isfinite(lower) & (lower < fixed_u)
+            elif fixed_l is not None:
+                upper = (self.c0 - beta * fixed_l) / alpha
+                lower = np.full(log_s.shape, fixed_l)
+                admissible = np.isfinite(upper) & (upper > fixed_l)
+            else:
+                norm2 = alpha * alpha + beta * beta
+                base_u, base_l = self.c0 * alpha / norm2, self.c0 * beta / norm2
+                dir_u, dir_l = beta / np.sqrt(norm2), -alpha / np.sqrt(norm2)
+                y0 = base_u[..., None] * cb + base_l[..., None] * c
+                g = dir_u[..., None] * cb + dir_l[..., None] * c
+                gg = np.einsum("k,...k->...", w, g * g)
+                tau = np.einsum("k,...k->...", w, g * (y - y0)) / gg
+                upper = base_u + tau * dir_u
+                lower = base_l + tau * dir_l
+                admissible = (gg > 0.0) & np.isfinite(upper) & np.isfinite(lower) & (upper > lower)
+            fitted = upper[..., None] * cb + lower[..., None] * c
+            cost = np.einsum("k,...k->...", w, (y - fitted) ** 2)
+            admissible = admissible & np.isfinite(cost)
+            if fixed_u is None and fixed_l is None:
+                scale = 1.0 - self.cu - self.cl
+                level = self.c0 / scale
+                flat = total(np.full(log_s.shape, level))
+                return (
+                    np.where(admissible, cost, flat),
+                    np.where(admissible, upper, level),
+                    np.where(admissible, lower, level),
+                )
+        return np.where(admissible, cost, np.inf), upper, lower
+
+    # -- the search --------------------------------------------------------------------------
+
+    def _polish(self, theta: float, start: NDArray[np.float64]) -> float:
+        """The cell-level sum of squares after a least-squares polish from ``start``. The polish is
+        unbounded: any point it reaches is an admissible constrained fit, so it can only lower the
+        grid's value, and the unbounded solver's linear algebra is reproducible to the last bit
+        where the bounded solver's is not."""
+        problem = self.problem
+        root_w = np.sqrt(problem.weights)
+        pinned = self.z_star_pinned is not None
+
+        def residuals(x: NDArray[np.float64]) -> NDArray[np.float64]:
+            log_s = x[:1]
+            z_star = np.full(1, self.z_star_pinned) if pinned else x[1:2]
+            cost, upper, lower = self._solve(theta, log_s, z_star)
+            if not np.isfinite(cost[0]):
+                return np.full(root_w.size, _GAUSSIAN_PROFILE_HUGE_RESIDUAL)
+            s = math.exp(float(log_s[0]))
+            with np.errstate(all="ignore"):
+                z = (problem.t - theta) / s + float(z_star[0])
+                c = np.where(problem.control, 0.0, _f_cdf(z, self.link))
+                cb = np.where(problem.control, 1.0, _f_survival(z, self.link))
+            return np.asarray(
+                root_w * (problem.means - upper[0] * cb - lower[0] * c), dtype=np.float64
+            )
+
+        try:
+            run = least_squares(
+                residuals,
+                start,
+                method="trf",
+                xtol=_GAUSSIAN_PROFILE_POLISH_TOLERANCE,
+                ftol=_GAUSSIAN_PROFILE_POLISH_TOLERANCE,
+                gtol=_GAUSSIAN_PROFILE_POLISH_TOLERANCE,
+                max_nfev=200,
+            )
+        except (ValueError, np.linalg.LinAlgError):
+            return math.inf
+        cost, _, _ = self._solve(
+            theta,
+            run.x[:1],
+            np.full(1, self.z_star_pinned) if pinned else run.x[1:2],
+        )
+        return float(cost[0])
+
+    def minimum(self, theta: float) -> float | None:
+        """The constrained residual sum of squares at ``theta`` (primed units), or ``None`` when
+        no admissible curve satisfies the constraint there."""
+        ssw = self.problem.ssw
+        if self.z_star_pinned is not None:
+            grid = self.log_s_grid_1d
+            cost, _, _ = self._solve(theta, grid, np.full(grid.shape, self.z_star_pinned))
+            best = float(np.min(cost))
+            if not math.isfinite(best):
+                return None
+            for index in _top_maxima(
+                np.where(np.isfinite(cost), -cost, -np.inf), _GAUSSIAN_PROFILE_BASINS
+            ):
+                best = min(best, self._polish(theta, np.array([grid[index]])))
+            return ssw + best
+
+        log_s, z_star = self.log_s_grid_2d, self.z_star_grid
+        mesh_s, mesh_z = np.meshgrid(log_s, z_star, indexing="ij")
+        cost, _, _ = self._solve(theta, mesh_s, mesh_z)
+        best = float(np.min(cost))
+        if not math.isfinite(best):
+            return None
+        by_s = np.argmin(cost, axis=1)
+        profile = cost[np.arange(log_s.size), by_s]
+        for index in _top_maxima(
+            np.where(np.isfinite(profile), -profile, -np.inf), _GAUSSIAN_PROFILE_BASINS
+        ):
+            j = int(by_s[index])
+            best = min(best, self._polish(theta, np.array([log_s[index], z_star[j]])))
+        return ssw + best
+
+
+def _profile_interval_gaussian(
+    fit: Fit, *, definition: Definition, level: float, theta_hat: float
+) -> IntervalResult:
+    """The F profile interval of a Gaussian fit (see the block comment above)."""
+    assert fit.residual is not None
+    profile = _GaussianProfile(fit, definition)
+    problem = profile.problem
+    rss, df = fit.residual.rss, fit.residual.df
+    cutoff = float(f_distribution.ppf(level, 1, df))
+
+    def statistic(theta: float) -> float | None:
+        constrained = profile.minimum((theta - problem.centre) / problem.spread)
+        if constrained is None:
+            return None
+        return (constrained - rss) / (rss / df)
+
+    def g(theta: float) -> float | None:
+        value = statistic(theta)
+        return None if value is None else value - cutoff
+
+    at_estimate = statistic(theta_hat)
+    if at_estimate is None or not at_estimate - cutoff < 0.0:
+        raise ValueError(
+            "intervals.profile_interval: the Gaussian profile statistic at theta_hat did not "
+            f"come out below the F cut-off (statistic={at_estimate!r}, cut-off={cutoff!r}); the "
+            "inner optimiser may have beaten the reported fit"
+        )
+    if at_estimate * rss / df < -_GAUSSIAN_PROFILE_POINT_TOLERANCE * rss:
+        raise ValueError(
+            "intervals.profile_interval: the constrained fit at theta_hat reached a residual sum "
+            f"of squares {rss * (1.0 + at_estimate / df)!r} below the reported {rss!r}, so the fit "
+            "is not at its minimum; refit before computing an interval"
+        )
+
+    lower_limit, upper_limit = _search_limits(fit)
+    return _solve_profile_bracket(
+        g,
+        theta_hat=theta_hat,
+        lower_limit=lower_limit,
+        upper_limit=upper_limit,
+        scale=fit.axis.scale,
+    )
+
+
 def profile_interval(
     fit: Fit, *, definition: Definition, target: float, level: float, theta_hat: float
 ) -> IntervalResult:
@@ -1887,6 +2240,10 @@ def profile_interval(
     """
     _check_finite_number(level, label="profile_interval level")
     assert fit.params is not None
+    if fit.model == "gaussian":
+        return _profile_interval_gaussian(
+            fit, definition=definition, level=level, theta_hat=theta_hat
+        )
     # Dispatch on the asymptote *values*, not on their `fixed` flags. The offset trick models
     # the raw failure rate, `P(failure) = F(z)`, which is an identity only at `u = 1, l = 0`.
     # For any other fixed pair the modelled quantity is `(u - P) / (u - l)`, so the inner GLM
@@ -1917,7 +2274,9 @@ def delta_interval(
 
     Computed on the log scale and exponentiated -- even on a linear axis, where
     ``sigma_log = sigma_theta / value`` -- which is what keeps the interval positive and
-    equivariant under ``x -> c * x`` regardless of axis (this module's docstring).
+    equivariant under ``x -> c * x`` regardless of axis (this module's docstring). A binomial fit
+    uses the normal quantile; a Gaussian fit uses the Student-t quantile on its residual degrees
+    of freedom (R ``drc``'s ``ED(interval = "delta")`` calibration).
 
     Parameters
     ----------
@@ -1943,7 +2302,11 @@ def delta_interval(
     sigma_theta = math.sqrt(max(var_theta, 0.0))
 
     sigma_log = sigma_theta if fit.axis.scale == "log" else sigma_theta / value
-    z_score = float(norm.ppf(0.5 + level / 2.0))
+    if fit.model == "gaussian":
+        assert fit.residual is not None
+        z_score = float(student_t.ppf(0.5 + level / 2.0, fit.residual.df))
+    else:
+        z_score = float(norm.ppf(0.5 + level / 2.0))
     # `math.exp` raises OverflowError rather than returning inf, and a flat curve on a coarse
     # grid makes `sigma_log` large enough to reach it. An interval whose upper end overflows is
     # not a bounded interval, so it takes the same route as an unbounded profile: the estimate
