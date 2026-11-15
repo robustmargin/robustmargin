@@ -303,7 +303,7 @@ class TestLogLikelihood:
     def test_continuous_value_matches_a_hand_computed_case(self) -> None:
         # Cells (mean, sd, n): (4, 1, 2), (2, 1, 2), (3, 1, 2) decreasing. 2 < 3 violates:
         # pooled 2.5. RSS = 3 * (2 - 1) * 1 + 2 * (4 - 4)**2 + 2 * (2 - 2.5)**2 + 2 * (3 - 2.5)**2
-        # = 3 + 0 + .5 + .5 = 4; N = 6; sigma2 = 2/3; ll = -3 * (ln(2 pi 2/3) + 1) = -7.4379...
+        # = 3 + 0 + .5 + .5 = 4; N = 6; sigma2 = 2/3; ll = -3 * (ln(2 pi 2/3) + 1) = -7.2972...
         fit = fit_dose_response(
             ContinuousObservations.from_summaries(
                 _LOG,
@@ -319,7 +319,7 @@ class TestLogLikelihood:
 
         expected = -3.0 * (math.log(2.0 * math.pi * 2.0 / 3.0) + 1.0)
         assert fit.log_likelihood == pytest.approx(expected, rel=1e-12)
-        assert fit.log_likelihood == pytest.approx(-7.43783, abs=1e-4)
+        assert fit.log_likelihood == pytest.approx(-7.29724, abs=1e-4)
 
 
 class TestArguments:

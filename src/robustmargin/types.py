@@ -7,7 +7,8 @@ aggregated-or-per-observation counts a binomial fit is built from, and ``Continu
 the real-valued responses a Gaussian fit is built from; ``Definition`` names which
 target-performance definition a threshold solves for; ``Cell`` is one pooled row of counts at
 a single severity and ``ContinuousCell`` its real-valued counterpart; ``Residual`` is a Gaussian
-fit's residual variance; ``Status`` and ``IntervalShape`` are the enums results report through.
+fit's residual variance; ``BootstrapSummary`` counts what a bootstrap interval did with its
+replicates; ``Status`` and ``IntervalShape`` are the enums results report through.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from enum import StrEnum
 
 __all__ = [
     "Axis",
+    "BootstrapSummary",
     "Cell",
     "Censoring",
     "ContinuousCell",
@@ -685,6 +687,71 @@ class Residual:
                 f"got {self.sigma!r}"
             )
         object.__setattr__(self, "df", df)
+
+
+def _check_whole_count(value: object, *, label: str) -> int:
+    """Return ``value`` if it is a genuine ``int`` (not a ``bool``) that is non-negative."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{label} must be an int, got {value!r}")
+    if value < 0:
+        raise ValueError(f"{label} must be non-negative, got {value!r}")
+    return value
+
+
+@dataclass(frozen=True, kw_only=True)
+class BootstrapSummary:
+    """What a bootstrap interval did with its replicates, kept on ``Threshold.bootstrap`` so a
+    result can be audited and reproduced.
+
+    Every replicate is resampled data that is refitted and solved for its own threshold. A
+    replicate whose refit fails is ``failed`` and is left out of the percentiles. A replicate whose
+    target the refitted curve never reaches is not left out: it is counted by the side it implies
+    and takes part in the percentiles as a threshold of zero (``unreachable_low``) or beyond the
+    tested range (``unreachable_high``).
+
+    Attributes
+    ----------
+    n_resamples
+        The number of replicates drawn. At least 1.
+    failed
+        The replicates whose refit did not reach ``Status.OK``.
+    unreachable_low
+        The replicates whose curve is already at or below the target at the lowest severity the
+        threshold can take (or, on a linear axis, whose crossing is at or below zero).
+    unreachable_high
+        The replicates whose curve never falls to the target (never rises to it, for an
+        increasing outcome) within what can be solved.
+    seed
+        The non-negative integer the random generator was seeded with. The same fit, arguments
+        and seed reproduce the result bit for bit.
+
+    Raises
+    ------
+    ValueError
+        If any field is not a genuine ``int`` (a ``bool`` is refused), a count is negative,
+        ``n_resamples`` is less than 1, or ``failed + unreachable_low + unreachable_high`` exceeds
+        ``n_resamples``.
+    """
+
+    n_resamples: int
+    failed: int
+    unreachable_low: int
+    unreachable_high: int
+    seed: int
+
+    def __post_init__(self) -> None:
+        n_resamples = _check_whole_count(self.n_resamples, label="BootstrapSummary.n_resamples")
+        failed = _check_whole_count(self.failed, label="BootstrapSummary.failed")
+        low = _check_whole_count(self.unreachable_low, label="BootstrapSummary.unreachable_low")
+        high = _check_whole_count(self.unreachable_high, label="BootstrapSummary.unreachable_high")
+        _check_whole_count(self.seed, label="BootstrapSummary.seed")
+        if n_resamples < 1:
+            raise ValueError(f"BootstrapSummary.n_resamples must be >= 1, got {n_resamples!r}")
+        if failed + low + high > n_resamples:
+            raise ValueError(
+                "BootstrapSummary: failed + unreachable_low + unreachable_high "
+                f"({failed + low + high}) must not exceed n_resamples ({n_resamples})"
+            )
 
 
 def _check_cluster_ids(cluster: tuple[str | int, ...], *, n: int, label: str) -> None:

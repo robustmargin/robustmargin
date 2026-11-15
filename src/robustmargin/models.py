@@ -27,6 +27,15 @@ and no number; there is no separation, no exact bound and no fallback to another
 :data:`robustmargin.report.SCHEMA_VERSION` is the version :func:`robustmargin.report.to_dict`
 writes and the single source of that number.
 
+**An isotonic fit** (``model="isotonic"``) assumes only that performance is monotone in severity.
+It takes either kind of observations, has no parameters, link or covariance, and its content is
+:attr:`Fit.cell_estimates`: the weighted least-squares monotone fit to the cell rates (counts,
+weighted by ``trials``) or cell means (continuous, weighted by ``n``), found by
+pool-adjacent-violators (``scipy.optimize.isotonic_regression``). It cannot fail, so its status is
+always ``OK``. It has no curve between the tested severities, so :meth:`Fit.predict` and
+:func:`robustmargin.diagnose` refuse it; a threshold on it interpolates the cell estimates, and
+its interval is a bootstrap.
+
 **Outcomes that rise with severity.** For ``Observations(direction="increasing")`` the counted
 outcome rises with severity and the curve is ``P(x) = l + (u - l) * F(z)``. It is fit as the
 decreasing curve of the complementary outcome (``trials - successes``, asymptotes ``1 - l`` and
@@ -52,7 +61,7 @@ from typing import Any, Literal, NamedTuple, overload
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
-from scipy.optimize import least_squares, minimize_scalar
+from scipy.optimize import isotonic_regression, least_squares, minimize_scalar
 from scipy.special import expit, gammaln, log_expit, xlog1py, xlogy
 from scipy.special import logit as _logit
 from scipy.stats import norm
@@ -93,10 +102,11 @@ from robustmargin.validation import (
 
 __all__ = ["Covariance", "Fit", "Parameter", "Prediction", "fit_dose_response"]
 
-_VALID_MODELS = frozenset({"binomial", "gaussian"})
+_VALID_MODELS = frozenset({"binomial", "gaussian", "isotonic"})
 _VALID_LINKS: dict[str, frozenset[str]] = {
     "binomial": frozenset({"probit", "logit", "cloglog"}),
     "gaussian": frozenset({"probit", "logit", "cloglog"}),
+    "isotonic": frozenset({"none"}),
 }
 # A Gaussian fit has no separation, no exact-bound fallback and no control incompatibility: it
 # either identifies the curve or says, with a named reason, that it cannot.
@@ -368,7 +378,9 @@ class Fit:
 
     ``status == Status.OK`` if and only if both ``params`` and ``log_likelihood`` are present;
     when ``status`` is anything else, ``params``, ``covariance`` and ``log_likelihood`` are all
-    ``None`` -- no number is ever produced for a failed fit. ``Status.UNREACHABLE`` and
+    ``None`` -- no number is ever produced for a failed fit. An isotonic fit is the one exception:
+    it is always ``OK``, has a ``log_likelihood``, and has no ``params`` or ``covariance`` (see
+    ``cell_estimates``). ``Status.UNREACHABLE`` and
     ``Status.FAILS_AT_BASELINE`` describe a *threshold*, not a fit (they depend on a ``Definition``
     a ``Fit`` does not have), and are never a ``Fit.status``.
 
@@ -384,6 +396,14 @@ class Fit:
     schema does not define is rejected, including a key with a ``null`` value. Adding a field to
     ``Fit`` is therefore a ``schema_version`` change.
 
+    An **isotonic** fit (``model="isotonic"``) carries no curve. ``link`` is ``"none"``, ``params``,
+    ``covariance``, ``diagnostics`` and ``residual`` are ``None``, ``status`` is ``OK``, and
+    ``cell_estimates`` holds the monotone fitted value of every cell, in ``cells`` order and on the
+    scale of the outcome as counted. ``log_likelihood`` is the log-likelihood at those values:
+    for counts ``sum(k * log(p) + (n - k) * log(1 - p))`` with ``0 * log(0) = 0`` and no binomial
+    coefficient, and for continuous responses the Gaussian log-likelihood with the variance at its
+    maximum, ``-N / 2 * (log(2 * pi * RSS / N) + 1)``.
+
     Attributes
     ----------
     axis
@@ -395,21 +415,22 @@ class Fit:
         ``"decreasing"`` (performance falls as severity rises) or ``"increasing"`` (the counted
         outcome rises with severity).
     model
-        The model family: ``"binomial"`` (counts) or ``"gaussian"`` (real-valued responses). A
-        Gaussian fit's ``upper`` and ``lower`` are any finite response values with ``lower <
-        upper``, its ``cells`` are :class:`~robustmargin.ContinuousCell`, its ``diagnostics`` are
+        The model family: ``"binomial"`` (counts), ``"gaussian"`` (real-valued responses) or
+        ``"isotonic"`` (a monotone fit to either, described above). A Gaussian fit's ``upper`` and
+        ``lower`` are any finite response values with ``lower < upper``, its ``cells`` are
+        :class:`~robustmargin.ContinuousCell`, its ``diagnostics`` are
         :class:`~robustmargin.validation.ContinuousDiagnostics`, and its ``residual`` is set.
         A Gaussian fit's ``status`` is ``OK`` or ``NOT_CONVERGED`` only.
     link
-        The link function: ``"probit"``, ``"logit"`` or ``"cloglog"``.
-        Required; the schema's ``link`` enum carries no ``null`` alternative, so this is a
-        genuine ``str``, never ``None``.
+        The link function: ``"probit"``, ``"logit"`` or ``"cloglog"``, or ``"none"`` for an
+        isotonic fit. Required; the schema's ``link`` enum carries no ``null`` alternative, so
+        this is a genuine ``str``, never ``None``.
     params
         A mapping with exactly the keys ``{"mu", "s", "upper", "lower"}`` when ``status`` is
-        ``OK``, else ``None``. ``s.value`` must be positive; for ``model="binomial"``
-        ``lower.value`` and ``upper.value`` must each lie in ``[0, 1]`` with ``lower.value <
-        upper.value``, and for ``model="gaussian"`` they are finite with ``lower.value <
-        upper.value``.
+        ``OK``, else ``None``; always ``None`` for an isotonic fit. ``s.value`` must be positive;
+        for ``model="binomial"`` ``lower.value`` and ``upper.value`` must each lie in ``[0, 1]``
+        with ``lower.value < upper.value``, and for ``model="gaussian"`` they are finite with
+        ``lower.value < upper.value``.
         ``params["mu"].fixed`` and ``params["s"].fixed`` must both be ``False``: this package
         never produces (and this dataclass never accepts) an ``OK`` fit with a fixed location
         or scale.
@@ -443,8 +464,8 @@ class Fit:
         carries a message suggesting ``upper="estimate"``, or ``lower="estimate"`` for an
         increasing outcome). Empty by default.
     schema_version
-        The serialised-result schema version this object belongs to. Defaults to ``"2"``, the
-        version ``to_dict`` writes; ``from_dict`` also reads ``"1"``.
+        The serialised-result schema version this object belongs to. Defaults to ``"3"``, the
+        version ``to_dict`` writes; ``from_dict`` also reads ``"1"`` and ``"2"``.
     provenance
         An opaque mapping the caller may attach to record where the inputs came from.
         robustmargin stores it and never interprets it. Empty by default.
@@ -464,7 +485,12 @@ class Fit:
         A Gaussian fit's residual variance (:class:`~robustmargin.Residual`: ``sigma``, ``df``,
         ``rss``), set exactly when ``model="gaussian"`` and ``status`` is ``OK``; ``None`` for a
         binomial fit and for a failed Gaussian fit. It is what a Gaussian fit's t and F
-        calibration uses. The last field.
+        calibration uses.
+    cell_estimates
+        The isotonic fit's value at every cell, in ``cells`` order (the control included), set
+        exactly when ``model="isotonic"`` and ``None`` otherwise. Non-increasing for a
+        decreasing outcome and non-decreasing for an increasing one; for counts each lies in
+        ``[0, 1]``. The last field.
     """
 
     axis: Axis
@@ -479,17 +505,20 @@ class Fit:
     status: Status
     cluster_ids: tuple[str | int, ...] | None = None
     warnings: tuple[str, ...] = ()
-    schema_version: str = "2"
+    schema_version: str = "3"
     provenance: Mapping[str, JSONValue] = field(default_factory=dict)
     diagnostics: Diagnostics | ContinuousDiagnostics | None = None
     monotonicity: MonotonicityCheck | None = None
     residual: Residual | None = None
+    cell_estimates: tuple[float, ...] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "warnings", tuple(self.warnings))
         object.__setattr__(self, "cells", tuple(self.cells))
         if self.cluster_ids is not None:
             object.__setattr__(self, "cluster_ids", tuple(self.cluster_ids))
+        if self.cell_estimates is not None:
+            object.__setattr__(self, "cell_estimates", tuple(self.cell_estimates))
 
         if not self.outcome:
             raise ValueError("Fit.outcome must be non-empty")
@@ -515,16 +544,26 @@ class Fit:
                 "not a fit"
             )
         gaussian = self.model == "gaussian"
+        isotonic = self.model == "isotonic"
         if gaussian and self.status not in _GAUSSIAN_FIT_STATUSES:
             raise ValueError(
                 f"Fit.status for model='gaussian' must be one of "
                 f"{sorted(s.value for s in _GAUSSIAN_FIT_STATUSES)}, got {self.status!r}: a "
                 "Gaussian fit has no separation, no control incompatibility and no exact bound"
             )
+        if isotonic and self.status is not Status.OK:
+            raise ValueError(
+                f"Fit.status for model='isotonic' must be OK, got {self.status!r}: pool-adjacent-"
+                "violators cannot fail"
+            )
 
         if not self.cells:
             raise ValueError("Fit.cells must not be empty")
-        cell_type = ContinuousCell if gaussian else Cell
+        cell_type = (
+            type(self.cells[0])
+            if isotonic and isinstance(self.cells[0], (Cell, ContinuousCell))
+            else (ContinuousCell if gaussian else Cell)
+        )
         for cell in self.cells:
             if not isinstance(cell, cell_type):
                 raise ValueError(
@@ -542,6 +581,16 @@ class Fit:
                 )
 
         _check_cluster_ids(self.cluster_ids, label="Fit.cluster_ids")
+
+        if (self.cell_estimates is not None) != isotonic:
+            raise ValueError(
+                "Fit.cell_estimates is set exactly when model is 'isotonic': got "
+                f"model={self.model!r}, cell_estimates is not None="
+                f"{self.cell_estimates is not None!r}"
+            )
+        if isotonic:
+            self._check_isotonic()
+            return
 
         if self.status is not Status.OK and self.diagnostics is not None:
             raise ValueError(
@@ -641,6 +690,43 @@ class Fit:
                 f"expected {sorted(non_fixed)}, got {sorted(self.covariance.names)}"
             )
 
+    def _check_isotonic(self) -> None:
+        """The invariants of an isotonic fit (``__post_init__`` calls this after the checks every
+        model shares): no parameters, no covariance, no diagnostics, no residual, a finite
+        log-likelihood, and one monotone ``cell_estimates`` entry per cell."""
+        if self.link != "none":
+            raise ValueError(f"Fit.link must be 'none' for model='isotonic', got {self.link!r}")
+        if (
+            self.params is not None
+            or self.covariance is not None
+            or self.diagnostics is not None
+            or self.residual is not None
+        ):
+            raise ValueError(
+                "Fit.params, .covariance, .diagnostics and .residual must all be None for "
+                "model='isotonic': an isotonic fit has no parametric curve"
+            )
+        if self.log_likelihood is None:
+            raise ValueError("Fit.log_likelihood is required for model='isotonic'")
+        _check_finite_number(self.log_likelihood, label="Fit.log_likelihood")
+        estimates = self.cell_estimates
+        assert estimates is not None  # established by the caller
+        if len(estimates) != len(self.cells):
+            raise ValueError(
+                f"Fit.cell_estimates must have one entry per cell ({len(self.cells)}), got "
+                f"{len(estimates)}"
+            )
+        for value in estimates:
+            _check_finite_number(value, label="Fit.cell_estimates entry")
+        if isinstance(self.cells[0], Cell) and not all(0.0 <= v <= 1.0 for v in estimates):
+            raise ValueError("Fit.cell_estimates must lie in [0, 1] for counts")
+        sign = -1.0 if self.direction == "decreasing" else 1.0
+        if any(sign * (b - a) < 0.0 for a, b in zip(estimates, estimates[1:], strict=False)):
+            raise ValueError(
+                f"Fit.cell_estimates must be monotone in the fitted direction ({self.direction}), "
+                f"got {estimates!r}"
+            )
+
     def predict(self, severity: ArrayLike, *, level: float = 0.95) -> Prediction:
         """Evaluate the fitted curve and a delta-method confidence band at each of
         ``severity``.
@@ -696,10 +782,17 @@ class Fit:
         ------
         ValueError
             If ``self.status`` is not :data:`~robustmargin.Status.OK` (a failed fit has no curve
-            to evaluate), if ``level`` is not finite, is a ``bool``, or
+            to evaluate), if the fit is isotonic (it has fitted values only at the tested
+            severities, in ``cell_estimates``, and no curve or band between them), if ``level`` is
+            not finite, is a ``bool``, or
             does not satisfy ``0 < level < 1``, or if ``severity`` is empty or contains a
             negative or non-finite entry.
         """
+        if self.model == "isotonic":
+            raise ValueError(
+                "Fit.predict: an isotonic fit has no curve to evaluate. Its fitted values are "
+                "Fit.cell_estimates, one per tested severity; nothing is defined between them"
+            )
         if self.status is not Status.OK:
             raise ValueError(
                 f"Fit.predict requires status=OK, got {self.status!r}: a failed fit has no "
@@ -842,6 +935,63 @@ class Fit:
 # The mirror between the two directions
 # ================================================================================================
 
+
+def _is_continuous_fit(fit: Fit) -> bool:
+    """Whether ``fit`` is on real-valued responses (a Gaussian fit, or an isotonic fit made from
+    :class:`~robustmargin.ContinuousObservations`) rather than on counts."""
+    return fit.model == "gaussian" or (
+        fit.model == "isotonic" and isinstance(fit.cells[0], ContinuousCell)
+    )
+
+
+def _isotonic_estimates(
+    cells: tuple[Cell | ContinuousCell, ...], *, direction: str
+) -> tuple[float, ...]:
+    """The weighted least-squares monotone fit to the cells, in order, by pool-adjacent-violators
+    (``scipy.optimize.isotonic_regression``): the cell rates weighted by ``trials`` for counts, the
+    cell means weighted by ``n`` for continuous cells. Non-decreasing for ``"increasing"``,
+    non-increasing otherwise."""
+    values = np.empty(len(cells), dtype=np.float64)
+    weights = np.empty(len(cells), dtype=np.float64)
+    for index, cell in enumerate(cells):
+        if isinstance(cell, ContinuousCell):
+            values[index], weights[index] = cell.mean, float(cell.n)
+        else:
+            values[index], weights[index] = cell.successes / cell.trials, float(cell.trials)
+    solution = isotonic_regression(values, weights=weights, increasing=direction == "increasing")
+    return tuple(float(v) for v in solution.x)
+
+
+def _isotonic_log_likelihood(
+    cells: tuple[Cell | ContinuousCell, ...], estimates: Sequence[float]
+) -> float:
+    """The log-likelihood of an isotonic fit at its cell ``estimates``.
+
+    Counts: ``sum(k * log(p) + (n - k) * log(1 - p))`` with ``0 * log(0) = 0`` and no binomial
+    coefficient. Continuous cells: the Gaussian log-likelihood with the variance at its maximum,
+    ``-N / 2 * (log(2 * pi * RSS / N) + 1)``, where ``RSS`` is the within-cell sum of squares plus
+    ``n * (mean - estimate)^2`` summed over cells. A zero residual sum of squares has an unbounded
+    likelihood and raises."""
+    if all(isinstance(c, Cell) for c in cells):
+        p = np.clip(np.asarray(estimates, dtype=np.float64), 0.0, 1.0)
+        k = np.array([float(c.successes) for c in cells if isinstance(c, Cell)])
+        n = np.array([float(c.trials) for c in cells if isinstance(c, Cell)])
+        return float(np.sum(xlogy(k, p) + xlog1py(n - k, -p)))
+    n = np.array([float(c.n) for c in cells if isinstance(c, ContinuousCell)])
+    mean = np.array([c.mean for c in cells if isinstance(c, ContinuousCell)])
+    sd = np.array([c.sd for c in cells if isinstance(c, ContinuousCell)])
+    fitted = np.asarray(estimates, dtype=np.float64)
+    rss = float(np.sum((n - 1.0) * sd**2) + np.sum(n * (mean - fitted) ** 2))
+    if not rss > 0.0:
+        raise ValueError(
+            "fit_dose_response: the residual sum of squares of the isotonic fit is zero (the cell "
+            "means are already monotone and no cell has any spread), so the Gaussian likelihood is "
+            "unbounded and no log-likelihood exists"
+        )
+    total = float(n.sum())
+    return float(-0.5 * total * (math.log(2.0 * math.pi * rss / total) + 1.0))
+
+
 _ASYMPTOTE_NAMES = frozenset({"upper", "lower"})
 _SWAPPED_PARAMETER_NAME = {"mu": "mu", "s": "s", "upper": "lower", "lower": "upper"}
 
@@ -863,9 +1013,13 @@ def _mirror_fit(fit: Fit) -> Fit:
     ``P' = u' - (u' - l') * F(z)`` with ``u' = -l`` and ``l' = -u``. Negation is exact in floating
     point, so the map applied twice returns the fit it was given exactly, and the residual sum of
     squares, the degrees of freedom and the log-likelihood are unchanged.
+
+    An isotonic fit mirrors by the same complement or negation of its cells, and its
+    ``cell_estimates`` are re-solved on the mirrored cells in the mirrored direction, which is
+    exactly what fitting the complementary data directly gives.
     """
     cells: tuple[Cell | ContinuousCell, ...]
-    if fit.model == "gaussian":
+    if _is_continuous_fit(fit):
         cells = tuple(
             ContinuousCell(severity=c.severity, n=c.n, mean=-c.mean, sd=c.sd)
             for c in fit.cells
@@ -877,8 +1031,15 @@ def _mirror_fit(fit: Fit) -> Fit:
             for c in fit.cells
             if isinstance(c, Cell)
         )
-    negate = fit.model == "gaussian"
+    negate = _is_continuous_fit(fit)
     direction = "decreasing" if fit.direction == "increasing" else "increasing"
+    if fit.model == "isotonic":
+        return replace(
+            fit,
+            direction=direction,
+            cells=cells,
+            cell_estimates=_isotonic_estimates(cells, direction=direction),
+        )
     params: dict[str, Parameter] | None = None
     covariance: Covariance | None = None
     if fit.params is not None:
@@ -2181,6 +2342,18 @@ def _scan_starts(
     ]
 
 
+def _generic_fit_cells(
+    cells: tuple[Cell, ...], *, axis: Axis, upper_is_estimate: bool, upper_value: float
+) -> tuple[Cell, ...]:
+    """The cells :func:`_fit_generic` hands its optimizer: the same cells, without a log-axis
+    zero-severity control when ``upper`` is fixed at exactly ``1.0`` (which then pins that cell's
+    fitted probability to a constant, so it carries no information about any estimated
+    parameter)."""
+    if axis.scale == "log" and not upper_is_estimate and upper_value == 1.0:
+        return tuple(c for c in cells if c.severity != 0.0)
+    return cells
+
+
 def _fit_generic(
     obs: Observations,
     *,
@@ -2192,6 +2365,7 @@ def _fit_generic(
     lower_is_estimate: bool,
     lower_value: float,
     mirrored: bool = False,
+    reuse_starts: Sequence[NDArray[np.float64]] | None = None,
 ) -> Fit:
     """The estimated-or-non-trivial-fixed-asymptote path: ``statsmodels``
     ``GenericLikelihoodModel`` given :class:`_GenericLogLikelihood`, fit with ``method="bfgs"``
@@ -2214,6 +2388,12 @@ def _fit_generic(
     ``mirrored`` says that ``obs`` is the complement of an increasing outcome: it changes only
     the wording of a failure's reason, so that it names the asymptotes and direction of the
     outcome the caller supplied.
+
+    ``reuse_starts`` replaces the likelihood scan: when given, BFGS is run from these parameter
+    vectors (in the optimizer's own chart) instead of from the scan's best points. A bootstrap
+    replicate shares its design with the fit it resamples, so it passes the starts found once for
+    that fit (:func:`_parent_starts`) rather than paying for a scan per replicate. The pilot start,
+    the fixed alternative starts and every check after the fit are unchanged.
     """
     axis = obs.axis
 
@@ -2236,10 +2416,8 @@ def _fit_generic(
     # pilot start and `nobs` identical to a fit over the same data with no control row at all. An
     # *estimated* upper is never exempt: the zero_control branch then reports `upper` itself, a free
     # parameter, so the control genuinely identifies it and must stay in the optimizer's data.
-    fit_cells = (
-        tuple(c for c in cells if c.severity != 0.0)
-        if axis.scale == "log" and not upper_is_estimate and upper_value == 1.0
-        else cells
+    fit_cells = _generic_fit_cells(
+        cells, axis=axis, upper_is_estimate=upper_is_estimate, upper_value=upper_value
     )
     severity, successes, trials = _cells_to_arrays(fit_cells)
 
@@ -2730,7 +2908,12 @@ def _fit_generic(
             selected_params = start_params
         scan_best: Any = None
         scan_best_llf = -math.inf
-        for scan_start in _scan_starts(loglike_fn, selected_params, step_supremum):
+        scan_candidates = (
+            _scan_starts(loglike_fn, selected_params, step_supremum)
+            if reuse_starts is None
+            else list(reuse_starts)
+        )
+        for scan_start in scan_candidates:
             scan_bfgs = _bfgs(scan_start)
             if _finite_llf(scan_bfgs) > scan_best_llf:
                 scan_best, scan_best_llf = scan_bfgs, _finite_llf(scan_bfgs)
@@ -2744,6 +2927,66 @@ def _fit_generic(
             result, caught = _polish(bfgs_result)
 
     return _judge(bfgs_result, result, caught)
+
+
+def _parent_starts(fit: Fit) -> list[NDArray[np.float64]] | None:
+    """The starts a bootstrap replicate of ``fit`` is refitted from, found once for the fit.
+
+    ``fit`` is an ``OK`` decreasing binomial fit. The starts are, in the optimizer's own chart
+    (:func:`_unpack_optimizer_params`), the fit's maximum-likelihood point followed by the points
+    :func:`_scan_starts` picks from a scan of the fit's own likelihood. A replicate has the same
+    design as the fit, so the chart is the same for every replicate (the centring and scale depend
+    on the severities alone), and scanning each replicate's likelihood again would cost far more
+    than the refit itself. Returns ``None`` when ``fit`` is fitted by the GLM path (both
+    asymptotes fixed at 1 and 0), where the likelihood is concave and no start is needed.
+    """
+    assert fit.params is not None and fit.model == "binomial"
+    params = fit.params
+    upper, lower = params["upper"], params["lower"]
+    if upper.fixed and lower.fixed and upper.value == 1.0 and lower.value == 0.0:
+        return None
+    cells = _count_cells(fit)
+    fit_cells = _generic_fit_cells(
+        cells, axis=fit.axis, upper_is_estimate=not upper.fixed, upper_value=upper.value
+    )
+    severity, successes, trials = _cells_to_arrays(fit_cells)
+    center, spread = _centering_and_scale(severity, scale=fit.axis.scale)
+    objective = _GenericLogLikelihood(
+        severity=severity,
+        successes=successes,
+        trials=trials,
+        scale=fit.axis.scale,
+        link=fit.link,
+        estimate_lower=not lower.fixed,
+        estimate_upper=not upper.fixed,
+        lower_value=lower.value,
+        upper_value=upper.value,
+        center=center,
+        spread=spread,
+    )
+    step = _step_supremum_log_likelihood(
+        severity,
+        successes,
+        trials,
+        estimate_lower=not lower.fixed,
+        estimate_upper=not upper.fixed,
+        lower_value=lower.value,
+        upper_value=upper.value,
+        scale=fit.axis.scale,
+    )
+    point = [(params["mu"].value - center) / spread, math.log(params["s"].value / spread)]
+    edge = _FIT_SHARE_EDGE
+
+    def share_logit(share: float) -> float:
+        return float(_logit(float(np.clip(share, edge, 1.0 - edge))))
+
+    if not lower.fixed:
+        # `l = expit(a)` when `upper` is also estimated, `l = u * expit(a)` when it is fixed.
+        point.append(share_logit(lower.value if not upper.fixed else lower.value / upper.value))
+    if not upper.fixed:
+        point.append(share_logit((upper.value - lower.value) / (1.0 - lower.value)))
+    maximum = np.array(point, dtype=np.float64)
+    return [maximum, *_scan_starts(objective, maximum, step)]
 
 
 # ================================================================================================
@@ -4149,6 +4392,38 @@ def _resolve_gaussian_asymptote(value: float | str, *, label: str) -> tuple[bool
     return False, float(value)
 
 
+def _fit_isotonic(obs: Observations | ContinuousObservations, *, dependence: str | None) -> Fit:
+    """:func:`fit_dose_response` for ``model="isotonic"``: pool-adjacent-violators on the pooled
+    cells of either kind of observations. The monotonicity check (which is also the dependence
+    guard) runs first, as for every model."""
+    monotonicity = check_monotonicity(obs, dependence=dependence)
+    if obs.axis.scale == "log" and not any(severity != 0.0 for severity in obs.severity):
+        raise ValueError(
+            "fit_dose_response: this observation has no severity level besides the "
+            "zero-severity control; a dose-response curve needs at least one severity level "
+            "besides the control"
+        )
+    cells: tuple[Cell | ContinuousCell, ...] = obs.cells()
+    estimates = _isotonic_estimates(cells, direction=obs.direction)
+    return Fit(
+        axis=obs.axis,
+        outcome=obs.outcome,
+        direction=obs.direction,
+        model="isotonic",
+        link="none",
+        params=None,
+        covariance=None,
+        log_likelihood=_isotonic_log_likelihood(cells, estimates),
+        cells=cells,
+        status=Status.OK,
+        cluster_ids=_unique_cluster_ids(obs.cluster),
+        warnings=(),
+        provenance={},
+        monotonicity=monotonicity,
+        cell_estimates=estimates,
+    )
+
+
 def _fit_gaussian(
     obs: ContinuousObservations,
     *,
@@ -4224,20 +4499,28 @@ def fit_dose_response(
     lower: float | Literal["estimate"],
     dependence: str | None = None,
 ) -> Fit: ...
+@overload
 def fit_dose_response(
     obs: Observations | ContinuousObservations,
     *,
-    model: Literal["binomial", "gaussian"],
-    link: Literal["probit", "logit", "cloglog"],
-    upper: float | Literal["estimate"],
-    lower: float | Literal["estimate"],
+    model: Literal["isotonic"],
+    dependence: str | None = None,
+) -> Fit: ...
+def fit_dose_response(
+    obs: Observations | ContinuousObservations,
+    *,
+    model: Literal["binomial", "gaussian", "isotonic"],
+    link: Literal["probit", "logit", "cloglog"] | None = None,
+    upper: float | Literal["estimate"] | None = None,
+    lower: float | Literal["estimate"] | None = None,
     dependence: str | None = None,
 ) -> Fit:
-    """Fit a binomial or Gaussian dose-response curve to ``obs``.
+    """Fit a binomial, Gaussian or isotonic dose-response model to ``obs``.
 
     ``model="binomial"`` takes :class:`~robustmargin.Observations` (counts); ``model="gaussian"``
     takes :class:`~robustmargin.ContinuousObservations` (real-valued responses). See "A Gaussian
-    series" below for the second.
+    series" below for the second. ``model="isotonic"`` takes either and fits no curve; see "An
+    isotonic fit" below.
 
     **Two fitting paths (binomial fits).** statsmodels ``GLM`` when both ``upper`` and ``lower`` are
     fixed at exactly ``1.0``/``0.0``; ``statsmodels`` ``GenericLikelihoodModel`` -- given a
@@ -4261,6 +4544,19 @@ def fit_dose_response(
     rule are the decreasing ones, and every message names the asymptotes, counts and direction
     of the outcome as supplied. With ``lower`` fixed at ``0`` a control that has any events is
     ``CONTROL_INCOMPATIBLE`` (refit with ``lower="estimate"``).
+
+    **An isotonic fit.** ``model="isotonic"`` assumes only that performance is monotone in severity,
+    in the direction ``obs.direction`` gives. The fitted value of each pooled cell, the control
+    included, is the weighted least-squares monotone fit to the cell rates (counts, weighted by
+    ``trials``) or cell means (continuous, weighted by ``n``), computed by pool-adjacent-violators
+    (Barlow, Bartholomew, Bremner and Brunk, 1972, *Statistical Inference under Order
+    Restrictions*, Wiley; ``scipy.optimize.isotonic_regression``). It is returned in
+    ``Fit.cell_estimates``, on the scale of the outcome as counted. The fit has no link, no
+    asymptotes and no parameters, so ``link``, ``upper`` and ``lower`` must be omitted, and its
+    ``status`` is always ``OK``. Its ``log_likelihood`` is the log-likelihood at those values
+    (see :class:`~robustmargin.Fit`). :meth:`Fit.predict` and :func:`robustmargin.diagnose`
+    refuse it. The fitted value of a cell is not a smooth curve: a threshold on it is interpolated
+    between tested severities (see :func:`robustmargin.threshold`).
 
     Before any of that, :func:`robustmargin.check_monotonicity` is run on ``obs`` directly, and
     its result is attached to the returned ``Fit`` as ``monotonicity`` on *every* return path
@@ -4301,10 +4597,12 @@ def fit_dose_response(
         ``"binomial"`` for ``Observations`` and ``"gaussian"`` for ``ContinuousObservations``.
     link
         ``"probit"``, ``"logit"`` or ``"cloglog"``. Fixed by the caller before the data is
-        seen: this function never compares links and picks one for you.
+        seen: this function never compares links and picks one for you. Required for the
+        binomial and Gaussian models; must be omitted for ``"isotonic"``.
     upper, lower
         Each either a fixed value or the literal string ``"estimate"``, always on the scale of
-        the outcome as given. For the binomial model a fixed value is a probability in
+        the outcome as given. Required for the binomial and Gaussian models; must be omitted for
+        ``"isotonic"``. For the binomial model a fixed value is a probability in
         ``[0, 1]``; for the Gaussian model it is any finite response value (not a ``bool``)
         with ``upper > lower``. For a decreasing outcome ``upper`` is the zero-severity end; for
         an increasing outcome it is ``lower``. Required, with no default (a wrong default
@@ -4331,8 +4629,14 @@ def fit_dose_response(
 
     Raises
     ------
+    TypeError
+        If ``model`` is ``"binomial"`` or ``"gaussian"`` and ``link``, ``upper`` or ``lower`` is
+        missing; the message names each missing argument.
     ValueError
-        If ``model``/``link`` is not one of the values above, if ``obs`` is not the type ``model``
+        If ``model="isotonic"`` and any of ``link``, ``upper`` or ``lower`` is given (the message
+        names it), if an isotonic fit of continuous responses has a zero residual sum of squares
+        (the likelihood is then unbounded), if ``model``/``link`` is not one of the values above,
+        if ``obs`` is not the type ``model``
         takes, if ``upper``/``lower`` is not a valid probability (binomial) or finite value
         (Gaussian) or ``"estimate"``,
         if both are fixed with ``upper <= lower``, if ``obs.direction`` is ``"increasing"`` and
@@ -4340,10 +4644,33 @@ def fit_dose_response(
         precision, or if ``obs.cluster`` is set and
         ``dependence`` is not ``"independent"`` (raised by :func:`robustmargin.check_monotonicity`).
     """
-    if model not in ("binomial", "gaussian"):
+    if model not in ("binomial", "gaussian", "isotonic"):
         raise ValueError(
-            f"fit_dose_response: model must be 'binomial' or 'gaussian', got {model!r}"
+            f"fit_dose_response: model must be 'binomial', 'gaussian' or 'isotonic', got {model!r}"
         )
+    if model == "isotonic":
+        given = [
+            name
+            for name, value in (("link", link), ("upper", upper), ("lower", lower))
+            if value is not None
+        ]
+        if given:
+            raise ValueError(
+                f"fit_dose_response: model='isotonic' fits no curve, so {', '.join(given)} "
+                "must be omitted"
+            )
+        return _fit_isotonic(obs, dependence=dependence)
+    missing = [
+        name
+        for name, value in (("link", link), ("upper", upper), ("lower", lower))
+        if value is None
+    ]
+    if missing:
+        raise TypeError(
+            f"fit_dose_response() missing {len(missing)} required keyword-only "
+            f"argument{'s' if len(missing) > 1 else ''}: {', '.join(repr(m) for m in missing)}"
+        )
+    assert link is not None and upper is not None and lower is not None
     if link not in _STATSMODELS_LINKS:
         raise ValueError(
             f"fit_dose_response: link must be one of {sorted(_STATSMODELS_LINKS)}, got {link!r}"
@@ -4425,10 +4752,13 @@ def _fit_counts(
     lower_is_estimate: bool,
     lower_value: float,
     mirrored: bool,
+    reuse_starts: Sequence[NDArray[np.float64]] | None = None,
 ) -> Fit:
     """The pre-fit checks and the choice of fitting path, for a decreasing ``obs``. ``mirrored``
     says that ``obs`` is the complement of an increasing outcome and so only selects the
-    wording of a failure's reason."""
+    wording of a failure's reason. ``reuse_starts`` is passed to :func:`_fit_generic` (the GLM
+    path ignores it). Unlike :func:`fit_dose_response` this attaches neither diagnostics nor the
+    monotonicity check, which makes it the entry a bootstrap refits through."""
     cells = obs.cells()
     cluster_ids = _unique_cluster_ids(obs.cluster)
 
@@ -4495,4 +4825,5 @@ def _fit_counts(
         lower_is_estimate=lower_is_estimate,
         lower_value=lower_value,
         mirrored=mirrored,
+        reuse_starts=reuse_starts,
     )

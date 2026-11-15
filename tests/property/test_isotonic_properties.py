@@ -45,6 +45,19 @@ _PROFILE = settings(
 )
 
 _successes = st.lists(st.integers(0, _TRIALS), min_size=5, max_size=5)
+
+
+@st.composite
+def _crossing_successes(draw: st.DrawFn) -> list[int]:
+    """Non-increasing successes whose nonzero levels run from above 0.7 to at most 0.3, so both
+    targets cross inside the interpolation nodes and nothing pools."""
+    first = draw(st.integers(15, _TRIALS))
+    last = draw(st.integers(0, 5))
+    middle = sorted(draw(st.lists(st.integers(last, first), min_size=2, max_size=2)), reverse=True)
+    control = draw(st.integers(first, _TRIALS))
+    return [control, first, *middle, last]
+
+
 _scale = st.sampled_from([1e-3, 0.37, 2.5, 1.0e3])
 _targets = st.sampled_from([0.3, 0.5, 0.7])
 
@@ -198,7 +211,7 @@ def test_cell_estimates_never_reverse_direction(successes: list[int], direction:
 
 
 @_PROFILE
-@given(successes=_successes)
+@given(successes=_crossing_successes())
 def test_a_lower_target_never_moves_a_decreasing_threshold_inward(successes: list[int]) -> None:
     fit = _fit(_obs(successes))
     high, low = _solve(fit, 0.7), _solve(fit, 0.3)

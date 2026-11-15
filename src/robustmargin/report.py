@@ -23,25 +23,32 @@ the field, the enclosing card's ``library_version``, and this reader's version; 
 A key that a tagged type's schema ``required`` list requires but the dict omits raises; a key
 the schema does not require, if omitted, is filled from the dataclass's own default. This
 required-key set is read from the packaged schema (:data:`load_schema`), not duplicated as a
-literal list, so it cannot drift from ``schema/scorecard-v2.json``.
+literal list, so it cannot drift from ``schema/scorecard-v3.json``.
 
-``SCHEMA_VERSION`` is ``"2"``, which is what every result carries by default and what
-``to_dict`` writes for a freshly built result, and ``from_dict`` reads ``"1"`` and ``"2"``. A
-``schema_version`` of anything else, on any typed object, raises a ``ValueError`` that names the
-version found and the versions this reader reads. Version ``"2"`` adds the ``"increasing"``
-direction and the ``"baseline_multiple"`` definition to version ``"1"``; a ``Fit`` or
-``Threshold`` tagged ``"1"`` that carries either raises, since no ``"1"`` writer could have
-produced it (the check is per object, not per card). The same holds for a ``Fit`` with
+``SCHEMA_VERSION`` is ``"3"``, which is what every result carries by default and what
+``to_dict`` writes for a freshly built result, and ``from_dict`` reads ``"1"``, ``"2"`` and
+``"3"``. A ``schema_version`` of anything else, on any typed object, raises a ``ValueError`` that
+names the version found and the versions this reader reads. Version ``"2"`` adds the
+``"increasing"`` direction and the ``"baseline_multiple"`` definition to version ``"1"``; a
+``Fit`` or ``Threshold`` tagged ``"1"`` that carries either raises, since no ``"1"`` writer could
+have produced it (the check is per object, not per card). The same holds for a ``Fit`` with
 ``model="gaussian"`` (a continuous response), which schema ``"2"`` also carries: its ``cells`` are
 ``ContinuousCell``, it has a ``residual``, and its diagnostics are ``ContinuousDiagnostics``. A
-binomial ``Fit`` writes no ``residual`` key at all, so its serialised form is unchanged. Only the
-``Scorecard`` root requires the tag;
-a nested or bare result that omits it is read as ``"2"``. A reader older than this release reads
-``"1"`` only and rejects every card written now, so upgrade readers before writers; a result read
-from a ``"1"`` card keeps ``"1"`` when written back.
+binomial ``Fit`` writes no ``residual`` key at all, so its serialised form is unchanged.
+
+Version ``"3"`` adds the isotonic model (``model="isotonic"``, ``link="none"``), the
+``"parametric_bootstrap"`` and ``"cell_bootstrap"`` interval methods, ``Fit.cell_estimates`` and
+``Threshold.bootstrap``. ``to_dict`` always writes the last two, as ``null`` when unset. A ``Fit``
+or ``Threshold`` tagged ``"1"`` or ``"2"`` that carries any non-null value of those raises, since
+no earlier writer could have produced it; a card from an earlier release (no such keys, or
+explicit ``null`` ones) still reads. Whatever version it was written under, a result that is
+read has ``schema_version`` ``"3"``, so it is written back as ``"3"``. Only the ``Scorecard`` root
+requires the tag; a nested or bare result that omits it is read as ``"3"``. A reader older than
+this release rejects every card written now, so upgrade readers before writers.
 
 ``load_schema`` reads the packaged ``schema/scorecard-v{version}.json`` with
-:mod:`importlib.resources`; ``scorecard-v1.json`` and ``scorecard-v2.json`` are packaged.
+:mod:`importlib.resources`; ``scorecard-v1.json``, ``scorecard-v2.json`` and
+``scorecard-v3.json`` are packaged.
 Nothing under ``src/`` imports ``jsonschema``; it stays a dev-only dependency used by
 consumers' own validators and by this package's own tests.
 """
@@ -64,6 +71,7 @@ from robustmargin.ratio import Ratio
 from robustmargin.threshold import Threshold
 from robustmargin.types import (
     Axis,
+    BootstrapSummary,
     Cell,
     Censoring,
     ContinuousCell,
@@ -83,15 +91,21 @@ from robustmargin.validation import (
 
 __all__ = ["SCHEMA_VERSION", "Scorecard", "from_dict", "load_schema", "to_dict"]
 
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
 
-# `from_dict` reads schemas "1" and "2".
-_SUPPORTED_SCHEMA_VERSIONS: frozenset[str] = frozenset({"1", "2"})
+# `from_dict` reads schemas "1", "2" and "3".
+_SUPPORTED_SCHEMA_VERSIONS: frozenset[str] = frozenset({"1", "2", "3"})
 
 # What schema "2" added to "1": a "1" payload carrying either is not one a "1" writer produced.
 _VERSION_2_DIRECTIONS = frozenset({"increasing"})
 _VERSION_2_DEFINITION_KINDS = frozenset({"baseline_multiple"})
 _VERSION_2_MODELS = frozenset({"gaussian"})
+# What schema "3" added to "2": a "1" or "2" payload carrying any of it is not one those writers
+# produced.
+_VERSION_3_MODELS = frozenset({"isotonic"})
+_VERSION_3_LINKS = frozenset({"none"})
+_VERSION_3_INTERVAL_METHODS = frozenset({"parametric_bootstrap", "cell_bootstrap"})
+_VERSION_3_KEYS = ("cell_estimates", "bootstrap")
 # A field written only when set: a binomial Fit has no residual and writes no key for it, so its
 # serialised form is the one a schema "1" reader accepts.
 _OMITTED_WHEN_NONE = frozenset({"residual"})
@@ -131,15 +145,15 @@ class Scorecard:
         The version of robustmargin that produced this scorecard. Defaults to
         :data:`robustmargin.__version__` at construction time.
     schema_version
-        The serialised-result schema version this object belongs to. Defaults to ``"2"``, the
-        version ``to_dict`` writes; ``from_dict`` also reads ``"1"``.
+        The serialised-result schema version this object belongs to. Defaults to ``"3"``, the
+        version ``to_dict`` writes; ``from_dict`` also reads ``"1"`` and ``"2"``.
     """
 
     results: tuple[GridBreakPoint | Fit | Threshold | Ratio, ...]
     provenance: Mapping[str, JSONValue] = field(default_factory=dict)
     created_at: str = field(default_factory=_default_created_at)
     library_version: str = field(default_factory=_default_library_version)
-    schema_version: str = "2"
+    schema_version: str = "3"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "results", tuple(self.results))
@@ -571,12 +585,60 @@ def _reject_version_2_content(
         )
 
 
+def _reject_version_3_content(fields: dict[str, Any], *, type_name: str) -> None:
+    """Refuse a payload that says it is schema ``"1"`` or ``"2"`` but carries what only ``"3"``
+    has: a non-null ``cell_estimates`` or ``bootstrap``, the isotonic model, the ``"none"`` link or
+    a bootstrap interval method. An explicit ``null`` for either new key is what a version ``"3"``
+    writer emits for an unset field, and is read."""
+    version = fields.get("schema_version", SCHEMA_VERSION)
+    if version not in ("1", "2"):
+        return
+    for key in _VERSION_3_KEYS:
+        if fields.get(key) is not None:
+            raise ValueError(
+                f"from_dict: {type_name} has schema_version {version!r} but carries a non-null "
+                f"{key!r}, which only schema_version '3' has"
+            )
+    for key, only_in_3 in (
+        ("model", _VERSION_3_MODELS),
+        ("link", _VERSION_3_LINKS),
+        ("interval_method", _VERSION_3_INTERVAL_METHODS),
+    ):
+        if fields.get(key) in only_in_3:
+            raise ValueError(
+                f"from_dict: {type_name} has schema_version {version!r} but {key} "
+                f"{fields[key]!r}, which only schema_version '3' has"
+            )
+
+
+def _current_version(fields: dict[str, Any]) -> None:
+    """A result read from an earlier version is the same result in the current one, so it is
+    given the current ``schema_version`` and written back as such."""
+    if "schema_version" in fields:
+        fields["schema_version"] = SCHEMA_VERSION
+
+
+def _bootstrap_summary_from_dict(data: object, card_version: str | None) -> BootstrapSummary:
+    """``BootstrapSummary`` is an untagged helper: it only appears as ``Threshold.bootstrap``."""
+    return BootstrapSummary(
+        **_validated_fields(BootstrapSummary, data, tagged=False, card_version=card_version)
+    )
+
+
 def _fit_from_dict(data: object, card_version: str | None) -> Fit:
     fields = _validated_fields(Fit, data, tagged=True, card_version=card_version)
     _reject_version_2_content(fields, type_name="Fit", raw=data)
+    _reject_version_3_content(fields, type_name="Fit")
+    _current_version(fields)
     fields["axis"] = _axis_from_dict(fields["axis"], card_version)
     gaussian = fields.get("model") == "gaussian"
-    build_cell = _continuous_cell_from_dict if gaussian else _cell_from_dict
+    continuous_cells = gaussian or (
+        fields.get("model") == "isotonic"
+        and bool(fields["cells"])
+        and isinstance(fields["cells"][0], Mapping)
+        and "n" in fields["cells"][0]
+    )
+    build_cell = _continuous_cell_from_dict if continuous_cells else _cell_from_dict
     fields["cells"] = tuple(build_cell(c, card_version) for c in fields["cells"])
     fields["status"] = Status(fields["status"])
     if fields.get("params") is not None:
@@ -587,6 +649,8 @@ def _fit_from_dict(data: object, card_version: str | None) -> Fit:
         fields["covariance"] = _covariance_from_dict(fields["covariance"], card_version)
     if fields.get("cluster_ids") is not None:
         fields["cluster_ids"] = tuple(fields["cluster_ids"])
+    if fields.get("cell_estimates") is not None:
+        fields["cell_estimates"] = tuple(fields["cell_estimates"])
     # Neither `diagnostics` nor `monotonicity` is in the schema's `required` list for a Fit, and
     # `_validated_fields` fills a key a card omits from the dataclass default (`None`), so a card
     # that omits either decodes with `None` and needs no special case beyond the nested-object
@@ -615,6 +679,8 @@ def _baseline_rate_from_dict(data: object, card_version: str | None) -> Baseline
 def _threshold_from_dict(data: object, card_version: str | None) -> Threshold:
     fields = _validated_fields(Threshold, data, tagged=True, card_version=card_version)
     _reject_version_2_content(fields, type_name="Threshold", definition=fields.get("definition"))
+    _reject_version_3_content(fields, type_name="Threshold")
+    _current_version(fields)
     fields["axis"] = _axis_from_dict(fields["axis"], card_version)
     fields["definition"] = _definition_from_dict(fields["definition"], card_version)
     fields["censoring"] = Censoring(fields["censoring"])
@@ -629,11 +695,14 @@ def _threshold_from_dict(data: object, card_version: str | None) -> Threshold:
         fields["grid"] = _grid_break_point_from_dict(
             _expect_tag(fields["grid"], expected="GridBreakPoint"), card_version
         )
+    if fields.get("bootstrap") is not None:
+        fields["bootstrap"] = _bootstrap_summary_from_dict(fields["bootstrap"], card_version)
     return Threshold(**fields)
 
 
 def _ratio_from_dict(data: object, card_version: str | None) -> Ratio:
     fields = _validated_fields(Ratio, data, tagged=True, card_version=card_version)
+    _current_version(fields)
     fields["threshold_a"] = _threshold_from_dict(
         _expect_tag(fields["threshold_a"], expected="Threshold"), card_version
     )
@@ -649,6 +718,7 @@ def _ratio_from_dict(data: object, card_version: str | None) -> Ratio:
 
 def _grid_break_point_from_dict(data: object, card_version: str | None) -> GridBreakPoint:
     fields = _validated_fields(GridBreakPoint, data, tagged=True, card_version=card_version)
+    _current_version(fields)
     fields["censoring"] = Censoring(fields["censoring"])
     return GridBreakPoint(**fields)
 
@@ -662,6 +732,7 @@ def _scorecard_from_dict(data: object, card_version: str | None) -> Scorecard:
     own_version = data.get("library_version")
     own_version_str = own_version if isinstance(own_version, str) else "<unknown>"
     fields = _validated_fields(Scorecard, data, tagged=True, card_version=own_version_str)
+    _current_version(fields)
     fields["results"] = tuple(
         _from_dict_impl(item, card_version=own_version_str) for item in fields["results"]
     )
@@ -704,10 +775,12 @@ def from_dict(data: object) -> object:
     -------
     object
         An instance of the type named by ``data["type"]``. ``from_dict(to_dict(x)) == x`` for
-        every ``x`` of these five types whose ``schema_version`` is ``"2"``, which is every
-        result this package builds. ``schema_version`` ``"1"`` is read too: a
-        ``Fit`` or ``Threshold`` tagged ``"1"`` carries no increasing outcome and no
-        ``baseline_multiple`` definition, and one that does is rejected (checked per object, not
+        every ``x`` of these five types whose ``schema_version`` is ``"3"``, which is every
+        result this package builds. ``schema_version`` ``"1"`` and ``"2"`` are read too, and the
+        result they give has ``schema_version`` ``"3"``. A ``Fit`` or ``Threshold`` tagged ``"1"``
+        carries no increasing outcome, no ``baseline_multiple`` definition and no Gaussian model,
+        and one tagged ``"1"`` or ``"2"`` carries no isotonic model, bootstrap interval method,
+        ``cell_estimates`` or ``bootstrap``; one that does is rejected (checked per object, not
         per card). Constructors do not check the tag, so an object built with any other
         ``schema_version`` serialises but does not read back.
 
@@ -715,9 +788,12 @@ def from_dict(data: object) -> object:
     ------
     ValueError
         If ``"type"`` is missing or unrecognised; if ``schema_version`` (at any nesting level)
-        is not ``"1"`` or ``"2"``, or is ``"1"`` on a ``Fit`` or ``Threshold`` carrying what only
-        ``"2"`` has (an ``"increasing"`` direction or a ``"baseline_multiple"`` definition); if a
-        field (at any nesting level) is not recognised; or if a required field is missing.
+        is not ``"1"``, ``"2"`` or ``"3"``, or is ``"1"`` on a ``Fit`` or ``Threshold`` carrying
+        what only ``"2"`` has (an ``"increasing"`` direction, a ``"baseline_multiple"``
+        definition or a Gaussian model), or ``"1"`` or ``"2"`` on one carrying what only ``"3"``
+        has (the isotonic model, a bootstrap interval method, or a non-null ``cell_estimates`` or
+        ``bootstrap``); if a field (at any nesting level) is not recognised; or if a required
+        field is missing.
     """
     return _from_dict_impl(data, card_version=None)
 
@@ -738,8 +814,8 @@ def load_schema(version: str = SCHEMA_VERSION) -> dict[str, object]:
     Parameters
     ----------
     version
-        Which packaged schema version to load. Defaults to :data:`SCHEMA_VERSION`, ``"2"``.
-        ``"1"`` is packaged too, for reading cards written by earlier releases.
+        Which packaged schema version to load. Defaults to :data:`SCHEMA_VERSION`, ``"3"``.
+        ``"1"`` and ``"2"`` are packaged too, for reading cards written by earlier releases.
 
     Returns
     -------
@@ -749,7 +825,7 @@ def load_schema(version: str = SCHEMA_VERSION) -> dict[str, object]:
     Raises
     ------
     FileNotFoundError
-        If ``version`` names a schema that is not packaged. Only ``"1"`` and ``"2"`` are.
+        If ``version`` names a schema that is not packaged. Only ``"1"``, ``"2"`` and ``"3"`` are.
     """
     text = (
         resources.files("robustmargin")

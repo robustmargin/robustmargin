@@ -7,8 +7,9 @@ fitting any data. They are **not** statistical estimates of anything: every one 
 a warning saying so, and nothing here should be read as a claim about what a real fit would
 produce for the same inputs.
 
-``fake_fit`` and ``fake_threshold`` build a binomial result by default and a Gaussian
-(continuous-response) one with ``model="gaussian"``.
+``fake_fit`` and ``fake_threshold`` build a binomial result by default, a Gaussian
+(continuous-response) one with ``model="gaussian"`` and an isotonic one with ``model="isotonic"``.
+``fake_threshold`` can also build a bootstrap-interval result (``interval_method``).
 """
 
 from __future__ import annotations
@@ -21,11 +22,19 @@ from scipy.stats import binomtest
 from scipy.stats import f as f_distribution
 
 from robustmargin.empirical import BaselineRate, GridBreakPoint
-from robustmargin.models import Covariance, Fit, Parameter, _count_cells
+from robustmargin.models import (
+    Covariance,
+    Fit,
+    Parameter,
+    _count_cells,
+    _isotonic_estimates,
+    _isotonic_log_likelihood,
+)
 from robustmargin.ratio import Ratio
 from robustmargin.threshold import Threshold
 from robustmargin.types import (
     Axis,
+    BootstrapSummary,
     Cell,
     Censoring,
     ContinuousCell,
@@ -148,9 +157,10 @@ _FIT_STATUS_FOR_THRESHOLD_STATUS: dict[Status, Status] = {
 }
 
 
-def _check_model(model: str, *, function: str) -> None:
-    if model not in _VALID_MODELS:
-        raise ValueError(f"{function}: model must be one of {sorted(_VALID_MODELS)}, got {model!r}")
+def _check_model(model: str, *, function: str, allowed: frozenset[str] | None = None) -> None:
+    valid = _VALID_MODELS if allowed is None else allowed
+    if model not in valid:
+        raise ValueError(f"{function}: model must be one of {sorted(valid)}, got {model!r}")
 
 
 def _check_direction(direction: str, *, function: str) -> None:
@@ -213,7 +223,8 @@ def _fake_ok_fit(
     )
 
 
-_VALID_MODELS = frozenset({"binomial", "gaussian"})
+_VALID_MODELS = frozenset({"binomial", "gaussian", "isotonic"})
+_BOOTSTRAP_INTERVAL_METHODS = frozenset({"parametric_bootstrap", "cell_bootstrap"})
 # A Gaussian fake: a decreasing logit curve from 10 to 2 with its midpoint at severity 1, three
 # observations per level with a sample SD of 0.3. The increasing one rises from 2 to 10.
 _GAUSSIAN_MEANS_DECREASING = (10.0, 8.4, 6.0, 3.6, 2.5)
@@ -336,6 +347,47 @@ def _gaussian_fake_fit(
     )
 
 
+def _isotonic_fake_fit(
+    *,
+    status: Status,
+    direction: str,
+    provenance: Mapping[str, JSONValue] | None,
+    diagnostics: Diagnostics | ContinuousDiagnostics | None | _Unset,
+    monotonicity: MonotonicityCheck | None | _Unset,
+) -> Fit:
+    """An isotonic fake: the binomial fake's counts, fitted by pool-adjacent-violators."""
+    if status is not Status.OK:
+        raise ValueError(
+            f"fake_fit: status={status!r} is not one an isotonic fit has; it is always OK"
+        )
+    if not isinstance(diagnostics, _Unset) and diagnostics is not None:
+        raise ValueError("fake_fit: an isotonic fit has no diagnostics")
+    cells = _CELLS if direction == "decreasing" else _CELLS_INCREASING
+    estimates = _isotonic_estimates(cells, direction=direction)
+    base = Fit(
+        axis=_AXIS,
+        outcome="success",
+        direction=direction,
+        model="isotonic",
+        link="none",
+        params=None,
+        covariance=None,
+        log_likelihood=_isotonic_log_likelihood(cells, estimates),
+        cells=cells,
+        status=Status.OK,
+        cluster_ids=None,
+        warnings=(_FAKE_WARNING,),
+        provenance=_fake_provenance(provenance),
+        cell_estimates=estimates,
+    )
+    resolved_monotonicity = (
+        check_monotonicity(_observations_from_cells(base))
+        if isinstance(monotonicity, _Unset)
+        else monotonicity
+    )
+    return dataclasses.replace(base, monotonicity=resolved_monotonicity)
+
+
 def fake_fit(
     *,
     model: str = "binomial",
@@ -350,10 +402,12 @@ def fake_fit(
     Parameters
     ----------
     model
-        ``"binomial"`` (the default) or ``"gaussian"``. A Gaussian fake is a logit fit on a neutral
-        ``severity`` axis with five levels of three observations, ``residual``,
+        ``"binomial"`` (the default), ``"gaussian"`` or ``"isotonic"``. A Gaussian fake is a logit
+        fit on a neutral ``severity`` axis with five levels of three observations, ``residual``,
         :class:`~robustmargin.ContinuousDiagnostics` and a Welch monotonicity check. It accepts
-        only ``status`` ``OK`` and ``NOT_CONVERGED``, the two a Gaussian fit has.
+        only ``status`` ``OK`` and ``NOT_CONVERGED``, the two a Gaussian fit has. An isotonic fake
+        is the binomial fake's three levels of counts with their ``cell_estimates``, and accepts
+        only ``status`` ``OK``, the one an isotonic fit has.
     status
         The :class:`~robustmargin.Status` to build. Every member other than ``UNREACHABLE`` and
         ``FAILS_AT_BASELINE`` is accepted (those describe a threshold, not a fit, and
@@ -387,12 +441,21 @@ def fake_fit(
     Raises
     ------
     ValueError
-        If ``model`` is not ``"binomial"`` or ``"gaussian"``, ``direction`` is not
-        ``"decreasing"`` or ``"increasing"``, or ``model`` is ``"gaussian"`` and ``status`` is not
-        ``OK`` or ``NOT_CONVERGED``.
+        If ``model`` is not ``"binomial"``, ``"gaussian"`` or ``"isotonic"``, ``direction`` is
+        not ``"decreasing"`` or ``"increasing"``, ``model`` is ``"gaussian"`` and ``status`` is not
+        ``OK`` or ``NOT_CONVERGED``, or ``model`` is ``"isotonic"`` and ``status`` is not ``OK``
+        (or ``diagnostics`` is given).
     """
     _check_model(model, function="fake_fit")
     _check_direction(direction, function="fake_fit")
+    if model == "isotonic":
+        return _isotonic_fake_fit(
+            status=status,
+            direction=direction,
+            provenance=provenance,
+            diagnostics=diagnostics,
+            monotonicity=monotonicity,
+        )
     if model == "gaussian":
         return _gaussian_fake_fit(
             status=status,
@@ -446,16 +509,20 @@ def fake_threshold(
     censoring: Censoring = Censoring.NONE,
     direction: str = "decreasing",
     provenance: Mapping[str, JSONValue] | None = None,
+    interval_method: str | None = None,
 ) -> Threshold:
     """Build a deterministic, schema-valid :class:`~robustmargin.Threshold`.
 
     Parameters
     ----------
     model
-        ``"binomial"`` (the default) or ``"gaussian"``. A Gaussian threshold is on a Gaussian fake
-        fit (see :func:`fake_fit`) and makes no exact claim: only ``(OK, NONE)``,
+        ``"binomial"`` (the default), ``"gaussian"`` or ``"isotonic"``. A Gaussian threshold is on
+        a Gaussian fake fit (see :func:`fake_fit`) and makes no exact claim: only ``(OK, NONE)``,
         ``(OK, OPEN_UPPER)``, ``(OK, OPEN_LOWER)``, ``(UNREACHABLE, NONE)`` and
-        ``(NOT_CONVERGED, NONE)`` are buildable, the last two with no value and no bound.
+        ``(NOT_CONVERGED, NONE)`` are buildable, the last two with no value and no bound. An
+        isotonic threshold is on an isotonic fake fit; its interval is a ``"cell_bootstrap"`` one
+        with a :class:`~robustmargin.BootstrapSummary`, and only the statuses of a fit that
+        cannot fail (``OK``, ``UNREACHABLE``, ``FAILS_AT_BASELINE``) are buildable.
     status
         The :class:`~robustmargin.Status` to build.
     censoring
@@ -465,6 +532,12 @@ def fake_threshold(
         direction (see :func:`fake_fit`).
     provenance
         Stored on the result as given, or ``{}`` if not provided.
+    interval_method
+        ``None`` (the default) builds what the other arguments imply: a ``"profile"`` interval, or
+        ``"cell_bootstrap"`` for an isotonic fake. ``"parametric_bootstrap"`` or
+        ``"cell_bootstrap"`` builds an ``OK`` threshold (``censoring`` ``NONE``, ``OPEN_UPPER`` or
+        ``OPEN_LOWER``) with that method and a :class:`~robustmargin.BootstrapSummary`. A Gaussian
+        fake takes only ``"parametric_bootstrap"`` and an isotonic one only ``"cell_bootstrap"``.
 
     Returns
     -------
@@ -475,12 +548,17 @@ def fake_threshold(
     Raises
     ------
     ValueError
-        If ``model`` is not ``"binomial"`` or ``"gaussian"``, ``(status, censoring)`` is not one
-        of the fourteen combinations a ``Threshold`` allows (or one of the five a Gaussian one
-        does), or ``direction`` is not ``"decreasing"`` or ``"increasing"``.
+        If ``model`` is not ``"binomial"``, ``"gaussian"`` or ``"isotonic"``, ``(status,
+        censoring)`` is not one of the fourteen combinations a ``Threshold`` allows (or one of the
+        five a Gaussian one does, or one an isotonic fit can have), ``direction`` is not
+        ``"decreasing"`` or ``"increasing"``, or ``interval_method`` is not one of the above
+        for this ``model``, ``status`` and ``censoring``.
     """
     _check_model(model, function="fake_threshold")
     _check_direction(direction, function="fake_threshold")
+    interval_method = _resolve_fake_interval_method(
+        interval_method, model=model, status=status, censoring=censoring
+    )
     if (status, censoring) not in _ALLOWED_THRESHOLD_COMBINATIONS or (
         model == "gaussian" and (status, censoring) not in _ALLOWED_GAUSSIAN_THRESHOLD_COMBINATIONS
     ):
@@ -494,37 +572,42 @@ def fake_threshold(
     )
     if model == "gaussian":
         return _gaussian_fake_threshold(
-            fit=fit, status=status, censoring=censoring, provenance=provenance
+            fit=fit,
+            status=status,
+            censoring=censoring,
+            provenance=provenance,
+            interval_method=interval_method,
         )
 
     value: float | None
     lo: float | None
     hi: float | None
-    interval_method: str
+    method: str
 
     if status in (Status.UNREACHABLE, Status.FAILS_AT_BASELINE, Status.CONTROL_INCOMPATIBLE):
         value, lo, hi = None, None, None
-        interval_method = "exact_bound"
+        method = "exact_bound"
     elif censoring is Censoring.RIGHT:
         value, lo, hi = None, 10.0, None
-        interval_method = "exact_bound"
+        method = "exact_bound"
     elif censoring is Censoring.LEFT:
         value, lo, hi = None, None, 0.01
-        interval_method = "exact_bound"
+        method = "exact_bound"
     elif censoring is Censoring.OPEN_UPPER:
         value, lo, hi = 0.05, 0.03, None
-        interval_method = "profile"
+        method = interval_method
     elif censoring is Censoring.OPEN_LOWER:
         value, lo, hi = 0.05, None, 0.08
-        interval_method = "profile"
+        method = interval_method
     elif status is Status.OK:
         value, lo, hi = 0.05, 0.03, 0.08
-        interval_method = "profile"
+        method = interval_method
     else:
         # SEPARATION / NOT_CONVERGED with censoring NONE (the exact-bound fallback, with both
         # sides happening to be available here).
         value, lo, hi = None, 0.02, 0.09
-        interval_method = "exact_bound"
+        method = "exact_bound"
+    bootstrap = _fake_bootstrap(method, censoring)
 
     # The baseline and grid fields are set exactly where the invariants allow them, so a
     # consumer testing against a fake sees the same shape a real result has. A fake that left
@@ -557,7 +640,7 @@ def fake_threshold(
         lo=lo,
         hi=hi,
         level=0.95,
-        interval_method=interval_method,
+        interval_method=method,
         censoring=censoring,
         status=status,
         dependence="independent",
@@ -566,18 +649,70 @@ def fake_threshold(
         baseline=baseline,
         grid=grid,
         provenance=_fake_provenance(provenance),
+        bootstrap=bootstrap,
+    )
+
+
+def _resolve_fake_interval_method(
+    requested: str | None, *, model: str, status: Status, censoring: Censoring
+) -> str:
+    """The interval method of an interval-bearing fake threshold: ``"cell_bootstrap"`` for an
+    isotonic one, ``"profile"`` otherwise, or the bootstrap method asked for. A bootstrap method is
+    accepted only where the fit takes it and the result carries an interval."""
+    default = "cell_bootstrap" if model == "isotonic" else "profile"
+    if requested is None:
+        return default
+    takes = {
+        "binomial": _BOOTSTRAP_INTERVAL_METHODS,
+        "gaussian": frozenset({"parametric_bootstrap"}),
+        "isotonic": frozenset({"cell_bootstrap"}),
+    }[model]
+    if requested not in takes:
+        raise ValueError(
+            f"fake_threshold: interval_method must be None or one of {sorted(takes)} for a "
+            f"{model} threshold, got {requested!r}"
+        )
+    if status is not Status.OK or censoring not in (
+        Censoring.NONE,
+        Censoring.OPEN_UPPER,
+        Censoring.OPEN_LOWER,
+    ):
+        raise ValueError(
+            f"fake_threshold: interval_method={requested!r} needs an OK threshold with an "
+            f"interval (censoring NONE, OPEN_UPPER or OPEN_LOWER), got status={status!r}, "
+            f"censoring={censoring!r}"
+        )
+    return requested
+
+
+def _fake_bootstrap(method: str, censoring: Censoring) -> BootstrapSummary | None:
+    """The summary a fake bootstrap threshold carries: clean, but with the side its open interval
+    needs counted when it is open. ``None`` for any other method."""
+    if method not in _BOOTSTRAP_INTERVAL_METHODS:
+        return None
+    return BootstrapSummary(
+        n_resamples=999,
+        failed=0,
+        unreachable_low=40 if censoring is Censoring.OPEN_LOWER else 0,
+        unreachable_high=40 if censoring is Censoring.OPEN_UPPER else 0,
+        seed=0,
     )
 
 
 def _gaussian_fake_threshold(
-    *, fit: Fit, status: Status, censoring: Censoring, provenance: Mapping[str, JSONValue] | None
+    *,
+    fit: Fit,
+    status: Status,
+    censoring: Censoring,
+    provenance: Mapping[str, JSONValue] | None,
+    interval_method: str,
 ) -> Threshold:
     value: float | None = None
     lo: float | None = None
     hi: float | None = None
-    interval_method = "exact_bound"
+    method = "exact_bound"
     if status is Status.OK:
-        value, interval_method = 1.0, "profile"
+        value, method = 1.0, interval_method
         lo = None if censoring is Censoring.OPEN_LOWER else 0.8
         hi = None if censoring is Censoring.OPEN_UPPER else 1.25
     return Threshold(
@@ -588,13 +723,14 @@ def _gaussian_fake_threshold(
         lo=lo,
         hi=hi,
         level=0.95,
-        interval_method=interval_method,
+        interval_method=method,
         censoring=censoring,
         status=status,
         dependence="independent",
         fit=fit,
         warnings=(_FAKE_WARNING,),
         provenance=_fake_provenance(provenance),
+        bootstrap=_fake_bootstrap(method, censoring),
     )
 
 
@@ -669,7 +805,7 @@ def fake_ratio(
         If ``model`` is not ``"binomial"`` or ``"gaussian"``, or ``shape`` is given explicitly
         while ``status`` is not ``OK`` or ``censoring`` is not ``NONE``.
     """
-    _check_model(model, function="fake_ratio")
+    _check_model(model, function="fake_ratio", allowed=frozenset({"binomial", "gaussian"}))
     is_ok_none = status is Status.OK and censoring is Censoring.NONE
     if not is_ok_none and shape is not None:
         raise ValueError(

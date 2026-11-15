@@ -145,8 +145,8 @@ class Ratio:
         particular a ``"NON_MONOTONE_DATA: "`` entry on either input threshold propagates
         through, on every path (censored/failed and the ``OK``+``NONE`` path alike).
     schema_version
-        The serialised-result schema version this object belongs to. Defaults to ``"2"``, the
-        version ``to_dict`` writes; ``from_dict`` also reads ``"1"``.
+        The serialised-result schema version this object belongs to. Defaults to ``"3"``, the
+        version ``to_dict`` writes; ``from_dict`` also reads ``"1"`` and ``"2"``.
     provenance
         An opaque mapping the caller may attach to record where the inputs came from.
         robustmargin stores it and never interprets it. Empty by default.
@@ -164,7 +164,7 @@ class Ratio:
     censoring: Censoring
     status: Status
     warnings: tuple[str, ...] = ()
-    schema_version: str = "2"
+    schema_version: str = "3"
     provenance: Mapping[str, JSONValue] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -810,7 +810,8 @@ def ratio_interval(
     Raises
     ------
     ValueError
-        On any of: ``t_a`` and ``t_b`` fitted with different models (a count threshold against a
+        On any of: either threshold from an isotonic fit (it has no covariance); ``t_a`` and
+        ``t_b`` fitted with different models (a count threshold against a
         continuous-response one); ``t_a.fit is t_b.fit`` under ``dependence="independent"``
         (checked directly by this function); mismatched axis name/unit, mismatched ``definition``,
         or shared cluster
@@ -827,6 +828,11 @@ def ratio_interval(
     if method not in _VALID_METHODS:
         raise ValueError(
             f"ratio_interval: method must be one of {sorted(_VALID_METHODS)}, got {method!r}"
+        )
+    if t_a.fit.model == "isotonic" or t_b.fit.model == "isotonic":
+        raise ValueError(
+            "ratio_interval: a threshold from an isotonic fit has no covariance to build a "
+            "ratio interval from; both thresholds must come from binomial or Gaussian fits"
         )
     if t_a.fit.model != t_b.fit.model:
         raise ValueError(

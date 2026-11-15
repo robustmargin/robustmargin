@@ -2,17 +2,21 @@
 
 The package exports the vocabulary types (:class:`Axis`, :class:`Observations`,
 :class:`ContinuousObservations`, :class:`Definition`, :class:`Cell`, :class:`ContinuousCell`,
-:class:`Residual`), the status and interval-shape enums (:class:`Status`,
+:class:`Residual`, :class:`BootstrapSummary`), the status and interval-shape enums (:class:`Status`,
 :class:`IntervalShape`, alongside :class:`Censoring`), the result dataclasses (:class:`Fit`,
 :class:`Threshold`, :class:`Ratio`, :class:`Scorecard`), the grid break-point rule
 (:func:`grid_break_point`, returning :class:`GridBreakPoint`), and the dose-response fitter
 (:func:`fit_dose_response`, returning a :class:`Fit` whose :meth:`~Fit.predict` returns a
-:class:`Prediction`). The JSON report module (``robustmargin.report``) and the schema-valid test
-fakes (``robustmargin.testing``) are importable as submodules but are not re-exported here.
+:class:`Prediction`; ``model="isotonic"`` fits a monotone, parameter-free :class:`Fit` whose
+values are ``Fit.cell_estimates``, and has no ``predict``). The JSON report module
+(``robustmargin.report``) and the schema-valid test fakes (``robustmargin.testing``) are
+importable as submodules but are not re-exported here.
 
 :func:`threshold` solves for the severity at which a fitted curve crosses a target performance and
 attaches an interval or an explicit censoring label, together with :class:`BaselineRate`,
-:class:`ExactRates` and :func:`per_cell_clopper_pearson`.
+:class:`ExactRates` and :func:`per_cell_clopper_pearson`. Its interval is a profile-likelihood,
+delta-method or bootstrap one (``"parametric_bootstrap"`` and ``"cell_bootstrap"``, with
+``n_resamples`` and ``seed``; :class:`BootstrapSummary` records what the replicates did).
 
 :func:`ratio_interval` solves for the ratio of two thresholds' severities with a Fieller or
 log-delta confidence interval.
@@ -43,6 +47,7 @@ from robustmargin.report import Scorecard
 from robustmargin.threshold import Threshold, threshold
 from robustmargin.types import (
     Axis,
+    BootstrapSummary,
     Cell,
     Censoring,
     ContinuousCell,
@@ -69,6 +74,7 @@ __all__ = [
     "AdjacentPair",
     "Axis",
     "BaselineRate",
+    "BootstrapSummary",
     "Cell",
     "Censoring",
     "ContinuousAdjacentPair",

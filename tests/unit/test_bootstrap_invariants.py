@@ -1,0 +1,181 @@
+"""``Threshold`` invariants for bootstrap results.
+
+* A bootstrap percentile interval may exclude its own point estimate. For the bootstrap methods an
+  ``OK`` result with no censoring needs only ``lo <= hi``; ``profile`` and ``delta`` keep
+  ``lo <= value <= hi``. ``lo > hi`` is never accepted.
+* When more than 10% of the replicates fail the bootstrap gives up: ``NOT_CONVERGED`` with
+  ``interval_method="exact_bound"`` on a fit that is itself ``OK``. That is accepted exactly when
+  the failure counts are attached as a ``bootstrap`` summary.
+
+Results are built directly from the deterministic fakes, so no resampling runs.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+
+import pytest
+
+from robustmargin import BootstrapSummary, Censoring, Status, Threshold
+from robustmargin.testing import fake_threshold
+
+_BOOTSTRAP_METHODS = ("parametric_bootstrap", "cell_bootstrap")
+_SUMMARY = BootstrapSummary(
+    n_resamples=100, failed=0, unreachable_low=0, unreachable_high=0, seed=1
+)
+_GIVE_UP = BootstrapSummary(
+    n_resamples=100, failed=40, unreachable_low=0, unreachable_high=0, seed=1
+)
+
+
+def _bounded(model: str = "binomial") -> Threshold:
+    t = fake_threshold(model=model)
+    assert t.value is not None and t.lo is not None and t.hi is not None
+    return t
+
+
+@pytest.mark.parametrize("method", _BOOTSTRAP_METHODS)
+class TestBootstrapIntervalMayExcludeTheEstimate:
+    def test_a_lower_bound_above_the_value_is_accepted(self, method: str) -> None:
+        t = _bounded()
+        assert t.value is not None
+
+        built = dataclasses.replace(
+            t,
+            interval_method=method,
+            bootstrap=_SUMMARY,
+            lo=t.value * 1.1,
+            hi=t.value * 1.5,
+        )
+
+        assert built.lo is not None and built.lo > t.value
+
+    def test_an_upper_bound_below_the_value_is_accepted(self, method: str) -> None:
+        t = _bounded()
+        assert t.value is not None
+
+        built = dataclasses.replace(
+            t,
+            interval_method=method,
+            bootstrap=_SUMMARY,
+            lo=t.value * 0.5,
+            hi=t.value * 0.9,
+        )
+
+        assert built.hi is not None and built.hi < t.value
+
+    def test_a_lower_bound_above_the_upper_bound_is_rejected(self, method: str) -> None:
+        t = _bounded()
+        assert t.value is not None
+
+        with pytest.raises(ValueError):
+            dataclasses.replace(
+                t,
+                interval_method=method,
+                bootstrap=_SUMMARY,
+                lo=t.value * 1.5,
+                hi=t.value * 1.1,
+            )
+
+
+@pytest.mark.parametrize("method", ["profile", "delta"])
+class TestModelIntervalsStillContainTheEstimate:
+    def test_a_lower_bound_above_the_value_is_rejected(self, method: str) -> None:
+        t = _bounded()
+        assert t.value is not None
+
+        with pytest.raises(ValueError):
+            dataclasses.replace(t, interval_method=method, lo=t.value * 1.1, hi=t.value * 1.5)
+
+    def test_an_upper_bound_below_the_value_is_rejected(self, method: str) -> None:
+        t = _bounded()
+        assert t.value is not None
+
+        with pytest.raises(ValueError):
+            dataclasses.replace(t, interval_method=method, lo=t.value * 0.5, hi=t.value * 0.9)
+
+
+def _give_up(model: str, bootstrap: BootstrapSummary | None) -> Threshold:
+    t = fake_threshold(model=model)
+    assert t.fit.status is Status.OK
+    return dataclasses.replace(
+        t,
+        status=Status.NOT_CONVERGED,
+        censoring=Censoring.NONE,
+        interval_method="exact_bound",
+        value=None,
+        lo=None,
+        hi=None,
+        bootstrap=bootstrap,
+    )
+
+
+@pytest.mark.parametrize("model", ["binomial", "gaussian"])
+class TestGiveUpOnAnOkFit:
+    def test_not_converged_on_an_ok_fit_is_accepted_with_a_bootstrap_summary(
+        self, model: str
+    ) -> None:
+        t = _give_up(model, _GIVE_UP)
+
+        assert t.status is Status.NOT_CONVERGED and t.fit.status is Status.OK
+        assert t.bootstrap == _GIVE_UP
+
+    def test_not_converged_on_an_ok_fit_is_rejected_without_a_bootstrap_summary(
+        self, model: str
+    ) -> None:
+        with pytest.raises(ValueError):
+            _give_up(model, None)
+
+
+class TestExcludedEstimateWarning:
+    def test_threshold_warns_and_reports_the_percentile_interval_unclamped(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import math
+
+        import numpy as np
+        from scipy.stats import norm
+
+        from robustmargin import Axis, Definition, Observations, fit_dose_response, threshold
+        from robustmargin.intervals import _BootstrapDesign
+
+        x = np.array([0.0, *np.logspace(-1.0, 1.0, 10)])
+        with np.errstate(divide="ignore"):
+            p = np.where(x == 0.0, 1.0, 1.0 - norm.cdf((np.log(x) - math.log(2.5)) / 0.5))
+        obs = Observations.from_counts(
+            Axis(name="severity", unit="unit", scale="log"),
+            severity=x.tolist(),
+            successes=np.random.default_rng(20261114).binomial(400, p).tolist(),
+            trials=[400] * x.size,
+            outcome="success",
+            direction="decreasing",
+        )
+        fit = fit_dose_response(obs, model="binomial", link="probit", upper=1.0, lower=0.0)
+        point = threshold(
+            fit,
+            definition=Definition.absolute(0.5),
+            interval_method="delta",
+            level=0.95,
+        )
+        assert point.value is not None
+        # Every replicate lands well above the estimate, as a biased estimator would give.
+        thetas = math.log(point.value) + 0.5 + np.linspace(0.0, 0.1, 100)
+        monkeypatch.setattr(
+            _BootstrapDesign, "theta", lambda self, first, second, index: float(thetas[index])
+        )
+
+        t = threshold(
+            fit,
+            definition=Definition.absolute(0.5),
+            interval_method="parametric_bootstrap",
+            level=0.95,
+            n_resamples=100,
+            seed=1,
+        )
+
+        assert any(w.startswith("BOOTSTRAP_EXCLUDES_ESTIMATE:") for w in t.warnings)
+        assert t.status is Status.OK and t.censoring is Censoring.NONE
+        assert t.value == point.value
+        assert t.lo == pytest.approx(math.exp(np.quantile(thetas, 0.025, method="weibull")))
+        assert t.hi == pytest.approx(math.exp(np.quantile(thetas, 0.975, method="weibull")))
+        assert t.lo is not None and t.lo > t.value

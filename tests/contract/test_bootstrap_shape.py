@@ -89,12 +89,12 @@ def _isotonic_fit() -> Fit:
     return fit_dose_response(obs, model="isotonic")
 
 
-def _solve(fit: Fit, method: str, **kwargs: object):  # type: ignore[no-untyped-def]
+def _solve(fit: Fit, method: str, target: float = 0.5, **kwargs: object):  # type: ignore[no-untyped-def]
     from robustmargin import Definition, threshold
 
     return threshold(
         fit,
-        definition=Definition.absolute(0.5),
+        definition=Definition.absolute(target),
         interval_method=method,
         level=0.95,
         **kwargs,  # type: ignore[arg-type]
@@ -237,7 +237,7 @@ def test_a_bootstrap_threshold_carries_the_summary_and_the_requested_method(meth
 def test_a_gaussian_bootstrap_threshold_carries_the_summary() -> None:
     from robustmargin import BootstrapSummary, Status
 
-    t = _solve(_gaussian_fit(), "parametric_bootstrap", n_resamples=_REPLICATES, seed=3)
+    t = _solve(_gaussian_fit(), "parametric_bootstrap", 5.5, n_resamples=_REPLICATES, seed=3)
 
     assert t.status is Status.OK and t.interval_method == "parametric_bootstrap"
     assert isinstance(t.bootstrap, BootstrapSummary) and t.bootstrap.n_resamples == _REPLICATES
@@ -357,7 +357,7 @@ def test_n_resamples_and_seed_default_to_none_for_a_model_interval() -> None:
 
 def test_cell_bootstrap_on_a_gaussian_fit_raises() -> None:
     with pytest.raises(ValueError):
-        _solve(_gaussian_fit(), "cell_bootstrap", n_resamples=_REPLICATES, seed=1)
+        _solve(_gaussian_fit(), "cell_bootstrap", 5.5, n_resamples=_REPLICATES, seed=1)
 
 
 @pytest.mark.parametrize("method", ["profile", "delta", "parametric_bootstrap"])

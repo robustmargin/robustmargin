@@ -53,7 +53,9 @@ the sequence):
    bound at ``level`` clears the target. That last guard defers non-monotone data to step 5 and can
    only suppress a result, which is why it stays at ``level``. Short-circuits before step 4.
 4. ``UNREACHABLE`` -- the target is not strictly inside ``(l, u)``. Only checked when
-   ``fit.status is OK``, since reachability needs a fitted ``l``/``u``.
+   ``fit.status is OK``, since reachability needs a fitted ``l``/``u``. An isotonic fit has no
+   asymptotes, so this step does not apply to it: whether the interpolated cell estimates reach
+   the target is decided by :func:`robustmargin.threshold` where it solves.
 5. Monotonicity contradiction -- over *all* tested levels at ``level``, the highest confidently
    passing nonzero severity is not below the lowest confidently failing severity, so the exact
    tests contradict a monotone curve. A ``NON_MONOTONE: `` warning names both levels. On a failed
@@ -86,6 +88,9 @@ when the target is not strictly inside the fitted ``(l, u)``, and is solved othe
 tested range; a value beyond it is flagged by the caller as extrapolated. A Gaussian fit that did
 not converge has no exact-bound fallback and never reaches this module: it is ``NOT_CONVERGED``
 with no bound and no grid.
+
+An isotonic fit of counts runs the sequence above with step 4 left out. An isotonic fit of
+continuous responses makes no exact claim and no reachability claim here: it is always solved.
 """
 
 from __future__ import annotations
@@ -96,7 +101,7 @@ from typing import Literal
 from scipy.stats import binomtest
 
 from robustmargin.empirical import BaselineRate, GridBreakPoint, grid_break_point
-from robustmargin.models import Fit, _count_cells
+from robustmargin.models import Fit, _count_cells, _is_continuous_fit
 from robustmargin.types import Cell, Censoring, Status, _check_finite_number
 
 __all__ = ["Classification", "classify", "exact_one_sided_bound"]
@@ -345,7 +350,7 @@ def _fails_at_baseline(
 
 
 def _unreachable(fit: Fit, *, target: float) -> Classification | None:
-    if fit.status is not Status.OK:
+    if fit.status is not Status.OK or fit.model == "isotonic":
         return None
     assert fit.params is not None
     lower = fit.params["lower"].value
@@ -672,7 +677,7 @@ def _contradiction_or_none(
 
 
 def _exact_bound_fallback(
-    fit: Fit,
+    status: Status,
     cells: tuple[Cell, ...],
     *,
     target: float,
@@ -743,7 +748,7 @@ def _exact_bound_fallback(
             "did not meet",
         )
     return Classification(
-        status=fit.status,
+        status=status,
         censoring=Censoring.NONE,
         lo=lo_severity,
         hi=hi_severity,
@@ -835,6 +840,16 @@ def classify(
     shown_target = original_target if original_target is not None else target
     if fit.model == "gaussian":
         return _classify_gaussian(fit, target=target, shown_target=shown_target)
+    if _is_continuous_fit(fit):
+        return Classification(
+            status=Status.OK,
+            censoring=Censoring.NONE,
+            lo=None,
+            hi=None,
+            baseline=None,
+            grid=None,
+            solve=True,
+        )
     if fit.status is Status.CONTROL_INCOMPATIBLE:
         return Classification(
             status=Status.CONTROL_INCOMPATIBLE,
@@ -896,5 +911,29 @@ def classify(
         )
 
     return _exact_bound_fallback(
-        fit, cells, target=target, shown_target=shown_target, level=level, mirrored=mirrored
+        fit.status, cells, target=target, shown_target=shown_target, level=level, mirrored=mirrored
+    )
+
+
+def _bootstrap_give_up(
+    fit: Fit, *, target: float, level: float, original_target: float | None = None
+) -> Classification:
+    """The exact-bound fallback of a bootstrap interval that gave up, for a binomial or isotonic
+    ``fit`` of counts that is itself ``OK``.
+
+    More than a tenth of the bootstrap refits failed, so no interval is reported and the result is
+    ``NOT_CONVERGED``. What it still says is what the data say without any fitted curve: the
+    bracket or one-sided bound of the fixed-sequence exact tests, step 9 of the sequence in this
+    module's docstring, with the grid break-point attached. Arguments are those of
+    :func:`classify`, which has already run on ``fit`` and returned ``solve=True``.
+    """
+    mirrored = original_target is not None
+    shown_target = original_target if original_target is not None else target
+    return _exact_bound_fallback(
+        Status.NOT_CONVERGED,
+        _count_cells(fit),
+        target=target,
+        shown_target=shown_target,
+        level=level,
+        mirrored=mirrored,
     )
