@@ -9,7 +9,7 @@ Schema ``"2"`` differs from ``"1"`` in exactly three places, and nowhere else:
 ``scorecard-v1.json`` stays byte-for-byte what it was, so ``load_schema("1")`` still works, and
 ``from_dict`` reads both versions. A payload tagged ``"1"`` that carries ``"increasing"`` or
 ``"baseline_multiple"`` is rejected, because a ``"1"`` writer could never have produced it.
-``to_dict`` always writes ``"2"``.
+``to_dict`` writes the current version, ``"3"``; ``test_schema_v3.py`` pins that.
 
 ``test_schema_v1.py`` pins what stays of ``"1"``.
 """
@@ -92,8 +92,22 @@ def _validator(version: str, type_name: str) -> jsonschema.protocols.Validator:
     )
 
 
+def _without_v3_only_keys(node: Any) -> Any:
+    """What a ``"2"`` writer emitted: the payload without the two null-valued keys
+    (``Fit.cell_estimates``, ``Threshold.bootstrap``) that only the current format has."""
+    if isinstance(node, dict):
+        return {
+            k: _without_v3_only_keys(v)
+            for k, v in node.items()
+            if not (k in ("cell_estimates", "bootstrap") and v is None)
+        }
+    if isinstance(node, list):
+        return [_without_v3_only_keys(item) for item in node]
+    return node
+
+
 def _dump(obj: object) -> dict[str, Any]:
-    payload: dict[str, Any] = to_dict(obj)
+    payload: dict[str, Any] = _without_v3_only_keys(to_dict(obj))
     return payload
 
 
@@ -160,41 +174,41 @@ def _real_decreasing_threshold() -> Threshold:
 
 
 class TestVersionConstants:
-    def test_the_current_schema_version_is_2(self) -> None:
-        assert SCHEMA_VERSION == "2"
+    def test_the_current_schema_version_is_3(self) -> None:
+        assert SCHEMA_VERSION == "3"
 
-    def test_the_reader_supports_both_versions(self) -> None:
-        assert report_module._SUPPORTED_SCHEMA_VERSIONS == frozenset({"1", "2"})
+    def test_the_reader_supports_all_three_versions(self) -> None:
+        assert report_module._SUPPORTED_SCHEMA_VERSIONS == frozenset({"1", "2", "3"})
 
     def test_results_default_to_the_current_schema_version(self) -> None:
-        assert fake_fit().schema_version == "2"
-        assert fake_threshold().schema_version == "2"
-        assert fake_ratio().schema_version == "2"
+        assert fake_fit().schema_version == "3"
+        assert fake_threshold().schema_version == "3"
+        assert fake_ratio().schema_version == "3"
 
-    def test_to_dict_writes_2_at_every_nesting_level(self) -> None:
+    def test_to_dict_writes_3_at_every_nesting_level(self) -> None:
         card = Scorecard(
             results=(fake_fit(), fake_threshold(), fake_ratio(), _increasing_threshold()),
             provenance={},
         )
 
-        versions = _versions_in(_dump(card))
+        versions = _versions_in(to_dict(card))
 
         assert versions
-        assert set(versions) == {"2"}
+        assert set(versions) == {"3"}
 
 
 class TestSchemaFiles:
-    def test_both_packaged_schemas_exist_and_nothing_else(self) -> None:
+    def test_all_packaged_schemas_exist_and_nothing_else(self) -> None:
         names = sorted(p.name for p in _SCHEMA_DIR.glob("scorecard-v*.json"))
 
-        assert names == ["scorecard-v1.json", "scorecard-v2.json"]
+        assert names == ["scorecard-v1.json", "scorecard-v2.json", "scorecard-v3.json"]
 
     @pytest.mark.parametrize("version", ["1", "2"])
     def test_each_is_a_valid_json_schema(self, version: str) -> None:
         jsonschema.Draft202012Validator.check_schema(_schema(version))
 
     def test_load_schema_defaults_to_the_current_version(self) -> None:
-        assert load_schema() == load_schema("2")
+        assert load_schema() == load_schema("3")
         assert load_schema("1") != load_schema("2")
 
     def test_the_two_documents_have_different_ids(self) -> None:
@@ -416,7 +430,7 @@ class TestVersionOnePayloads:
 
         assert from_dict(_dump(t)) == t
 
-    @pytest.mark.parametrize("version", ["0", "3", "4", ""])
+    @pytest.mark.parametrize("version", ["0", "4", "5", ""])
     def test_other_versions_are_still_rejected_naming_the_supported_ones(
         self, version: str
     ) -> None:
@@ -427,4 +441,4 @@ class TestVersionOnePayloads:
 
         message = str(excinfo.value)
         assert "unknown schema_version" in message
-        assert "'1'" in message and "'2'" in message
+        assert "'1'" in message and "'2'" in message and "'3'" in message

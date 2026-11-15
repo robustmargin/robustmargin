@@ -51,8 +51,22 @@ def _validator(version: str, type_name: str) -> jsonschema.protocols.Validator:
     )
 
 
+def _without_v3_only_keys(node: Any) -> Any:
+    """What a ``"2"`` writer emitted: the payload without the two null-valued keys
+    (``Fit.cell_estimates``, ``Threshold.bootstrap``) that only the current format has."""
+    if isinstance(node, dict):
+        return {
+            k: _without_v3_only_keys(v)
+            for k, v in node.items()
+            if not (k in ("cell_estimates", "bootstrap") and v is None)
+        }
+    if isinstance(node, list):
+        return [_without_v3_only_keys(item) for item in node]
+    return node
+
+
 def _dump(obj: object) -> dict[str, Any]:
-    payload: dict[str, Any] = to_dict(obj)
+    payload: dict[str, Any] = _without_v3_only_keys(to_dict(obj))
     return payload
 
 
@@ -204,7 +218,7 @@ class TestEveryGaussianResultValidates:
         assert from_dict(json.loads(json.dumps(_dump(result), allow_nan=False))) == result
 
     @pytest.mark.parametrize("name", _IDS)
-    def test_every_nested_schema_version_is_2(self, name: str) -> None:
+    def test_every_nested_schema_version_is_3(self, name: str) -> None:
         def versions(node: Any) -> list[Any]:
             if isinstance(node, dict):
                 found = [v for k, v in node.items() if k == "schema_version"]
@@ -215,7 +229,7 @@ class TestEveryGaussianResultValidates:
                 return [x for item in node for x in versions(item)]
             return []
 
-        assert set(versions(_dump(_results()[name]))) == {"2"}
+        assert set(versions(to_dict(_results()[name]))) == {"3"}
 
     def test_a_gaussian_threshold_serialises_what_makes_it_reproducible(self) -> None:
         t = _results()["profile threshold"]

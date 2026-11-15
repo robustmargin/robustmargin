@@ -31,7 +31,7 @@ _THRESHOLD_COMBINATIONS = [
 
 
 def _validator(type_name: str) -> jsonschema.protocols.Validator:
-    schema = load_schema("2")
+    schema = load_schema("3")
     return jsonschema.Draft202012Validator(
         {"$defs": schema["$defs"], "$ref": f"#/$defs/{type_name}"}
     )

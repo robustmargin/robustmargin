@@ -230,6 +230,6 @@ def test_every_continuous_result_round_trips_through_json_text() -> None:
     assert payload["interval_method"] == "profile"
     assert payload["definition"] == {"kind": "relative", "value": 0.5}
     assert payload["level"] == 0.95
-    assert payload["schema_version"] == "2"
+    assert payload["schema_version"] == "3"
     assert payload["fit"]["model"] == "gaussian"  # type: ignore[index]
     assert payload["fit"]["residual"]["df"] == fit.residual.df  # type: ignore[index, union-attr]
