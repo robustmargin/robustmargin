@@ -13,9 +13,9 @@ name = "robustmargin"
 description = "Robustness margins for AI safety evaluation: how much stress an AI system takes before it fails, with a confidence interval."
 readme = "README.md"
 license = "Apache-2.0"
-license-files = ["LICENSE"]
+license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.11"
-authors = [{ name = "robustmargin contributors" }]
+authors = [{ name = "Babak Badkoubeh" }]
 dynamic = ["version"]
 keywords = [
     "ai-safety",
@@ -71,6 +71,8 @@ Homepage = "https://github.com/robustmargin/robustmargin"
 Source = "https://github.com/robustmargin/robustmargin"
 Changelog = "https://github.com/robustmargin/robustmargin/blob/main/CHANGELOG.md"
 Issues = "https://github.com/robustmargin/robustmargin/issues"
+DOI = "https://doi.org/10.5281/zenodo.23585829"
+"Author ORCID" = "https://orcid.org/0009-0005-3586-7901"
 
 [tool.setuptools.packages.find]
 where = ["src"]

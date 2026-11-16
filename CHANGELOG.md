@@ -7,6 +7,12 @@ minor release may change the public API, and every such change carries a migrati
 
 ## [Unreleased]
 
+### Changed
+- The package metadata names its author, Babak Badkoubeh, in place of "robustmargin
+  contributors", and links the Zenodo DOI and the author's ORCID. A `NOTICE` file carries the
+  copyright line and ships in the sdist and wheel beside `LICENSE`. The README gains a "Citing"
+  section.
+
 ## [0.3.0] — 2026-11-11
 
 ### Added
