@@ -15,8 +15,9 @@ Schema ``"3"`` is ``"2"`` plus exactly these edits, and nothing else:
 ``scorecard-v1.json`` and ``scorecard-v2.json`` stay byte-for-byte what they were. ``from_dict``
 reads all three; a payload tagged ``"1"`` or ``"2"`` that carries a value only ``"3"`` has is
 rejected, because such a writer could never have produced it. A card written by an earlier
-release (no ``cell_estimates`` or ``bootstrap`` key at all) still reads and is written back as
-``"3"``. ``to_dict`` always writes ``"3"``.
+release (no ``cell_estimates`` or ``bootstrap`` key at all) still reads and is written back with
+the tag it had, byte for byte (``test_schema_read_keeps_tag.py``). A result constructed now writes
+``"3"``.
 
 ``test_schema_v2.py`` pins what stays of ``"2"``.
 """
@@ -591,7 +592,7 @@ _READ_BACK: list[tuple[str, Callable[[], Any]]] = [
 class TestCardsWrittenBeforeVersion3StillRead:
     @pytest.mark.parametrize("version", ["1", "2"])
     @pytest.mark.parametrize(("name", "builder"), _READ_BACK, ids=[n for n, _ in _READ_BACK])
-    def test_a_card_without_the_new_keys_is_read_and_written_back_as_3(
+    def test_a_card_without_the_new_keys_is_read_and_written_back_with_its_own_tag(
         self, name: str, builder: Callable[[], Any], version: str
     ) -> None:
         original = builder()
@@ -608,16 +609,21 @@ class TestCardsWrittenBeforeVersion3StillRead:
         assert isinstance(card, Scorecard)
         (result,) = card.results
         rewritten = _json(card)
-        assert set(_versions_in(rewritten)) == {"3"}
-        assert rewritten["results"][0] == _json(original)
-        assert result == original
+        assert set(_versions_in(rewritten)) == {version}
+        assert rewritten == old
+        assert result.schema_version == version
+        assert card.schema_version == version
+        assert from_dict(rewritten) == card
 
     @pytest.mark.parametrize("version", ["1", "2"])
     def test_an_older_card_with_explicit_null_new_keys_is_also_read(self, version: str) -> None:
         payload = _relabel(_json(fake_threshold()), version)
 
         assert payload["bootstrap"] is None and payload["fit"]["cell_estimates"] is None
-        assert from_dict(payload) == fake_threshold()
+        result = from_dict(payload)
+        assert result.schema_version == version
+        assert set(_versions_in(_json(result))) == {version}
+        assert _json(result)["value"] == payload["value"]
 
     def test_a_version_2_card_with_a_real_parametric_threshold_is_read(self) -> None:
         obs = Observations.from_counts(

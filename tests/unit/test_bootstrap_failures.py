@@ -1,20 +1,21 @@
 """What a bootstrap does with the replicates that cannot be solved.
 
-* **A failed refit** (``SEPARATION``, ``NOT_CONVERGED``, ``CONTROL_INCOMPATIBLE``) is dropped and
-  counted in ``BootstrapSummary.failed``. Above 1% failed the result carries a warning starting
-  ``BOOTSTRAP_FAILURES:`` that states ``failed/n_resamples``. Above 10% failed the bootstrap gives
-  up: the threshold is ``NOT_CONVERGED`` with ``interval_method="exact_bound"``, no point estimate,
-  and the summary is still attached.
+* **A failed refit** (``SEPARATION``, ``NOT_CONVERGED``, ``CONTROL_INCOMPATIBLE``) is counted in
+  ``BootstrapSummary.failed`` and enters the percentiles as ``-inf`` for ``lo`` and ``+inf`` for
+  ``hi``; it is not dropped (``test_bootstrap_review_rules.py`` pins that). Above 1% failed the
+  result carries a warning starting ``BOOTSTRAP_FAILURES:`` that states ``failed/n_resamples``.
+  Above 10% failed the bootstrap gives up: the threshold is ``NOT_CONVERGED`` with
+  ``interval_method="exact_bound"``, no point estimate, and the summary is still attached.
 * **An unreachable replicate** (a target the replicate's curve never crosses, or a value at or
-  below zero on a linear axis) is not dropped: it counts as ``-inf`` or ``+inf`` by the side it
-  implies and takes part in the percentiles. A side whose unreachable count exceeds
-  ``alpha / 2`` of the valid replicates is open. One side open gives ``OPEN_UPPER`` or
+  below zero on a linear axis) counts as ``-inf`` or ``+inf`` by the side it implies and takes
+  part in the percentiles. A side whose unreachable count plus failed count exceeds
+  ``alpha / 2`` of all ``n_resamples`` replicates is open. One side open gives ``OPEN_UPPER`` or
   ``OPEN_LOWER`` with the other bound closed; both open gives ``Censoring.NONE`` with no bounds and
   a warning, and the point estimate is kept.
 
 The data here genuinely produce each situation, so no internal function is replaced. The replicate
-fractions the thresholds rely on were measured by simulating the same refits: 3.7% of replicate
-refits separate on the sparse series (so the 1% and 10% cut-offs are both many standard errors
+fractions the thresholds rely on were measured by running the same refits: about 6% of replicate
+refits separate on the sparse series (so the 1% and 10% cut-offs are both several standard errors
 away at 400 replicates), 43% separate on the steeper one, about 10% of linear-axis replicates put
 the midpoint at or below zero, and the isotonic series put a quarter to a third of their replicates
 on each unreachable side.
@@ -93,15 +94,17 @@ class TestFailedReplicates:
         assert len(messages) == 1
         assert f"{t.bootstrap.failed}/400" in messages[0]
 
-    def test_up_to_ten_percent_failed_still_returns_an_interval_from_the_valid_replicates(
+    def test_failures_above_half_of_alpha_leave_the_point_estimate_with_no_bounds(
         self,
     ) -> None:
         fit = _fit(_SPARSE_SEVERITY, [6, 5, 3, 2, 0], [6] * 5)
 
         t = _boot(fit, "parametric_bootstrap", 400, seed=2026)
 
-        assert t.lo is not None and t.value is not None and t.hi is not None
-        assert t.lo <= t.value <= t.hi
+        # About 6% failed: more than alpha / 2 = 2.5% of all replicates, so each end of the
+        # percentile interval would be -inf or +inf, and neither is bounded.
+        assert t.status is Status.OK and t.censoring is Censoring.NONE
+        assert t.value is not None and t.lo is None and t.hi is None
 
     def test_more_than_ten_percent_failed_gives_up_with_no_number(self) -> None:
         fit = _fit(_SPARSE_SEVERITY, [6, 6, 4, 1, 0], [6] * 5)

@@ -26,9 +26,13 @@ percentile interval from 199 resamples is also slightly liberal (the quantile ra
 **(b) The parent-starts refit against a full refit, recorded.** Bootstrap replicates on the
 estimated-asymptote path refit from the parent fit's starts, with no per-replicate scan. For each
 design here, the simulated datasets are refitted a second time by ``fit_dose_response`` (its full
-multi-start) and solved with the delta threshold, and the two replicate values are compared. The
-agreement rate is recorded, not asserted: there is no justified floor until it has been measured.
-What is asserted is that every replicate was compared and every value is a float.
+multi-start), and each refit's threshold is read off its own parameters with the arithmetic the
+bootstrap uses, so the two values are the same quantity: ``mu + s * z`` for the target, ``-inf`` or
+``+inf`` when it is unreachable, ``nan`` when the refit failed. (``threshold()`` is not used on the
+refit: its exact tests classify some replicate datasets as censored, which a bootstrap replicate
+never does, and counting those as disagreements would compare unlike things.) The agreement rate is
+recorded, not asserted: there is no justified floor until it has been measured. What is asserted
+is that every replicate was compared and every value is a float.
 
 **(c) Isotonic coverage, recorded.** The ``cell_bootstrap`` interval on an isotonic fit, on a
 rich and on a coarse design. Interpolation between tested severities is biased on a coarse grid by
@@ -238,6 +242,30 @@ def _refit_parent(design: _RefitDesign) -> tuple[Fit, Definition]:
     return fit, definition
 
 
+def _theta_from_params(refit: Fit, definition: Definition) -> float:
+    """The replicate's theta read straight off its refit, by the same arithmetic the bootstrap
+    uses: ``absolute(a)`` on a decreasing curve ``u - (u - l) F(z)`` solves ``F(z) = (u - a) /
+    (u - l)`` and ``theta = mu + s z``; ``-inf`` when ``a >= u`` and ``+inf`` when ``a <= l``.
+
+    Going through ``threshold()`` here would compare unlike things: its exact tests classify some
+    replicate datasets as censored, which a bootstrap replicate never does.
+    """
+    assert refit.params is not None and definition.kind == "absolute"
+    upper, lower = refit.params["upper"].value, refit.params["lower"].value
+    target = definition.value
+    if target >= upper:
+        return -math.inf
+    if target <= lower:
+        return math.inf
+    q = (upper - target) / (upper - lower)
+    z = {
+        "probit": lambda p: float(norm.ppf(p)),
+        "logit": lambda p: math.log(p / (1.0 - p)),
+        "cloglog": lambda p: math.log(-math.log(1.0 - p)),
+    }[refit.link](q)
+    return refit.params["mu"].value + refit.params["s"].value * z
+
+
 def _full_refit_theta(parent: Fit, data: object, definition: Definition) -> float:
     assert parent.params is not None
     asymptotes = {
@@ -252,19 +280,14 @@ def _full_refit_theta(parent: Fit, data: object, definition: Definition) -> floa
     )
     if refit.status is not Status.OK:
         return math.nan
-    t = threshold(refit, definition=definition, interval_method="delta", level=_LEVEL)
-    if t.status is Status.UNREACHABLE:
-        return math.inf
-    if t.status is not Status.OK or t.value is None:
-        return math.nan
-    return math.log(t.value)
+    return _theta_from_params(refit, definition)
 
 
 def _same_outcome(a: float, b: float) -> bool:
     if math.isnan(a) or math.isnan(b):
         return math.isnan(a) and math.isnan(b)
     if math.isinf(a) or math.isinf(b):
-        return math.isinf(a) and math.isinf(b)  # the side is not recoverable from a delta solve
+        return a == b  # the same side
     return abs(a - b) <= 1e-3
 
 

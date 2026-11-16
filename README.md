@@ -24,9 +24,10 @@ robustness and safety carry weight:
 > **Status: latest release `0.3.0`.** Dose-response fits for pass/fail outcomes that fall or rise
 > with severity and for real-valued scores (Gaussian least squares), thresholds with
 > profile-likelihood or delta confidence intervals, censoring, ratios of two thresholds with
-> Fieller or log-delta intervals, fit diagnostics, and the grid break-point rule. Clustered and
-> paired inference, model-free fits and design helpers are planned for `0.4`. While the version
-> is below 1.0, a minor release may change the public API.
+> Fieller or log-delta intervals, fit diagnostics, and the grid break-point rule. The development
+> version adds model-free isotonic fits and bootstrap intervals (see below). Clustered and paired
+> inference and design helpers are planned for `0.4`. While the version is below 1.0, a minor
+> release may change the public API.
 
 ## What it does
 
@@ -441,7 +442,8 @@ assert margin.bootstrap.seed == 7 and margin.bootstrap.failed == 0
 `interval_method="parametric_bootstrap"` does the same for a binomial or Gaussian fit: it simulates
 new data from the fitted curve at the tested levels and refits the same model. On a fit with an
 estimated asymptote each refit is far slower than with fixed asymptotes, so give it a smaller
-`n_resamples`. A refit that fails is dropped and counted in `Threshold.bootstrap`, with a warning
+`n_resamples`. A replicate whose refit fails is counted in `Threshold.bootstrap` and enters the
+percentiles as the worst case for each end (so failures can only widen the interval), with a warning
 above 1% and no interval above 10%.
 
 ## Grid break-point rule

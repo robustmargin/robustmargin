@@ -1,11 +1,13 @@
 """``Threshold`` invariants for bootstrap results.
 
-* A bootstrap percentile interval may exclude its own point estimate. For the bootstrap methods an
-  ``OK`` result with no censoring needs only ``lo <= hi``; ``profile`` and ``delta`` keep
-  ``lo <= value <= hi``. ``lo > hi`` is never accepted.
+* A bootstrap percentile interval may exclude its own point estimate, but only with a warning that
+  says so. For the bootstrap methods an ``OK`` result with no censoring needs ``lo <= hi``, and
+  ``lo > value`` or ``hi < value`` additionally needs a warning starting
+  ``BOOTSTRAP_EXCLUDES_ESTIMATE:``; ``profile`` and ``delta`` keep ``lo <= value <= hi`` with no
+  such escape. ``lo > hi`` is never accepted.
 * When more than 10% of the replicates fail the bootstrap gives up: ``NOT_CONVERGED`` with
-  ``interval_method="exact_bound"`` on a fit that is itself ``OK``. That is accepted exactly when
-  the failure counts are attached as a ``bootstrap`` summary.
+  ``interval_method="exact_bound"`` on a fit that is itself ``OK``. That is accepted exactly when a
+  ``bootstrap`` summary is attached and its ``failed`` exceeds 10% of ``n_resamples``.
 
 Results are built directly from the deterministic fakes, so no resampling runs.
 """
@@ -28,6 +30,11 @@ _GIVE_UP = BootstrapSummary(
 )
 
 
+_WARNING = (
+    "BOOTSTRAP_EXCLUDES_ESTIMATE: the percentile interval excludes the estimate; z0 = -2.33",
+)
+
+
 def _bounded(model: str = "binomial") -> Threshold:
     t = fake_threshold(model=model)
     assert t.value is not None and t.lo is not None and t.hi is not None
@@ -44,6 +51,7 @@ class TestBootstrapIntervalMayExcludeTheEstimate:
             t,
             interval_method=method,
             bootstrap=_SUMMARY,
+            warnings=_WARNING,
             lo=t.value * 1.1,
             hi=t.value * 1.5,
         )
@@ -58,11 +66,58 @@ class TestBootstrapIntervalMayExcludeTheEstimate:
             t,
             interval_method=method,
             bootstrap=_SUMMARY,
+            warnings=_WARNING,
             lo=t.value * 0.5,
             hi=t.value * 0.9,
         )
 
         assert built.hi is not None and built.hi < t.value
+
+    @pytest.mark.parametrize(("lo_scale", "hi_scale"), [(1.1, 1.5), (0.5, 0.9)])
+    def test_an_interval_that_excludes_the_value_is_rejected_without_the_warning(
+        self, method: str, lo_scale: float, hi_scale: float
+    ) -> None:
+        t = _bounded()
+        assert t.value is not None
+
+        with pytest.raises(ValueError):
+            dataclasses.replace(
+                t,
+                interval_method=method,
+                bootstrap=_SUMMARY,
+                lo=t.value * lo_scale,
+                hi=t.value * hi_scale,
+            )
+
+    def test_an_unrelated_warning_does_not_stand_in_for_the_excluded_estimate_warning(
+        self, method: str
+    ) -> None:
+        t = _bounded()
+        assert t.value is not None
+
+        with pytest.raises(ValueError):
+            dataclasses.replace(
+                t,
+                interval_method=method,
+                bootstrap=_SUMMARY,
+                warnings=("BOOTSTRAP_FAILURES: 3/100 bootstrap replicates failed",),
+                lo=t.value * 1.1,
+                hi=t.value * 1.5,
+            )
+
+    def test_an_interval_that_contains_the_value_needs_no_warning(self, method: str) -> None:
+        t = _bounded()
+        assert t.value is not None
+
+        built = dataclasses.replace(
+            t,
+            interval_method=method,
+            bootstrap=_SUMMARY,
+            lo=t.value * 0.9,
+            hi=t.value * 1.1,
+        )
+
+        assert built.warnings == t.warnings
 
     def test_a_lower_bound_above_the_upper_bound_is_rejected(self, method: str) -> None:
         t = _bounded()
@@ -73,6 +128,7 @@ class TestBootstrapIntervalMayExcludeTheEstimate:
                 t,
                 interval_method=method,
                 bootstrap=_SUMMARY,
+                warnings=_WARNING,
                 lo=t.value * 1.5,
                 hi=t.value * 1.1,
             )
@@ -93,6 +149,21 @@ class TestModelIntervalsStillContainTheEstimate:
 
         with pytest.raises(ValueError):
             dataclasses.replace(t, interval_method=method, lo=t.value * 0.5, hi=t.value * 0.9)
+
+    def test_the_excluded_estimate_warning_does_not_loosen_a_model_interval(
+        self, method: str
+    ) -> None:
+        t = _bounded()
+        assert t.value is not None
+
+        with pytest.raises(ValueError):
+            dataclasses.replace(
+                t,
+                interval_method=method,
+                warnings=_WARNING,
+                lo=t.value * 1.1,
+                hi=t.value * 1.5,
+            )
 
 
 def _give_up(model: str, bootstrap: BootstrapSummary | None) -> Threshold:
@@ -119,6 +190,20 @@ class TestGiveUpOnAnOkFit:
 
         assert t.status is Status.NOT_CONVERGED and t.fit.status is Status.OK
         assert t.bootstrap == _GIVE_UP
+
+    @pytest.mark.parametrize(("failed", "accepted"), [(5, False), (10, False), (11, True)])
+    def test_the_give_up_needs_more_than_a_tenth_of_the_replicates_to_have_failed(
+        self, model: str, failed: int, accepted: bool
+    ) -> None:
+        summary = BootstrapSummary(
+            n_resamples=100, failed=failed, unreachable_low=0, unreachable_high=0, seed=1
+        )
+
+        if accepted:
+            assert _give_up(model, summary).bootstrap == summary
+        else:
+            with pytest.raises(ValueError):
+                _give_up(model, summary)
 
     def test_not_converged_on_an_ok_fit_is_rejected_without_a_bootstrap_summary(
         self, model: str

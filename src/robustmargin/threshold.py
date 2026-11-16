@@ -58,6 +58,7 @@ _BOOTSTRAP_METHODS = frozenset({"parametric_bootstrap", "cell_bootstrap"})
 _MODEL_INTERVALS = frozenset({"profile", "delta"})
 _VALID_INTERVAL_METHODS = _MODEL_INTERVALS | _BOOTSTRAP_METHODS | {"exact_bound"}
 _DEFAULT_RESAMPLES = 999
+_GIVE_UP_FRACTION = 0.10
 _TERMINAL_STATUSES = frozenset(
     {Status.UNREACHABLE, Status.CONTROL_INCOMPATIBLE, Status.FAILS_AT_BASELINE}
 )
@@ -171,7 +172,9 @@ class Threshold:
     interpolant of ``fit.cell_estimates`` over the tested severities first reaches the target, on
     the axis scale (``log x`` on a log axis, where the zero-severity control has no coordinate and
     is not a node, and ``x`` on a linear one, where it is). That is the smallest severity with
-    ``P(x) <= P*`` (a flat block of tied estimates that equals the target gives its first severity).
+    ``P(x) <= P*`` (a flat block of tied estimates that equals the target gives its first
+    severity; on a log axis a block that starts at the lowest tested severity is already at the
+    target there, so the result is ``UNREACHABLE``, "below the lowest tested severity").
     An isotonic fit does not extrapolate: if the interpolant does not reach the target inside its
     nodes the result is ``UNREACHABLE`` with no number, and a warning names the side ("above the
     highest tested severity" or "below the lowest tested severity"). For counts the exact
@@ -184,14 +187,19 @@ class Threshold:
     **Bootstrap intervals** (``"parametric_bootstrap"``, ``"cell_bootstrap"``) are percentile
     intervals of the thresholds of resampled-and-refitted data (:mod:`robustmargin.intervals`).
     ``bootstrap`` records the replicate count, how many refits failed, how many replicates were
-    unreachable on each side, and the seed. A side of the interval is open (``OPEN_UPPER``,
-    ``OPEN_LOWER``) when more than ``alpha / 2`` of the replicates are unreachable on it, and when
-    both are the result is ``NONE`` with no bounds and a warning. More than 1% of failed refits
-    adds a ``BOOTSTRAP_FAILURES: `` warning, and more than 10% makes the result ``NOT_CONVERGED``
-    with the exact-bound fallback (no numbers for a continuous response) and
-    ``interval_method="exact_bound"``. A percentile interval can exclude the estimate it was
-    resampled around; it is then reported as computed, with a ``BOOTSTRAP_EXCLUDES_ESTIMATE: ``
-    warning, because clamping it to contain the estimate would invent an endpoint.
+    unreachable on each side, and the seed. A failed replicate counts as ``-inf`` in the lower
+    percentile and ``+inf`` in the upper one, so failures can only widen the interval. A side of the
+    interval is open (``OPEN_UPPER``, ``OPEN_LOWER``) when more than ``alpha / 2`` of all replicates
+    are unreachable or failed on it, and when both are the result is ``NONE`` with no bounds and a
+    warning. More than 1% of failed replicates adds a ``BOOTSTRAP_FAILURES: `` warning, and more
+    than 10% makes the result ``NOT_CONVERGED`` with the exact-bound fallback (no numbers for a
+    continuous response) and ``interval_method="exact_bound"``. Fewer than ``2 / alpha - 1``
+    resamples adds a ``BOOTSTRAP_FEW_RESAMPLES: `` warning, and an interval of zero width is
+    reported with no bounds and a ``BOOTSTRAP_ZERO_WIDTH: `` warning. A percentile interval can
+    exclude the estimate it was resampled around; it is then reported as computed, and a
+    ``BOOTSTRAP_EXCLUDES_ESTIMATE: `` warning (stating the bias correction ``z0``) is required by
+    the invariants, because clamping the interval to contain the estimate would invent an
+    endpoint.
 
     **Exact ties.** A claim is read non-strictly at the tested severities: a lower bound means the
     true rate there is at least the target, an upper bound that it is at most the target. If a
@@ -419,6 +427,26 @@ class Threshold:
                 f"fit.status={self.fit.status!r} (only a bootstrap that gave up, with "
                 "Threshold.bootstrap set, is NOT_CONVERGED on an OK fit)"
             )
+        if gave_up:
+            assert self.bootstrap is not None
+            if not self.bootstrap.failed > _GIVE_UP_FRACTION * self.bootstrap.n_resamples:
+                raise ValueError(
+                    "Threshold.status NOT_CONVERGED on an OK fit means a bootstrap gave up, which "
+                    "needs bootstrap.failed > 0.1 * bootstrap.n_resamples, got "
+                    f"{self.bootstrap.failed!r} of {self.bootstrap.n_resamples!r}"
+                )
+        if self.interval_method in _BOOTSTRAP_METHODS and self.value is not None:
+            excludes = (self.lo is not None and self.lo > self.value) or (
+                self.hi is not None and self.hi < self.value
+            )
+            if excludes and not any(
+                w.startswith("BOOTSTRAP_EXCLUDES_ESTIMATE:") for w in self.warnings
+            ):
+                raise ValueError(
+                    "Threshold: a bootstrap interval that excludes value must carry a warning "
+                    "starting 'BOOTSTRAP_EXCLUDES_ESTIMATE:', got "
+                    f"lo={self.lo!r}, value={self.value!r}, hi={self.hi!r}"
+                )
         if self.bootstrap is not None and not (
             self.interval_method in _BOOTSTRAP_METHODS
             or (self.interval_method == "exact_bound" and self.status is Status.NOT_CONVERGED)
@@ -999,9 +1027,10 @@ def threshold(
         no per-observation counts to resample); an isotonic fit takes only ``"cell_bootstrap"``.
         Any other pairing raises. ``"parametric_bootstrap"`` draws new data from the fitted model
         at the observed design and refits it; ``"cell_bootstrap"`` resamples each severity level
-        from its own data (counts: ``Binomial(n_i, k_i / n_i)``; continuous cells, which keep only
-        ``n``, ``mean`` and ``sd``: a mean drawn from ``N(mean_i, sd_i^2 / n_i)``, the normal
-        approximation to resampling the responses, which needs ``n_i >= 2`` at every level). Both
+        from its own data (counts: ``Binomial(n_i, (k_i + 0.5) / (n_i + 1))``; continuous
+        cells, which keep only ``n``, ``mean`` and ``sd``: a mean drawn from
+        ``N(mean_i, sd_i^2 (n_i - 1) / n_i^2)``, the variance of a mean under resampling with
+        replacement, which needs ``n_i >= 2`` at every level). Both
         are percentile intervals; see :mod:`robustmargin.intervals` for how unreachable and failed
         replicates are treated.
         For ``Definition.absolute(a)`` on a fit with estimated asymptotes, the delta standard

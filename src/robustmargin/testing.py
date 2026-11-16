@@ -224,6 +224,7 @@ def _fake_ok_fit(
 
 
 _VALID_MODELS = frozenset({"binomial", "gaussian", "isotonic"})
+_MODEL_INTERVAL_METHODS = frozenset({"profile", "delta"})
 _BOOTSTRAP_INTERVAL_METHODS = frozenset({"parametric_bootstrap", "cell_bootstrap"})
 # A Gaussian fake: a decreasing logit curve from 10 to 2 with its midpoint at severity 1, three
 # observations per level with a sample SD of 0.3. The increasing one rises from 2 to 10.
@@ -534,10 +535,12 @@ def fake_threshold(
         Stored on the result as given, or ``{}`` if not provided.
     interval_method
         ``None`` (the default) builds what the other arguments imply: a ``"profile"`` interval, or
-        ``"cell_bootstrap"`` for an isotonic fake. ``"parametric_bootstrap"`` or
-        ``"cell_bootstrap"`` builds an ``OK`` threshold (``censoring`` ``NONE``, ``OPEN_UPPER`` or
-        ``OPEN_LOWER``) with that method and a :class:`~robustmargin.BootstrapSummary`. A Gaussian
-        fake takes only ``"parametric_bootstrap"`` and an isotonic one only ``"cell_bootstrap"``.
+        ``"cell_bootstrap"`` for an isotonic fake. ``"profile"`` and ``"delta"`` build an ``OK``
+        threshold with that method and no summary; ``"parametric_bootstrap"`` or
+        ``"cell_bootstrap"`` builds one with that method and a
+        :class:`~robustmargin.BootstrapSummary` (``censoring`` ``NONE``, ``OPEN_UPPER`` or
+        ``OPEN_LOWER`` in every case). A Gaussian fake does not take ``"cell_bootstrap"`` and an
+        isotonic one takes only ``"cell_bootstrap"``.
 
     Returns
     -------
@@ -663,8 +666,8 @@ def _resolve_fake_interval_method(
     if requested is None:
         return default
     takes = {
-        "binomial": _BOOTSTRAP_INTERVAL_METHODS,
-        "gaussian": frozenset({"parametric_bootstrap"}),
+        "binomial": _MODEL_INTERVAL_METHODS | _BOOTSTRAP_INTERVAL_METHODS,
+        "gaussian": _MODEL_INTERVAL_METHODS | {"parametric_bootstrap"},
         "isotonic": frozenset({"cell_bootstrap"}),
     }[model]
     if requested not in takes:

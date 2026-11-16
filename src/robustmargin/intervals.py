@@ -68,19 +68,25 @@ use identical draws under one seed. ``parametric_bootstrap`` simulates from the 
 (binomial ``k* ~ Binomial(n_i, P_hat(x_i))``; Gaussian cell means ``N(f_hat(x_i), sigma2 / n_i)``
 and within-cell sums of squares ``sigma2 * chi2(n_i - 1)``, which are the sufficient statistics of
 the least-squares fit, so the simulation is exact). ``cell_bootstrap`` resamples each severity
-level from its own data: ``k* ~ Binomial(n_i, k_i / n_i)`` for counts, and for continuous cells,
-which keep only ``n``, ``mean`` and ``sd``, a cell mean drawn from ``N(mean_i, sd_i^2 / n_i)``, the
-central-limit approximation to resampling the responses with replacement. A replicate is refitted
+level from its own data: ``k* ~ Binomial(n_i, (k_i + 0.5) / (n_i + 1))`` for counts (the Jeffreys
+posterior mean, which keeps a level observed at 0 or ``n_i`` from being resampled as certain; a
+log-axis control that the fit pins to exactly 1 keeps that rate), and
+for continuous cells, which keep only ``n``, ``mean`` and ``sd``, a cell mean drawn from
+``N(mean_i, sd_i^2 (n_i - 1) / n_i^2)``, the variance of a mean of ``n_i`` responses resampled
+with replacement (normal approximation). A replicate is refitted
 with the same model, link and fixed or estimated asymptotes (an isotonic replicate by
 pool-adjacent-violators). Where an asymptote is estimated the refit starts from the points found
 once for the fitted data, not from a scan of each replicate's likelihood; the pilot start, the
 fixed alternative starts and every check on the fitted result still run. A replicate whose refit
-does not reach ``OK`` is dropped and counted. A replicate whose target the refitted curve never
+does not reach ``OK`` (or whose baseline is undefined) is counted as failed: it enters the
+percentiles as ``-inf`` when the lower end is computed and as ``+inf`` when the upper end is, so a
+failure can only widen an interval. A replicate whose target the refitted curve never
 reaches (or reaches only at or below zero severity on a linear axis) is kept as ``-inf`` or
 ``+inf`` by the side it implies. The interval is the ``alpha / 2`` and ``1 - alpha / 2`` quantiles
 (Weibull plotting position, ``(n + 1) p``, the ``"weibull"`` method of :func:`numpy.quantile`) of
-the kept ``theta`` values; a side is open when more than ``alpha / 2`` of them are unreachable on
-it or its quantile is not finite. Efron and Tibshirani (1993, *An Introduction to the
+the replicate ``theta`` values; a side is open when more than ``alpha / 2`` of all replicates are
+unreachable on it or failed, or its quantile is not finite. An interval of zero width is reported
+with no bounds. Efron and Tibshirani (1993, *An Introduction to the
 Bootstrap*, Chapman & Hall) describe the percentile interval and the parametric bootstrap.
 
 **Delta method.** ``theta = mu + s * z*``, so ``d(theta)/d(mu) = 1``, ``d(theta)/d(s) = z*``,
@@ -2386,8 +2392,9 @@ def _isotonic_crossing(
     zero-severity control has no coordinate and is not a node; on a linear axis it is one. The
     result is the smallest ``x`` with ``P(x) <= target`` (the generalised inverse, so a flat
     block that equals the target gives the block's first node). Nothing is extrapolated: ``-inf``
-    means the curve is already at or below ``target`` at the first node, and ``+inf`` that it
-    never falls to ``target`` within the nodes.
+    means the curve is already at or below ``target`` at the first node (so a flat block equal to
+    the target that starts at the first node gives ``-inf``), and ``+inf`` that it never falls to
+    ``target`` within the nodes.
     """
     nodes = severity > 0.0 if scale == "log" else np.ones(severity.shape, dtype=bool)
     x = _transform(severity[nodes], scale=scale)
@@ -2472,6 +2479,7 @@ class _BootstrapDesign:
             count_cells = _count_cells(view)
             self.n = np.array([c.trials for c in count_cells], dtype=np.int64)
             self.successes = np.array([c.successes for c in count_cells], dtype=np.int64)
+        self.undefined_baseline = 0
         self.starts: list[NDArray[np.float64]] | None = None
         if not self.isotonic and not self.continuous:
             self.starts = _parent_starts(view)
@@ -2487,13 +2495,26 @@ class _BootstrapDesign:
         size = (count, self.n.size)
         if not self.continuous:
             if self.method == "cell_bootstrap":
-                p = self.successes / self.n
+                p = (self.successes + 0.5) / (self.n + 1.0)
+                params = self.view.params
+                if (
+                    params is not None
+                    and self.scale == "log"
+                    and self.control is not None
+                    and params["upper"].fixed
+                    and params["upper"].value == 1.0
+                ):
+                    # The curve is pinned to exactly 1 at a log-axis control, and a control with a
+                    # failure under that fit has zero likelihood: every refit would fail. The
+                    # smoothed rate would make that happen, so the control keeps its pinned rate.
+                    p[self.control] = 1.0
             else:
                 assert self.view.params is not None
                 p = np.clip(self._curve(), 0.0, 1.0)
             return rng.binomial(self.n, p, size=size).astype(np.float64), None
         if self.method == "cell_bootstrap":
-            means = self.mean + (self.sd / np.sqrt(self.n)) * rng.standard_normal(size)
+            spread = self.sd * np.sqrt(self.n - 1.0) / self.n
+            means = self.mean + spread * rng.standard_normal(size)
             return means, None
         assert self.view.residual is not None
         variance = self.view.residual.sigma**2
@@ -2555,6 +2576,18 @@ class _BootstrapDesign:
             return definition.value * baseline
         return 1.0 - definition.value * (1.0 - baseline)
 
+    def _baseline_is_undefined(self, view_zero_level: float) -> bool:
+        """Whether a baseline definition has no target because the replicate's performance at zero
+        severity is at or below zero (a fraction or multiple of such a level is not a threshold).
+        ``view_zero_level`` is that level on the decreasing view; the outcome as counted has
+        ``1 - level`` (counts) or ``-level`` (continuous) for a ``baseline_multiple``, which
+        belongs to an increasing outcome."""
+        if self.definition.kind == "baseline_fraction":
+            return not view_zero_level > 0.0
+        if self.definition.kind == "baseline_multiple":
+            return not (-view_zero_level if self.continuous else 1.0 - view_zero_level) > 0.0
+        return False
+
     def theta(
         self, first: NDArray[np.float64], second: NDArray[np.float64] | None, index: int
     ) -> float:
@@ -2566,6 +2599,11 @@ class _BootstrapDesign:
             fitted = np.asarray(
                 isotonic_regression(rate, weights=weights, increasing=False).x, dtype=np.float64
             )
+            if self.control is not None and self._baseline_is_undefined(
+                float(fitted[self.control])
+            ):
+                self.undefined_baseline += 1
+                return math.nan
             return _isotonic_crossing(
                 self.severity, fitted, target=self._isotonic_target(fitted), scale=self.scale
             )
@@ -2604,6 +2642,9 @@ class _BootstrapDesign:
     def _parametric_theta(self, refit: Fit) -> float:
         assert refit.params is not None
         upper, lower = refit.params["upper"].value, refit.params["lower"].value
+        if self._baseline_is_undefined(upper):
+            self.undefined_baseline += 1
+            return math.nan
         if self.continuous:
             c0, cu, cl = _gaussian_target_coefficients(self.definition)
             target = c0 + cu * upper + cl * lower
@@ -2666,11 +2707,26 @@ def _bootstrap_interval(
         unreachable_high=high,
         seed=seed,
     )
+    alpha = 1.0 - level
+    tail = alpha / 2.0
     warnings: list[str] = []
-    if failed / n_resamples > _BOOTSTRAP_WARN_FRACTION:
+    if n_resamples < 2.0 / alpha - 1.0:
         warnings.append(
-            f"BOOTSTRAP_FAILURES: {failed}/{n_resamples} bootstrap refits did not converge and "
-            "were left out of the percentiles"
+            f"BOOTSTRAP_FEW_RESAMPLES: {n_resamples} resamples is fewer than 2 / alpha - 1 = "
+            f"{2.0 / alpha - 1.0:.0f} for level {level!r}, so the extreme percentiles are the "
+            "smallest and largest replicate and the interval's coverage is not meaningful"
+        )
+    if failed / n_resamples > _BOOTSTRAP_WARN_FRACTION:
+        reason = (
+            f"; {design.undefined_baseline} of them because the replicate's baseline was "
+            "undefined (at or below zero)"
+            if design.undefined_baseline
+            else ""
+        )
+        warnings.append(
+            f"BOOTSTRAP_FAILURES: {failed}/{n_resamples} bootstrap replicates failed{reason}. "
+            "They are counted as -inf in the lower percentile and +inf in the upper one, so "
+            "they can only widen the interval"
         )
     if failed / n_resamples > _BOOTSTRAP_GIVE_UP_FRACTION:
         warnings.append(
@@ -2679,16 +2735,18 @@ def _bootstrap_interval(
         )
         return _BootstrapOutcome(summary, None, None, Censoring.NONE, tuple(warnings), True)
 
-    kept = np.sort(thetas[~failed_mask])
-    valid = kept.size
-    tail = (1.0 - level) / 2.0
-    lo_theta = _weibull_quantile(kept, tail)
-    hi_theta = _weibull_quantile(kept, 1.0 - tail)
-    lower_open = low > tail * valid or not math.isfinite(lo_theta)
-    upper_open = high > tail * valid or not math.isfinite(hi_theta)
+    lower_values = np.sort(np.where(failed_mask, -math.inf, thetas))
+    upper_values = np.sort(np.where(failed_mask, math.inf, thetas))
+    lo_theta = _weibull_quantile(lower_values, tail)
+    hi_theta = _weibull_quantile(upper_values, 1.0 - tail)
+    lower_open = low + failed > tail * n_resamples or not math.isfinite(lo_theta)
+    upper_open = high + failed > tail * n_resamples or not math.isfinite(hi_theta)
 
     def natural(theta: float) -> float | None:
-        value = float(np.exp(theta)) if design.scale == "log" else theta
+        try:
+            value = math.exp(theta) if design.scale == "log" else theta
+        except OverflowError:
+            return None
         return value if math.isfinite(value) else None
 
     lo = None if lower_open else natural(lo_theta)
@@ -2696,18 +2754,30 @@ def _bootstrap_interval(
     lower_open, upper_open = lo is None, hi is None
     if lower_open and upper_open:
         warnings.append(
-            "intervals.bootstrap: more than alpha / 2 of the bootstrap replicates are "
-            "unreachable on each side, so neither end of the percentile interval is bounded; "
-            "the estimate is reported with no bounds"
+            "intervals.bootstrap: neither end of the percentile interval is bounded (lower "
+            f"percentile {lo_theta!r}, upper percentile {hi_theta!r} of the replicate "
+            f"thresholds; {low} replicates unreachable low, {high} unreachable high and "
+            f"{failed} failed, of {n_resamples}); the estimate is reported with no bounds"
+        )
+        return _BootstrapOutcome(summary, None, None, Censoring.NONE, tuple(warnings), False)
+    if lo is not None and hi is not None and lo == hi:
+        warnings.append(
+            f"BOOTSTRAP_ZERO_WIDTH: every percentile of the replicate thresholds is {lo!r}, so "
+            "the interval has zero width and says nothing about uncertainty; no bounds are "
+            "reported"
         )
         return _BootstrapOutcome(summary, None, None, Censoring.NONE, tuple(warnings), False)
     value = natural(theta_hat)
     if value is not None and ((lo is not None and lo > value) or (hi is not None and hi < value)):
+        valid = thetas[~failed_mask]
+        share = float(np.sum(valid < theta_hat)) / valid.size
+        z0 = float(norm.ppf(share))
         warnings.append(
             f"BOOTSTRAP_EXCLUDES_ESTIMATE: the percentile interval [{lo!r}, {hi!r}] excludes "
-            f"the point estimate {value!r}; the resampled thresholds are centred away from the "
-            "estimate, which points to bias in the estimator, and the interval is reported as "
-            "computed"
+            f"the point estimate {value!r}; z0 = Phi^-1(#{{theta* < theta_hat}}/B) = {z0!r} over "
+            f"the {valid.size} valid replicates, so the resampled thresholds are centred away "
+            "from the estimate, which points to bias in the estimator; the interval is "
+            "reported as computed"
         )
     censoring = Censoring.NONE
     if upper_open:

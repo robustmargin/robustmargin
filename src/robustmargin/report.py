@@ -38,11 +38,13 @@ binomial ``Fit`` writes no ``residual`` key at all, so its serialised form is un
 
 Version ``"3"`` adds the isotonic model (``model="isotonic"``, ``link="none"``), the
 ``"parametric_bootstrap"`` and ``"cell_bootstrap"`` interval methods, ``Fit.cell_estimates`` and
-``Threshold.bootstrap``. ``to_dict`` always writes the last two, as ``null`` when unset. A ``Fit``
+``Threshold.bootstrap``. ``to_dict`` writes the last two, as ``null`` when unset, except on a
+result tagged ``"1"`` or ``"2"``, where an unset one is left out. A ``Fit``
 or ``Threshold`` tagged ``"1"`` or ``"2"`` that carries any non-null value of those raises, since
 no earlier writer could have produced it; a card from an earlier release (no such keys, or
-explicit ``null`` ones) still reads. Whatever version it was written under, a result that is
-read has ``schema_version`` ``"3"``, so it is written back as ``"3"``. Only the ``Scorecard`` root
+explicit ``null`` ones) still reads. A result read from a ``"1"`` or ``"2"`` card keeps that
+``schema_version``, as it did before version ``"3"``, so writing it back gives a card the release
+that wrote it can still read. Only the ``Scorecard`` root
 requires the tag; a nested or bare result that omits it is read as ``"3"``. A reader older than
 this release rejects every card written now, so upgrade readers before writers.
 
@@ -244,6 +246,14 @@ def _encode_dataclass_instance(obj: Any) -> dict[str, JSONValue]:
     for f in dataclasses.fields(obj):
         raw = getattr(obj, f.name)
         if f.name in _OMITTED_WHEN_NONE and raw is None:
+            continue
+        # A result tagged "1" or "2" is written as that version's writer wrote it, without the
+        # keys that only "3" has, so the release that wrote the card can read it back.
+        if (
+            f.name in _VERSION_3_KEYS
+            and raw is None
+            and getattr(obj, "schema_version", None) in ("1", "2")
+        ):
             continue
         if f.name == "provenance":
             result[f.name] = _encode_provenance(raw)
@@ -611,13 +621,6 @@ def _reject_version_3_content(fields: dict[str, Any], *, type_name: str) -> None
             )
 
 
-def _current_version(fields: dict[str, Any]) -> None:
-    """A result read from an earlier version is the same result in the current one, so it is
-    given the current ``schema_version`` and written back as such."""
-    if "schema_version" in fields:
-        fields["schema_version"] = SCHEMA_VERSION
-
-
 def _bootstrap_summary_from_dict(data: object, card_version: str | None) -> BootstrapSummary:
     """``BootstrapSummary`` is an untagged helper: it only appears as ``Threshold.bootstrap``."""
     return BootstrapSummary(
@@ -629,7 +632,6 @@ def _fit_from_dict(data: object, card_version: str | None) -> Fit:
     fields = _validated_fields(Fit, data, tagged=True, card_version=card_version)
     _reject_version_2_content(fields, type_name="Fit", raw=data)
     _reject_version_3_content(fields, type_name="Fit")
-    _current_version(fields)
     fields["axis"] = _axis_from_dict(fields["axis"], card_version)
     gaussian = fields.get("model") == "gaussian"
     continuous_cells = gaussian or (
@@ -680,7 +682,6 @@ def _threshold_from_dict(data: object, card_version: str | None) -> Threshold:
     fields = _validated_fields(Threshold, data, tagged=True, card_version=card_version)
     _reject_version_2_content(fields, type_name="Threshold", definition=fields.get("definition"))
     _reject_version_3_content(fields, type_name="Threshold")
-    _current_version(fields)
     fields["axis"] = _axis_from_dict(fields["axis"], card_version)
     fields["definition"] = _definition_from_dict(fields["definition"], card_version)
     fields["censoring"] = Censoring(fields["censoring"])
@@ -702,7 +703,6 @@ def _threshold_from_dict(data: object, card_version: str | None) -> Threshold:
 
 def _ratio_from_dict(data: object, card_version: str | None) -> Ratio:
     fields = _validated_fields(Ratio, data, tagged=True, card_version=card_version)
-    _current_version(fields)
     fields["threshold_a"] = _threshold_from_dict(
         _expect_tag(fields["threshold_a"], expected="Threshold"), card_version
     )
@@ -718,7 +718,6 @@ def _ratio_from_dict(data: object, card_version: str | None) -> Ratio:
 
 def _grid_break_point_from_dict(data: object, card_version: str | None) -> GridBreakPoint:
     fields = _validated_fields(GridBreakPoint, data, tagged=True, card_version=card_version)
-    _current_version(fields)
     fields["censoring"] = Censoring(fields["censoring"])
     return GridBreakPoint(**fields)
 
@@ -732,7 +731,6 @@ def _scorecard_from_dict(data: object, card_version: str | None) -> Scorecard:
     own_version = data.get("library_version")
     own_version_str = own_version if isinstance(own_version, str) else "<unknown>"
     fields = _validated_fields(Scorecard, data, tagged=True, card_version=own_version_str)
-    _current_version(fields)
     fields["results"] = tuple(
         _from_dict_impl(item, card_version=own_version_str) for item in fields["results"]
     )
@@ -777,7 +775,7 @@ def from_dict(data: object) -> object:
         An instance of the type named by ``data["type"]``. ``from_dict(to_dict(x)) == x`` for
         every ``x`` of these five types whose ``schema_version`` is ``"3"``, which is every
         result this package builds. ``schema_version`` ``"1"`` and ``"2"`` are read too, and the
-        result they give has ``schema_version`` ``"3"``. A ``Fit`` or ``Threshold`` tagged ``"1"``
+        result they give keeps its ``schema_version``. A ``Fit`` or ``Threshold`` tagged ``"1"``
         carries no increasing outcome, no ``baseline_multiple`` definition and no Gaussian model,
         and one tagged ``"1"`` or ``"2"`` carries no isotonic model, bootstrap interval method,
         ``cell_estimates`` or ``bootstrap``; one that does is rejected (checked per object, not

@@ -400,9 +400,9 @@ class Fit:
     ``covariance``, ``diagnostics`` and ``residual`` are ``None``, ``status`` is ``OK``, and
     ``cell_estimates`` holds the monotone fitted value of every cell, in ``cells`` order and on the
     scale of the outcome as counted. ``log_likelihood`` is the log-likelihood at those values:
-    for counts ``sum(k * log(p) + (n - k) * log(1 - p))`` with ``0 * log(0) = 0`` and no binomial
-    coefficient, and for continuous responses the Gaussian log-likelihood with the variance at its
-    maximum, ``-N / 2 * (log(2 * pi * RSS / N) + 1)``.
+    for counts ``sum(log C(n, k) + k * log(p) + (n - k) * log(1 - p))`` with ``0 * log(0) = 0``
+    (the convention of the parametric binomial fits), and for continuous responses the Gaussian
+    log-likelihood with the variance at its maximum, ``-N / 2 * (log(2 * pi * RSS / N) + 1)``.
 
     Attributes
     ----------
@@ -967,16 +967,17 @@ def _isotonic_log_likelihood(
 ) -> float:
     """The log-likelihood of an isotonic fit at its cell ``estimates``.
 
-    Counts: ``sum(k * log(p) + (n - k) * log(1 - p))`` with ``0 * log(0) = 0`` and no binomial
-    coefficient. Continuous cells: the Gaussian log-likelihood with the variance at its maximum,
-    ``-N / 2 * (log(2 * pi * RSS / N) + 1)``, where ``RSS`` is the within-cell sum of squares plus
-    ``n * (mean - estimate)^2`` summed over cells. A zero residual sum of squares has an unbounded
-    likelihood and raises."""
+    Counts: ``sum(log C(n, k) + k * log(p) + (n - k) * log(1 - p))`` with ``0 * log(0) = 0``, the
+    same convention as the parametric binomial fits. Continuous cells: the Gaussian
+    log-likelihood with the variance at its maximum, ``-N / 2 * (log(2 * pi * RSS / N) + 1)``,
+    where ``RSS`` is the within-cell sum of squares plus ``n * (mean - estimate)^2`` summed over
+    cells. A zero residual sum of squares has an unbounded likelihood and raises."""
     if all(isinstance(c, Cell) for c in cells):
         p = np.clip(np.asarray(estimates, dtype=np.float64), 0.0, 1.0)
         k = np.array([float(c.successes) for c in cells if isinstance(c, Cell)])
         n = np.array([float(c.trials) for c in cells if isinstance(c, Cell)])
-        return float(np.sum(xlogy(k, p) + xlog1py(n - k, -p)))
+        log_choose = gammaln(n + 1.0) - gammaln(k + 1.0) - gammaln(n - k + 1.0)
+        return float(np.sum(log_choose + xlogy(k, p) + xlog1py(n - k, -p)))
     n = np.array([float(c.n) for c in cells if isinstance(c, ContinuousCell)])
     mean = np.array([c.mean for c in cells if isinstance(c, ContinuousCell)])
     sd = np.array([c.sd for c in cells if isinstance(c, ContinuousCell)])
@@ -4479,6 +4480,11 @@ def _fit_gaussian(
     return _mirror_fit(_finalize(complement, monotonicity=monotonicity))
 
 
+# What an omitted `link`, `upper` or `lower` defaults to, so that an explicit `None` is told apart
+# from an omission and gets the checks it always got (a missing one raises `TypeError`).
+_MISSING: Any = object()
+
+
 @overload
 def fit_dose_response(
     obs: Observations,
@@ -4510,9 +4516,9 @@ def fit_dose_response(
     obs: Observations | ContinuousObservations,
     *,
     model: Literal["binomial", "gaussian", "isotonic"],
-    link: Literal["probit", "logit", "cloglog"] | None = None,
-    upper: float | Literal["estimate"] | None = None,
-    lower: float | Literal["estimate"] | None = None,
+    link: Any = _MISSING,
+    upper: Any = _MISSING,
+    lower: Any = _MISSING,
     dependence: str | None = None,
 ) -> Fit:
     """Fit a binomial, Gaussian or isotonic dose-response model to ``obs``.
@@ -4652,7 +4658,7 @@ def fit_dose_response(
         given = [
             name
             for name, value in (("link", link), ("upper", upper), ("lower", lower))
-            if value is not None
+            if value is not _MISSING
         ]
         if given:
             raise ValueError(
@@ -4663,14 +4669,13 @@ def fit_dose_response(
     missing = [
         name
         for name, value in (("link", link), ("upper", upper), ("lower", lower))
-        if value is None
+        if value is _MISSING
     ]
     if missing:
         raise TypeError(
             f"fit_dose_response() missing {len(missing)} required keyword-only "
             f"argument{'s' if len(missing) > 1 else ''}: {', '.join(repr(m) for m in missing)}"
         )
-    assert link is not None and upper is not None and lower is not None
     if link not in _STATSMODELS_LINKS:
         raise ValueError(
             f"fit_dose_response: link must be one of {sorted(_STATSMODELS_LINKS)}, got {link!r}"

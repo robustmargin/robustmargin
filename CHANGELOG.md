@@ -15,10 +15,12 @@ minor release may change the public API, and every such change carries a migrati
   isotonic_regression`.
   - `Fit.cell_estimates` (new, last field, `None` for every other model) holds the fitted value of
     every cell, the control included. An isotonic `Fit` has `link="none"`, no `params`,
-    `covariance`, `diagnostics` or `residual`, a `log_likelihood`, and status `OK` always.
+    `covariance`, `diagnostics` or `residual`, a `log_likelihood` (counts include `log C(n, k)`, as the parametric binomial fits do), and status
+    `OK` always.
   - `Fit.predict` and `diagnose` raise `ValueError` for an isotonic fit, naming `cell_estimates`.
   - For `fit_dose_response` with `model="binomial"` or `"gaussian"`, a missing `link`, `upper` or
-    `lower` still raises `TypeError`, now naming each missing argument.
+    `lower` still raises `TypeError`, now naming each missing argument; an explicit `None` raises
+    what it raised before.
   - A continuous isotonic fit with a zero residual sum of squares (every cell mean already
     monotone and no cell with any spread) raises `ValueError`: its likelihood is unbounded.
 - **Isotonic thresholds.** The value is where the line through `cell_estimates` over the tested
@@ -39,14 +41,22 @@ minor release may change the public API, and every such change carries a migrati
     method of `numpy.quantile`). A replicate whose target is unreachable counts as `-inf` or `+inf`
     by the side it implies, and a side is open (`OPEN_LOWER`, `OPEN_UPPER`) when more than `alpha/2`
     of the replicates are unreachable on it; both open gives no bounds and a warning.
-  - A replicate whose refit fails is dropped and counted. Above 1% a `BOOTSTRAP_FAILURES:` warning
-    states `failed/n_resamples`; above 10% the result is `NOT_CONVERGED` with `interval_method`
-    `"exact_bound"` and the exact-bound fallback for counts (no numbers for a continuous response).
+  - A replicate whose refit fails, or whose baseline is undefined (at or below zero), is counted
+    as failed. It enters the percentiles as `-inf` for the lower end and `+inf` for the upper end,
+    so a failure can only widen the interval, and it counts toward an open side. Above 1% a
+    `BOOTSTRAP_FAILURES:` warning states `failed/n_resamples`; above 10% the result is
+    `NOT_CONVERGED` with `interval_method` `"exact_bound"` and the exact-bound fallback for counts
+    (no numbers for a continuous response).
+  - `BOOTSTRAP_FEW_RESAMPLES:` warns when `n_resamples < 2/alpha - 1`. An interval of zero width is
+    reported with no bounds and a `BOOTSTRAP_ZERO_WIDTH:` warning.
   - A percentile interval that excludes its own point estimate is reported as computed, with a
-    `BOOTSTRAP_EXCLUDES_ESTIMATE:` warning. For the bootstrap methods the `Threshold` invariant is
+    `BOOTSTRAP_EXCLUDES_ESTIMATE:` warning that states `z0`, and a `Threshold` that does so
+    without the warning is rejected. For the bootstrap methods the `Threshold` invariant is
     `lo <= hi`; `"profile"` and `"delta"` keep `lo <= value <= hi`.
-  - A continuous `cell_bootstrap` draws each cell mean from `N(mean, sd^2 / n)`, since a cell keeps
-    no raw responses; a cell of one observation raises `ValueError`.
+  - A counts `cell_bootstrap` draws `Binomial(n, (k + 0.5)/(n + 1))` for each level, so a level
+    observed at 0 or `n` is not resampled as certain. A continuous `cell_bootstrap` draws each cell
+    mean from `N(mean, sd^2 (n - 1) / n^2)` (a mean under resampling with replacement), since a
+    cell keeps no raw responses; a cell of one observation raises `ValueError`.
   - A bootstrap of a fit with an estimated asymptote refits from the starts found once for the
     fitted data, not from a scan per replicate, and is still far slower than one with fixed
     asymptotes.
@@ -57,7 +67,8 @@ minor release may change the public API, and every such change carries a migrati
 - `Threshold` accepts `NOT_CONVERGED` on an `OK` fit exactly when `bootstrap` is set (a bootstrap
   that gave up).
 - `robustmargin.testing`: `fake_fit(model="isotonic")`, `fake_threshold(model="isotonic")` and
-  `fake_threshold(interval_method="parametric_bootstrap" | "cell_bootstrap")`.
+  `fake_threshold(interval_method=)`, which takes `"profile"`, `"delta"`,
+  `"parametric_bootstrap"` and `"cell_bootstrap"`.
 
 ### Changed
 - **Score-card schema `"3"`** (`schema/scorecard-v3.json`). It is `"2"` plus: `Fit.model`
@@ -66,14 +77,14 @@ minor release may change the public API, and every such change carries a migrati
   `schema/scorecard-v1.json` and `schema/scorecard-v2.json` are unchanged.
   - **Migration.** Every result now has `schema_version` `"3"` by default, and `to_dict` always
     writes `cell_estimates` and `bootstrap` (as `null` when unset). `from_dict` reads `"1"`, `"2"`
-    and `"3"`; a result read from an older card has `schema_version` `"3"` and is written back as
-    `"3"`. A payload tagged `"1"` or `"2"` that carries a non-null `cell_estimates` or `bootstrap`,
+    and `"3"`; a result read from an older card keeps its `schema_version`, and `to_dict` writes it
+    back without the two new keys, so the release that wrote the card can still read it. A payload tagged `"1"` or `"2"` that carries a non-null `cell_estimates` or `bootstrap`,
     the isotonic model, the `"none"` link or a bootstrap interval method is rejected. A reader
     older than this release rejects every card written now (the keys are unknown to it), so upgrade
     readers before writers.
-  - Code that pins `schema_version == "2"` (for example a test of a serialised card) changes to
-    `"3"`. Code that constructs `Fit`, `Threshold`, `Ratio`, `GridBreakPoint` or `Scorecard`
-    positionally is unaffected: both new fields are last and default to `None`.
+  - Code that pins `schema_version == "2"` for a result it builds (for example a test of a
+    serialised card) changes to `"3"`. Both new fields are last and default to `None`, so existing
+    keyword construction of `Fit` and `Threshold` is unaffected (the result types are keyword-only).
 - **SciPy floor `>=1.12`** (was `>=1.11.1`): `scipy.optimize.isotonic_regression` arrived in 1.12.
 - The package metadata names its author, Babak Badkoubeh, in place of "robustmargin
   contributors", and links the Zenodo DOI and the author's ORCID. A `NOTICE` file carries the

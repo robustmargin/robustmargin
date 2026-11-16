@@ -5,8 +5,9 @@ weighted least-squares monotone fit to the cell rates (counts, weights ``trials`
 (continuous, weights ``n``), computed by pool-adjacent-violators, one value per cell in ``cells``
 order, the control included. Its ``log_likelihood`` is the saturated-at-the-estimates value:
 
-* counts: ``sum(k * log(p) + (n - k) * log(1 - p))`` at ``p = cell_estimates``, with
-  ``0 * log(0) = 0`` and no binomial coefficient;
+* counts: ``sum(log C(n, k) + k * log(p) + (n - k) * log(1 - p))`` at ``p = cell_estimates``,
+  with ``0 * log(0) = 0``; the binomial coefficient is included, as in the parametric binomial
+  fits, so the value is comparable to theirs;
 * continuous: the Gaussian log-likelihood with ``sigma2 = RSS / N`` at its maximum,
   ``-N / 2 * (log(2 * pi * sigma2) + 1)``, where
   ``RSS = sum((n_i - 1) * sd_i**2) + sum(n_i * (mean_i - estimate_i)**2)``.
@@ -21,6 +22,7 @@ import math
 
 import numpy as np
 import pytest
+from scipy.special import gammaln
 
 from robustmargin import (
     Axis,
@@ -34,6 +36,10 @@ from robustmargin import (
 _LOG = Axis(name="severity", unit="unit", scale="log")
 _LINEAR = Axis(name="severity", unit="unit", scale="linear")
 _SEVERITY = [0.0, 1.0, 2.0, 4.0, 8.0]
+
+
+def _log_choose(n: np.ndarray, k: np.ndarray) -> np.ndarray:
+    return np.asarray(gammaln(n + 1.0) - gammaln(k + 1.0) - gammaln(n - k + 1.0))
 
 
 def _counts(
@@ -249,10 +255,11 @@ class TestCellEstimates:
 class TestLogLikelihood:
     def test_binomial_value_matches_a_hand_computed_case(self) -> None:
         # Estimates [1, .5, .2]: 10 ln(.5) (control: 0, then 5 ln .5 + 5 ln .5)
-        # + 2 ln(.2) + 8 ln(.8) = -6.931472 - 3.218876 - 1.785148 = -11.935496.
+        # + 2 ln(.2) + 8 ln(.8) = -6.931472 - 3.218876 - 1.785148 = -11.935496, plus
+        # ln C(10, 10) + ln C(10, 5) + ln C(10, 2) = 0 + 5.529429 + 3.806662.
         fit = fit_dose_response(_counts([10, 5, 2], [10, 10, 10]), model="isotonic")
 
-        assert fit.log_likelihood == pytest.approx(-11.935496, abs=1e-6)
+        assert fit.log_likelihood == pytest.approx(-2.599405, abs=1e-6)
 
     def test_binomial_uses_the_pooled_estimates_not_the_raw_rates(self) -> None:
         fit = fit_dose_response(_counts(_DEC_SUCCESSES, _DEC_TRIALS), model="isotonic")
@@ -260,21 +267,21 @@ class TestLogLikelihood:
         p = np.asarray(_DEC_ESTIMATES)
         k = np.asarray(_DEC_SUCCESSES, dtype=float)
         n = np.asarray(_DEC_TRIALS, dtype=float)
-        expected = float(np.sum(k * np.log(p) + (n - k) * np.log1p(-p)))
+        expected = float(np.sum(_log_choose(n, k) + k * np.log(p) + (n - k) * np.log1p(-p)))
         assert fit.log_likelihood == pytest.approx(expected, rel=1e-12)
 
-    def test_binomial_has_no_binomial_coefficient(self) -> None:
-        # One cell of 1 success in 2 trials at rate .5 would carry ln C(2, 1) = ln 2 with the
-        # coefficient; the formula is 2 ln(.5) exactly. Three cells keep the fit well posed.
+    def test_binomial_includes_the_binomial_coefficient(self) -> None:
+        # One cell of 1 success in 2 trials at rate .5 carries ln C(2, 1) = ln 2 on top of
+        # 2 ln(.5), so the total is ln(.5). Three cells keep the fit well posed.
         fit = fit_dose_response(_counts([2, 1, 0], [2, 2, 2]), model="isotonic")
 
-        assert fit.log_likelihood == pytest.approx(2.0 * math.log(0.5), rel=1e-12)
+        assert fit.log_likelihood == pytest.approx(math.log(0.5), rel=1e-12)
 
     def test_binomial_zero_times_log_zero_is_zero(self) -> None:
         # Rates 1, 1, 0: every cell sits on 0 or 1, so every term is 0 * log(0) = 0.
         fit = fit_dose_response(_counts([10, 10, 0], [10, 10, 10]), model="isotonic")
 
-        assert fit.log_likelihood == 0.0
+        assert fit.log_likelihood == pytest.approx(0.0, abs=1e-12)
 
     def test_binomial_increasing_is_the_same_formula_on_the_counted_outcome(self) -> None:
         fit = fit_dose_response(
@@ -284,7 +291,7 @@ class TestLogLikelihood:
         p = np.asarray(_INC_ESTIMATES)
         k = np.asarray(_INC_SUCCESSES, dtype=float)
         n = np.asarray(_INC_TRIALS, dtype=float)
-        expected = float(np.sum(k * np.log(p) + (n - k) * np.log1p(-p)))
+        expected = float(np.sum(_log_choose(n, k) + k * np.log(p) + (n - k) * np.log1p(-p)))
         assert fit.log_likelihood == pytest.approx(expected, rel=1e-12)
 
     def test_continuous_value_is_the_gaussian_log_likelihood_at_the_mle_variance(self) -> None:

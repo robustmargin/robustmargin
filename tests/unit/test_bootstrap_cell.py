@@ -1,8 +1,10 @@
 """``interval_method="cell_bootstrap"``: resample each severity level from its own data.
 
-Counts: ``k* ~ Binomial(n_i, k_i / n_i)``. Continuous cells keep only ``n``, ``mean`` and ``sd``, so
-a cell mean is drawn from ``N(mean_i, sd_i^2 / n_i)`` (the normal approximation to resampling
-responses with replacement), and a cell of one observation has no spread to resample and raises.
+Counts: ``k* ~ Binomial(n_i, (k_i + 0.5) / (n_i + 1))``, so a cell at 0 or at all trials is not
+frozen. Continuous cells keep only ``n``, ``mean`` and ``sd``, so a cell mean is drawn from
+``N(mean_i, sd_i^2 * (n_i - 1) / n_i^2)`` (the variance of a mean under resampling with
+replacement), and a cell of one observation has no spread to resample and raises.
+``test_bootstrap_review_rules.py`` pins the draws themselves.
 
 It is the only interval an isotonic fit accepts, and a binomial fit accepts it too. This file pins:
 
