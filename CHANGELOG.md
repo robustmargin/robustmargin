@@ -75,11 +75,13 @@ minor release may change the public API, and every such change carries a migrati
   `"isotonic"`, `Fit.link` `"none"`, `Threshold.interval_method` `"parametric_bootstrap"` and
   `"cell_bootstrap"`, a nullable `Fit.cell_estimates` and a nullable `Threshold.bootstrap`.
   `schema/scorecard-v1.json` and `schema/scorecard-v2.json` are unchanged.
-  - **Migration.** Every result now has `schema_version` `"3"` by default, and `to_dict` always
-    writes `cell_estimates` and `bootstrap` (as `null` when unset). `from_dict` reads `"1"`, `"2"`
-    and `"3"`; a result read from an older card keeps its `schema_version`, and `to_dict` writes it
-    back without the two new keys, so the release that wrote the card can still read it. A payload tagged `"1"` or `"2"` that carries a non-null `cell_estimates` or `bootstrap`,
-    the isotonic model, the `"none"` link or a bootstrap interval method is rejected. A reader
+  - **Migration.** Every result now has `schema_version` `"3"` by default. On a `"3"` result
+    `to_dict` writes `cell_estimates` and `bootstrap`, as `null` when unset. `from_dict` reads
+    `"1"`, `"2"` and `"3"`; a result read from an older card keeps its `schema_version`, and
+    `to_dict` writes it back without the two new keys when they are unset, so the release that
+    wrote the card can still read it. A payload tagged `"1"` or `"2"` that carries a non-null
+    `cell_estimates` or `bootstrap`, the isotonic model, the `"none"` link or a bootstrap interval
+    method is rejected. A reader
     older than this release rejects every card written now (the keys are unknown to it), so upgrade
     readers before writers.
   - Code that pins `schema_version == "2"` for a result it builds (for example a test of a
