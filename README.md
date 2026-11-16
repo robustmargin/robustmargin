@@ -495,6 +495,18 @@ on Python 3.11 against the oldest supported versions, pinned in
 [`ci/constraints-min.txt`](https://github.com/robustmargin/robustmargin/blob/main/ci/constraints-min.txt).
 Changes are recorded in [`CHANGELOG.md`](https://github.com/robustmargin/robustmargin/blob/main/CHANGELOG.md).
 
+## Citing
+
+robustmargin is written and maintained by Babak Badkoubeh
+([ORCID profile](https://orcid.org/0009-0005-3586-7901)). If you use it in published work, please
+cite it. Each release is archived on Zenodo
+([doi:10.5281/zenodo.23585829](https://doi.org/10.5281/zenodo.23585829)), and the citation
+metadata is in
+[`CITATION.cff`](https://github.com/robustmargin/robustmargin/blob/main/CITATION.cff); GitHub's
+"Cite this repository" button renders it as BibTeX or APA.
+
 ## License
 
-Apache-2.0. See [`LICENSE`](https://github.com/robustmargin/robustmargin/blob/main/LICENSE).
+Apache-2.0, copyright 2026 Babak Badkoubeh. See
+[`LICENSE`](https://github.com/robustmargin/robustmargin/blob/main/LICENSE) and
+[`NOTICE`](https://github.com/robustmargin/robustmargin/blob/main/NOTICE).

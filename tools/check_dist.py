@@ -9,9 +9,9 @@ A missing ``py.typed`` fails silently and disables type checking for every consu
 built wheel rather than merely on disk.
 
 Both artifacts are also checked against an allowlist of what may ship: the package's modules,
-``py.typed``, the score-card schema, ``LICENSE``, ``pyproject.toml``, the build's own metadata,
-and ``README.md`` as the only documentation, since it is the PyPI project page. Tests, tools and
-every other repository file never ship. The check is an allowlist rather than
+``py.typed``, the score-card schema, ``LICENSE``, ``NOTICE``, ``pyproject.toml``, the build's own
+metadata, and ``README.md`` as the only documentation, since it is the PyPI project page.
+Tests, tools and every other repository file never ship. The check is an allowlist rather than
 a list of known-private paths, so a new file in an artifact fails it until someone decides it
 belongs there.
 """
@@ -29,10 +29,10 @@ import zipfile
 _PACKAGE = r"robustmargin/(?:[A-Za-z_][A-Za-z0-9_]*\.py|py\.typed|schema/scorecard-v[0-9]+\.json)"
 _WHEEL_ALLOWED = re.compile(
     rf"{_PACKAGE}"
-    r"|robustmargin-[^/]+\.dist-info/(?:METADATA|WHEEL|RECORD|top_level\.txt|licenses/LICENSE)"
+    r"|robustmargin-[^/]+\.dist-info/(?:METADATA|WHEEL|RECORD|top_level\.txt|licenses/(?:LICENSE|NOTICE))"
 )
 _SDIST_ALLOWED = re.compile(
-    r"PKG-INFO|setup\.cfg|pyproject\.toml|README\.md|LICENSE"
+    r"PKG-INFO|setup\.cfg|pyproject\.toml|README\.md|LICENSE|NOTICE"
     rf"|src/{_PACKAGE}"
     r"|src/robustmargin\.egg-info/"
     r"(?:PKG-INFO|SOURCES\.txt|dependency_links\.txt|requires\.txt|top_level\.txt)"
@@ -75,6 +75,7 @@ def main() -> None:
         ]
     assert "LICENSE" in members, f"LICENSE missing from {sdist}"
     assert "README.md" in members, f"README.md missing from {sdist}"
+    assert "NOTICE" in members, f"NOTICE missing from {sdist}"
     unexpected_sdist = [n for n in members if not _SDIST_ALLOWED.fullmatch(n)]
     assert not unexpected_sdist, f"files not on the allowlist in {sdist}: {unexpected_sdist}"
     docs = sorted(
