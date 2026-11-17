@@ -221,7 +221,7 @@ def test_threshold_serialises_to_json_text_and_reads_back_equal_under_schema_2()
     payload = json.loads(json.dumps(to_dict(t), allow_nan=False))
     reloaded = from_dict(payload)
 
-    assert payload["schema_version"] == "2"
+    assert payload["schema_version"] == "3"
     assert payload["direction"] == "increasing"
     assert payload["definition"] == {"kind": "baseline_multiple", "value": 2.0}
     assert isinstance(reloaded, Threshold)

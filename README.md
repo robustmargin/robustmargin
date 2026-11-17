@@ -24,9 +24,10 @@ robustness and safety carry weight:
 > **Status: latest release `0.3.0`.** Dose-response fits for pass/fail outcomes that fall or rise
 > with severity and for real-valued scores (Gaussian least squares), thresholds with
 > profile-likelihood or delta confidence intervals, censoring, ratios of two thresholds with
-> Fieller or log-delta intervals, fit diagnostics, and the grid break-point rule. Clustered and
-> paired inference, model-free fits and design helpers are planned for `0.4`. While the version
-> is below 1.0, a minor release may change the public API.
+> Fieller or log-delta intervals, fit diagnostics, and the grid break-point rule. The development
+> version adds model-free isotonic fits and bootstrap intervals (see below). Clustered and paired
+> inference and design helpers are planned for `0.4`. While the version is below 1.0, a minor
+> release may change the public API.
 
 ## What it does
 
@@ -389,6 +390,62 @@ assert abs(fit.predict(margin.value).estimate - 0.7) < 1e-6
 A ratio of two continuous thresholds uses a Student-t quantile on Welch-Satterthwaite degrees of
 freedom, and `ratio_interval` raises `ValueError` for a count threshold against a continuous one.
 
+### A model-free fit and bootstrap intervals
+
+When you would rather assume only that performance falls (or rises) with severity, fit
+`model="isotonic"`: it takes counts or a continuous response, needs no `link`, `upper` or `lower`,
+and returns the monotone least-squares value of every tested level in `Fit.cell_estimates` (found
+by pool-adjacent-violators). There is no curve between tested levels, so `Fit.predict` and
+`diagnose` raise. A threshold on an isotonic fit is where the straight line drawn through those
+values (on `log` severity for a log axis) first reaches the target. Nothing is extrapolated: a
+target the line never reaches inside the tested levels is `UNREACHABLE` with no number. For counts
+the exact bounds (`RIGHT`, `LEFT`, `FAILS_AT_BASELINE`) still come first. `relative` raises,
+because there are no asymptotes, and `baseline_fraction` and `baseline_multiple` use the isotonic
+value at the zero-severity control as the baseline.
+
+An isotonic fit has no covariance, so its interval is a bootstrap: `interval_method="cell_bootstrap"`
+resamples each tested level from its own data, refits, and reports percentiles of the resampled
+thresholds. `n_resamples` defaults to 999 and `seed` makes the run reproducible; when you give no
+seed one is drawn and recorded in `Threshold.bootstrap`, so any result can be rerun. A resampled
+curve that never reaches the target counts toward an open side of the interval, so the interval
+can be one-sided, or carry no bounds when the data cannot say either way.
+
+```python
+from robustmargin import Axis, Definition, Observations, Status, fit_dose_response, threshold
+
+obs = Observations.from_counts(
+    Axis(name="severity", unit="unit", scale="log"),
+    severity=[0.0, 0.5, 1.0, 2.0, 4.0, 8.0],
+    successes=[100, 98, 90, 60, 20, 5],
+    trials=[100] * 6,
+    outcome="success",
+    direction="decreasing",
+)
+fit = fit_dose_response(obs, model="isotonic")
+assert fit.cell_estimates == (1.0, 0.98, 0.9, 0.6, 0.2, 0.05)  # already monotone
+
+# The severity at which success falls to 50%, with a 95% bootstrap interval.
+margin = threshold(
+    fit,
+    definition=Definition.absolute(0.5),
+    interval_method="cell_bootstrap",
+    level=0.95,
+    n_resamples=499,
+    seed=7,
+)
+assert margin.status is Status.OK
+assert 2.0 < margin.value < 4.0
+assert margin.lo <= margin.hi
+assert margin.bootstrap.seed == 7 and margin.bootstrap.failed == 0
+```
+
+`interval_method="parametric_bootstrap"` does the same for a binomial or Gaussian fit: it simulates
+new data from the fitted curve at the tested levels and refits the same model. On a fit with an
+estimated asymptote each refit is far slower than with fixed asymptotes, so give it a smaller
+`n_resamples`. A replicate whose refit fails is counted in `Threshold.bootstrap` and enters the
+percentiles as the worst case for each end (so failures can only widen the interval), with a warning
+above 1% and no interval above 10% (or above `alpha/2`, if that is smaller).
+
 ## Grid break-point rule
 
 `grid_break_point` finds the smallest tested severity at which observed performance falls
@@ -470,10 +527,11 @@ assert from_dict(json.loads(text)) == card
 assert load_schema()["$schema"] == "https://json-schema.org/draft/2020-12/schema"
 ```
 
-The JSON follows `schema/scorecard-v2.json`, a JSON Schema shipped inside the package, and
-`schema/scorecard-v1.json` is kept so that cards written by `0.1.1` and `0.2.0` still read.
-Schema `"2"` adds increasing outcomes and `baseline_multiple`. It covers binary outcomes only,
-and reading is strict: a card with fields this version does not know is rejected, not silently
+The JSON follows `schema/scorecard-v3.json`, a JSON Schema shipped inside the package, and
+`schema/scorecard-v1.json` and `schema/scorecard-v2.json` are kept so that cards written by
+earlier releases still read, and are written back as `"3"`. Schema `"2"` added increasing outcomes,
+`baseline_multiple` and the Gaussian model; schema `"3"` adds the isotonic model, the two bootstrap
+interval methods, `Fit.cell_estimates` and `Threshold.bootstrap`. Reading is strict: a card with fields this version does not know is rejected, not silently
 trimmed. To read a stored card, use a robustmargin at least as new as the
 one that wrote it. The card's `library_version` field records which version that was.
 

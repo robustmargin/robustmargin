@@ -1044,8 +1044,15 @@ def diagnose(fit: Fit) -> Diagnostics | ContinuousDiagnostics:
     Raises
     ------
     ValueError
-        If ``fit.status`` is not :data:`~robustmargin.Status.OK`.
+        If ``fit.status`` is not :data:`~robustmargin.Status.OK`, or the fit is isotonic (it has
+        no parametric model to compare against the data; its fitted values are
+        ``Fit.cell_estimates``).
     """
+    if fit.model == "isotonic":
+        raise ValueError(
+            "diagnose: an isotonic fit has no parametric model to diagnose; its fitted values "
+            "are Fit.cell_estimates"
+        )
     if fit.status is not Status.OK:
         raise ValueError(
             f"diagnose: fit.status must be Status.OK (a failed fit carries no model-derived "

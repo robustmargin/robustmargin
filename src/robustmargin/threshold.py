@@ -6,30 +6,59 @@ classification says to -- solves the closed form and runs the requested interval
 (:mod:`robustmargin.intervals`). ``interval_method`` is a *request*: every censored or failed
 result records ``"exact_bound"`` regardless of what was asked for, because that is the method
 that actually produced its numbers.
+
+Four interval methods exist. ``"profile"`` and ``"delta"`` need a fitted curve's covariance.
+``"parametric_bootstrap"`` simulates from a fitted binomial or Gaussian curve and refits;
+``"cell_bootstrap"`` resamples each severity level from its own data, and is the only method an
+isotonic fit accepts. Both bootstrap methods take a replicate count and a seed, and record what
+happened to the replicates in :class:`~robustmargin.BootstrapSummary`.
 """
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
-from robustmargin.censoring import _baseline_rate, classify
+import numpy as np
+
+from robustmargin.censoring import _baseline_rate, _bootstrap_give_up, classify
 from robustmargin.empirical import BaselineRate, GridBreakPoint
-from robustmargin.intervals import delta_interval, profile_interval, solve_value
-from robustmargin.models import Fit, _count_cells, _mirror_fit
+from robustmargin.intervals import (
+    _bootstrap_interval,
+    _isotonic_crossing,
+    _replicate_pairs,
+    delta_interval,
+    profile_interval,
+    solve_value,
+)
+from robustmargin.models import (
+    Fit,
+    _count_cells,
+    _is_continuous_fit,
+    _mirror_fit,
+    _mirror_observations,
+)
 from robustmargin.types import (
     Axis,
+    BootstrapSummary,
     Cell,
     Censoring,
+    ContinuousObservations,
     Definition,
     JSONValue,
+    Observations,
     Status,
     _check_finite_number,
 )
 
 __all__ = ["Threshold", "threshold"]
 
-_VALID_INTERVAL_METHODS = frozenset({"profile", "delta", "exact_bound"})
+_BOOTSTRAP_METHODS = frozenset({"parametric_bootstrap", "cell_bootstrap"})
+_MODEL_INTERVALS = frozenset({"profile", "delta"})
+_VALID_INTERVAL_METHODS = _MODEL_INTERVALS | _BOOTSTRAP_METHODS | {"exact_bound"}
+_DEFAULT_RESAMPLES = 999
+_GIVE_UP_FRACTION = 0.10
 _TERMINAL_STATUSES = frozenset(
     {Status.UNREACHABLE, Status.CONTROL_INCOMPATIBLE, Status.FAILS_AT_BASELINE}
 )
@@ -139,6 +168,39 @@ class Threshold:
     fraction of the fitted range. A value outside the nonzero tested range carries the
     ``EXTRAPOLATED: `` warning described below.
 
+    **An isotonic fit has no curve to solve.** Its threshold is where the piecewise-linear
+    interpolant of ``fit.cell_estimates`` over the tested severities first reaches the target, on
+    the axis scale (``log x`` on a log axis, where the zero-severity control has no coordinate and
+    is not a node, and ``x`` on a linear one, where it is). That is the smallest severity with
+    ``P(x) <= P*`` (a flat block of tied estimates that equals the target gives its first
+    severity; on a log axis a block that starts at the lowest tested severity is already at the
+    target there, so the result is ``UNREACHABLE``, "below the lowest tested severity").
+    An isotonic fit does not extrapolate: if the interpolant does not reach the target inside its
+    nodes the result is ``UNREACHABLE`` with no number, and a warning names the side ("above the
+    highest tested severity" or "below the lowest tested severity"). For counts the exact
+    one-sided tests above run first and are unchanged; a continuous isotonic fit makes no exact
+    claim, like a Gaussian one. ``absolute`` is supported; ``baseline_fraction`` and
+    ``baseline_multiple`` take the control's isotonic value as the baseline and need a control;
+    ``relative`` has no asymptotes to work from and raises. The only interval is
+    ``"cell_bootstrap"``.
+
+    **Bootstrap intervals** (``"parametric_bootstrap"``, ``"cell_bootstrap"``) are percentile
+    intervals of the thresholds of resampled-and-refitted data (:mod:`robustmargin.intervals`).
+    ``bootstrap`` records the replicate count, how many refits failed, how many replicates were
+    unreachable on each side, and the seed. A failed replicate counts as ``-inf`` in the lower
+    percentile and ``+inf`` in the upper one, so failures can only widen the interval. A side of the
+    interval is open (``OPEN_UPPER``, ``OPEN_LOWER``) when more than ``alpha / 2`` of all replicates
+    are unreachable or failed on it, and when both are the result is ``NONE`` with no bounds and a
+    warning. More than 1% of failed replicates adds a ``BOOTSTRAP_FAILURES: `` warning, and more
+    than ``min(10%, alpha / 2)`` makes the result ``NOT_CONVERGED`` with the exact-bound fallback
+    (no numbers for a continuous response) and ``interval_method="exact_bound"``. Fewer than
+    ``2 / alpha - 1`` resamples adds a ``BOOTSTRAP_FEW_RESAMPLES: `` warning, and an interval of
+    zero width is reported with no bounds and a ``BOOTSTRAP_ZERO_WIDTH: `` warning. A percentile
+    interval can exclude the estimate it was resampled around; it is then reported as computed,
+    and a ``BOOTSTRAP_EXCLUDES_ESTIMATE: `` warning (stating the bias correction ``z0``) is
+    required by the invariants, because clamping the interval to contain the estimate would
+    invent an endpoint.
+
     **Exact ties.** A claim is read non-strictly at the tested severities: a lower bound means the
     true rate there is at least the target, an upper bound that it is at most the target. If a
     tested severity's true rate equals the target exactly, the strict reading of a claim is not
@@ -163,16 +225,23 @@ class Threshold:
       the control already fails.
     - ``status`` in ``{SEPARATION, NOT_CONVERGED}``: ``value`` is ``None``; ``censoring`` is one
       of ``{NONE, RIGHT, LEFT}``; ``interval_method`` is ``"exact_bound"``; ``lo`` and ``hi``
-      may be set, as the exact-bound fallback.
+      may be set, as the exact-bound fallback. Both statuses are properties of the fit, so
+      ``fit.status`` must be the same, with one exception: a bootstrap that gave up is
+      ``NOT_CONVERGED`` on an ``OK`` fit, and is accepted exactly when ``bootstrap`` is set.
     - ``censoring == RIGHT``: ``value`` is ``None``, ``lo`` is set, ``hi`` is ``None``,
       ``interval_method == "exact_bound"``.
     - ``censoring == LEFT``: ``value`` is ``None``, ``hi`` is set, ``lo`` is ``None``,
       ``interval_method == "exact_bound"``.
     - ``censoring == OPEN_UPPER``: ``status == OK``, ``value`` and ``lo`` are set, ``hi`` is
-      ``None``, ``lo <= value``, ``interval_method == "profile"``. ``OPEN_LOWER`` mirrors it,
-      with ``hi`` set, ``lo`` ``None`` and ``value <= hi``.
-    - ``censoring == NONE`` with ``status == OK``: ``value``, ``lo`` and ``hi`` are all set,
-      with ``lo <= value <= hi``, and ``interval_method`` is ``"profile"`` or ``"delta"``.
+      ``None``, ``lo <= value``, ``interval_method`` is ``"profile"`` or a bootstrap method.
+      ``OPEN_LOWER`` mirrors it, with ``hi`` set, ``lo`` ``None`` and ``value <= hi``. A
+      bootstrap interval is not held to ``lo <= value`` (or ``value <= hi``).
+    - ``censoring == NONE`` with ``status == OK``: ``value`` is set and ``lo`` and ``hi`` are
+      either both set or both ``None``. When set, ``lo <= value <= hi`` for ``"profile"`` and
+      ``"delta"``, and ``lo <= hi`` for a bootstrap method. ``interval_method`` is ``"profile"``,
+      ``"delta"``, ``"parametric_bootstrap"`` or ``"cell_bootstrap"``.
+    - ``bootstrap`` is set only with a bootstrap ``interval_method``, or with ``"exact_bound"``
+      and ``status == NOT_CONVERGED`` (a bootstrap that gave up).
     - When both ``lo`` and ``hi`` are set: ``lo < hi`` strictly for a ``SEPARATION`` /
       ``NOT_CONVERGED`` bracket, ``lo <= hi`` otherwise.
     - On a log axis, ``value``, ``lo`` and ``hi`` must each be ``> 0`` when present (a linear
@@ -201,7 +270,8 @@ class Threshold:
     level
         The confidence level, strictly between 0 and 1.
     interval_method
-        ``"profile"``, ``"delta"`` or ``"exact_bound"``.
+        ``"profile"``, ``"delta"``, ``"parametric_bootstrap"``, ``"cell_bootstrap"`` or
+        ``"exact_bound"``.
     censoring
         The :class:`~robustmargin.Censoring` classification.
     status
@@ -224,8 +294,8 @@ class Threshold:
         severity. It is report-only: it describes ``value`` alone, whatever the interval method or
         outcome, and changes no number, status or censoring.
     schema_version
-        The serialised-result schema version this object belongs to. Defaults to ``"2"``, the
-        version ``to_dict`` writes; ``from_dict`` also reads ``"1"``.
+        The serialised-result schema version this object belongs to. Defaults to ``"3"``, the
+        version ``to_dict`` writes; ``from_dict`` also reads ``"1"`` and ``"2"``.
     provenance
         An opaque mapping the caller may attach to record where the inputs came from.
         robustmargin stores it and never interprets it. Empty by default.
@@ -236,6 +306,10 @@ class Threshold:
     grid
         The grid break-point value computed as part of the ``SEPARATION``/``NOT_CONVERGED``
         exact-bound fallback, set exactly on that path; ``None`` otherwise.
+    bootstrap
+        The :class:`~robustmargin.BootstrapSummary` of a bootstrap interval, set exactly when a
+        bootstrap ran: ``None`` for ``profile``, ``delta`` and every result decided before any
+        resampling (censored, failed or unreachable). The last field.
     """
 
     axis: Axis
@@ -251,14 +325,22 @@ class Threshold:
     dependence: str
     fit: Fit
     warnings: tuple[str, ...] = ()
-    schema_version: str = "2"
+    schema_version: str = "3"
     provenance: Mapping[str, JSONValue] = field(default_factory=dict)
     baseline: BaselineRate | None = None
     grid: GridBreakPoint | None = None
+    bootstrap: BootstrapSummary | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "warnings", tuple(self.warnings))
 
+        if self.schema_version in ("1", "2") and (
+            self.interval_method in _BOOTSTRAP_METHODS or self.bootstrap is not None
+        ):
+            raise ValueError(
+                f"Threshold with schema_version {self.schema_version!r} cannot carry a bootstrap "
+                "interval_method or a bootstrap summary: only schema_version '3' has them"
+            )
         if self.direction not in _VALID_DIRECTIONS:
             raise ValueError(
                 f"Threshold.direction must be one of {sorted(_VALID_DIRECTIONS)}, "
@@ -297,23 +379,24 @@ class Threshold:
         if self.direction != self.fit.direction:
             raise ValueError("Threshold.direction must equal Threshold.fit.direction")
 
-        if self.fit.model == "gaussian":
+        if _is_continuous_fit(self.fit):
+            kind = "Gaussian" if self.fit.model == "gaussian" else "continuous isotonic"
             if self.status not in _GAUSSIAN_THRESHOLD_STATUSES:
                 raise ValueError(
-                    f"Threshold.status for a Gaussian fit must be one of "
+                    f"Threshold.status for a {kind} fit must be one of "
                     f"{sorted(s.value for s in _GAUSSIAN_THRESHOLD_STATUSES)}, got "
                     f"{self.status!r}: a continuous response has no exact claims"
                 )
             if self.censoring in (Censoring.RIGHT, Censoring.LEFT):
                 raise ValueError(
-                    f"Threshold.censoring for a Gaussian fit must not be {self.censoring!r}: "
+                    f"Threshold.censoring for a {kind} fit must not be {self.censoring!r}: "
                     "a continuous response has no exact bound"
                 )
             if self.baseline is not None or self.grid is not None:
-                raise ValueError("Threshold.baseline and .grid must be None for a Gaussian fit")
+                raise ValueError(f"Threshold.baseline and .grid must be None for a {kind} fit")
             if self.status is Status.NOT_CONVERGED and (self.lo is not None or self.hi is not None):
                 raise ValueError(
-                    "Threshold.lo and .hi must be None for a Gaussian fit that did not converge"
+                    f"Threshold.lo and .hi must be None for a {kind} fit that did not converge"
                 )
 
         _check_value(self.value, label="value", scale=self.axis.scale)
@@ -335,11 +418,52 @@ class Threshold:
                 "Threshold.fit.status must be OK, SEPARATION or NOT_CONVERGED when status is "
                 f"UNREACHABLE; got fit.status={self.fit.status!r}"
             )
-        if self.status in _MIRROR_FIT_STATUS_STATUSES and self.fit.status is not self.status:
+        gave_up = (
+            self.status is Status.NOT_CONVERGED
+            and self.fit.status is Status.OK
+            and self.bootstrap is not None
+        )
+        if (
+            self.status in _MIRROR_FIT_STATUS_STATUSES
+            and self.fit.status is not self.status
+            and not gave_up
+        ):
             raise ValueError(
                 f"Threshold.fit.status must equal Threshold.status ({self.status!r}) when "
                 "status is SEPARATION, NOT_CONVERGED or CONTROL_INCOMPATIBLE; got "
-                f"fit.status={self.fit.status!r}"
+                f"fit.status={self.fit.status!r} (only a bootstrap that gave up, with "
+                "Threshold.bootstrap set, is NOT_CONVERGED on an OK fit)"
+            )
+        if gave_up:
+            assert self.bootstrap is not None
+            limit = min(_GIVE_UP_FRACTION, (1.0 - self.level) / 2.0)
+            if not self.bootstrap.failed > limit * self.bootstrap.n_resamples:
+                raise ValueError(
+                    "Threshold.status NOT_CONVERGED on an OK fit means a bootstrap gave up, which "
+                    "needs bootstrap.failed > min(0.10, (1 - level) / 2) * bootstrap.n_resamples "
+                    f"= {limit * self.bootstrap.n_resamples!r}, got "
+                    f"{self.bootstrap.failed!r} of {self.bootstrap.n_resamples!r}"
+                )
+        if self.interval_method in _BOOTSTRAP_METHODS and self.value is not None:
+            excludes = (self.lo is not None and self.lo > self.value) or (
+                self.hi is not None and self.hi < self.value
+            )
+            if excludes and not any(
+                w.startswith("BOOTSTRAP_EXCLUDES_ESTIMATE:") for w in self.warnings
+            ):
+                raise ValueError(
+                    "Threshold: a bootstrap interval that excludes value must carry a warning "
+                    "starting 'BOOTSTRAP_EXCLUDES_ESTIMATE:', got "
+                    f"lo={self.lo!r}, value={self.value!r}, hi={self.hi!r}"
+                )
+        if self.bootstrap is not None and not (
+            self.interval_method in _BOOTSTRAP_METHODS
+            or (self.interval_method == "exact_bound" and self.status is Status.NOT_CONVERGED)
+        ):
+            raise ValueError(
+                "Threshold.bootstrap may only be set with a bootstrap interval_method, or with "
+                "'exact_bound' and status NOT_CONVERGED (a bootstrap that gave up), got "
+                f"interval_method={self.interval_method!r}, status={self.status!r}"
             )
 
         if self.lo is not None and self.hi is not None:
@@ -426,16 +550,16 @@ class Threshold:
         elif self.censoring is Censoring.OPEN_UPPER:
             if self.status is not Status.OK:
                 raise ValueError("Threshold.censoring OPEN_UPPER requires status OK")
-            if self.interval_method != "profile":
+            if self.interval_method != "profile" and self.interval_method not in _BOOTSTRAP_METHODS:
                 raise ValueError(
-                    "Threshold.interval_method must be 'profile' when censoring is OPEN_UPPER, "
-                    f"got {self.interval_method!r}"
+                    "Threshold.interval_method must be 'profile' or a bootstrap method when "
+                    f"censoring is OPEN_UPPER, got {self.interval_method!r}"
                 )
             if self.value is None or self.lo is None:
                 raise ValueError("Threshold.value and .lo must be set when censoring is OPEN_UPPER")
             if self.hi is not None:
                 raise ValueError("Threshold.hi must be None when censoring is OPEN_UPPER")
-            if not self.lo <= self.value:
+            if self.interval_method not in _BOOTSTRAP_METHODS and not self.lo <= self.value:
                 raise ValueError(
                     "Threshold requires lo <= value when censoring is OPEN_UPPER, got "
                     f"lo={self.lo!r}, value={self.value!r}"
@@ -443,16 +567,16 @@ class Threshold:
         elif self.censoring is Censoring.OPEN_LOWER:
             if self.status is not Status.OK:
                 raise ValueError("Threshold.censoring OPEN_LOWER requires status OK")
-            if self.interval_method != "profile":
+            if self.interval_method != "profile" and self.interval_method not in _BOOTSTRAP_METHODS:
                 raise ValueError(
-                    "Threshold.interval_method must be 'profile' when censoring is OPEN_LOWER, "
-                    f"got {self.interval_method!r}"
+                    "Threshold.interval_method must be 'profile' or a bootstrap method when "
+                    f"censoring is OPEN_LOWER, got {self.interval_method!r}"
                 )
             if self.value is None or self.hi is None:
                 raise ValueError("Threshold.value and .hi must be set when censoring is OPEN_LOWER")
             if self.lo is not None:
                 raise ValueError("Threshold.lo must be None when censoring is OPEN_LOWER")
-            if not self.value <= self.hi:
+            if self.interval_method not in _BOOTSTRAP_METHODS and not self.value <= self.hi:
                 raise ValueError(
                     "Threshold requires value <= hi when censoring is OPEN_LOWER, got "
                     f"value={self.value!r}, hi={self.hi!r}"
@@ -475,8 +599,16 @@ class Threshold:
                     "Threshold.lo and .hi must either both be set or both be None when "
                     f"censoring is NONE and status is OK, got lo={self.lo!r}, hi={self.hi!r}"
                 )
+            if self.interval_method not in _MODEL_INTERVALS | _BOOTSTRAP_METHODS:
+                raise ValueError(
+                    "Threshold.interval_method must be 'profile', 'delta' or a bootstrap method "
+                    f"when censoring is NONE and status is OK, got {self.interval_method!r}"
+                )
+            # A percentile bootstrap interval can exclude the estimate it was resampled around,
+            # so it is held to `lo <= hi` (checked above) and no more.
             if (
-                self.lo is not None
+                self.interval_method in _MODEL_INTERVALS
+                and self.lo is not None
                 and self.hi is not None
                 and not (self.lo <= self.value <= self.hi)
             ):
@@ -484,14 +616,17 @@ class Threshold:
                     f"Threshold requires lo <= value <= hi, got lo={self.lo!r}, "
                     f"value={self.value!r}, hi={self.hi!r}"
                 )
-            if self.interval_method not in ("profile", "delta"):
-                raise ValueError(
-                    "Threshold.interval_method must be 'profile' or 'delta' when censoring is "
-                    f"NONE and status is OK, got {self.interval_method!r}"
-                )
 
 
-_VALID_INTERVAL_METHOD_REQUESTS = frozenset({"profile", "delta"})
+_VALID_INTERVAL_METHOD_REQUESTS = _MODEL_INTERVALS | _BOOTSTRAP_METHODS
+# Which of the requests each kind of fit takes. An isotonic fit has no covariance to build a
+# profile or delta interval from, and no parametric model to simulate from; a Gaussian fit has no
+# per-cell counts to resample.
+_METHODS_BY_MODEL: dict[str, frozenset[str]] = {
+    "binomial": _MODEL_INTERVALS | _BOOTSTRAP_METHODS,
+    "gaussian": _MODEL_INTERVALS | {"parametric_bootstrap"},
+    "isotonic": frozenset({"cell_bootstrap"}),
+}
 _VALID_DEPENDENCE_INPUTS = frozenset({"independent"})
 
 
@@ -500,6 +635,36 @@ def _control_cell_or_none(fit: Fit) -> Cell | None:
         if cell.severity == 0.0:
             return cell
     return None
+
+
+def _isotonic_baseline_target(definition: Definition, *, fit: Fit) -> float:
+    """The target ``P*`` of a baseline or relative definition on an isotonic fit: the definition's
+    multiple of the control cell's isotonic value, which is the baseline. ``relative(p)`` is a
+    fraction of a fitted dynamic range, which an isotonic fit does not have. A control is needed,
+    and a continuous baseline (or any baseline for ``baseline_multiple``) must be positive, as a
+    fraction or multiple of a level at or below zero is not a threshold."""
+    if definition.kind == "relative":
+        raise ValueError(
+            "threshold: definition.kind='relative' is a fraction of the fitted dynamic range "
+            "(upper minus lower asymptote), and an isotonic fit estimates no asymptotes. Use "
+            "absolute(a), baseline_fraction(p) or baseline_multiple(k)"
+        )
+    assert fit.cell_estimates is not None
+    controls = [i for i, cell in enumerate(fit.cells) if cell.severity == 0.0]
+    if not controls:
+        raise ValueError(
+            f"threshold: definition.kind={definition.kind!r} takes the isotonic value at the "
+            "zero-severity control as its baseline, and this fit has no control cell. Use "
+            "absolute(a)"
+        )
+    baseline = fit.cell_estimates[controls[0]]
+    if (_is_continuous_fit(fit) or definition.kind == "baseline_multiple") and not baseline > 0.0:
+        raise ValueError(
+            f"threshold: definition.kind={definition.kind!r} needs a positive baseline, and the "
+            f"isotonic value at the control is {baseline!r}; a fraction or multiple of a level at "
+            "or below zero is not a threshold. Use absolute(a)"
+        )
+    return definition.value * baseline
 
 
 def _resolve_target(definition: Definition, *, fit: Fit) -> float:
@@ -539,6 +704,9 @@ def _resolve_target(definition: Definition, *, fit: Fit) -> float:
 
     if definition.kind == "absolute":
         return definition.value
+
+    if fit.model == "isotonic":
+        return _isotonic_baseline_target(definition, fit=fit)
 
     if fit.status is Status.OK:
         assert fit.params is not None
@@ -642,7 +810,7 @@ def _solve_inputs(definition: Definition, *, fit: Fit) -> _SolveInputs:
     target = _resolve_target(definition, fit=fit)
     if fit.direction == "decreasing":
         return _SolveInputs(fit, definition, target, None)
-    if fit.model == "gaussian":
+    if _is_continuous_fit(fit):
         # The negated response: performance `-P`, so `absolute(a)` becomes `absolute(-a)`,
         # `relative(p)` is unchanged, and `baseline_multiple(k)` (target `k * l`) becomes the
         # target `k * u'` of the view, with `u' = -l`. Negation is exact.
@@ -746,6 +914,88 @@ def _non_monotone_warning(fit: Fit) -> str:
     )
 
 
+def _check_bootstrap_arguments(
+    interval_method: str, n_resamples: int | None, seed: int | None
+) -> tuple[int, int | None]:
+    """Validate ``n_resamples`` and ``seed`` against the requested method and resolve the replicate
+    count. Returns ``(n_resamples, seed)``; both are only meaningful for a bootstrap method."""
+    if interval_method not in _BOOTSTRAP_METHODS:
+        for name, value in (("n_resamples", n_resamples), ("seed", seed)):
+            if value is not None:
+                raise ValueError(
+                    f"threshold: {name} applies only to a bootstrap interval_method "
+                    f"({sorted(_BOOTSTRAP_METHODS)}), got interval_method={interval_method!r}"
+                )
+        return 0, None
+    if n_resamples is None:
+        resamples = _DEFAULT_RESAMPLES
+    elif isinstance(n_resamples, bool) or not isinstance(n_resamples, int) or n_resamples < 1:
+        raise ValueError(f"threshold: n_resamples must be an int >= 1, got {n_resamples!r}")
+    else:
+        resamples = n_resamples
+    if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int) or seed < 0):
+        raise ValueError(f"threshold: seed must be None or an int >= 0, got {seed!r}")
+    return resamples, seed
+
+
+def _fresh_seed() -> int:
+    """A seed drawn from fresh operating-system entropy, as a non-negative ``int`` that
+    ``numpy.random.default_rng`` accepts and the result records."""
+    entropy = np.random.SeedSequence().entropy
+    assert isinstance(entropy, int)
+    return entropy
+
+
+def _unreachable_threshold(
+    fit: Fit, *, definition: Definition, level: float, warnings: list[str]
+) -> Threshold:
+    """A ``Threshold`` with status ``UNREACHABLE``: no value, no bound, no method but the exact
+    bound that produced nothing."""
+    return Threshold(
+        axis=fit.axis,
+        definition=definition,
+        direction=fit.direction,
+        value=None,
+        lo=None,
+        hi=None,
+        level=level,
+        interval_method="exact_bound",
+        censoring=Censoring.NONE,
+        status=Status.UNREACHABLE,
+        dependence="independent",
+        fit=fit,
+        warnings=tuple(warnings),
+        baseline=None,
+        grid=None,
+    )
+
+
+def _isotonic_unreachable_warning(view: Fit, *, side: str, shown_target: float) -> str:
+    """The warning of an isotonic threshold whose interpolant does not reach the target inside its
+    nodes. ``side`` is ``"high"`` (never reaches it) or ``"low"`` (already at it at the first
+    node)."""
+    nodes = [c.severity for c in view.cells if c.severity > 0.0 or view.axis.scale == "linear"]
+    if side == "high":
+        return (
+            f"threshold: the isotonic curve does not reach the target {shown_target!r} anywhere "
+            f"up to the highest tested severity {nodes[-1]!r}, so a crossing would lie above the "
+            "highest tested severity. An isotonic fit does not extrapolate, so no value is "
+            "reported"
+        )
+    return (
+        f"threshold: the isotonic curve has already reached the target {shown_target!r} at the "
+        f"lowest tested severity {nodes[0]!r}, so a crossing would lie below the lowest tested "
+        "severity"
+        + (
+            " (the zero-severity control has no coordinate on a log axis)"
+            if view.axis.scale == "log"
+            else ""
+        )
+        + ". An isotonic fit does not extrapolate, so no "
+        "value is reported"
+    )
+
+
 def threshold(
     fit: Fit,
     *,
@@ -753,6 +1003,8 @@ def threshold(
     interval_method: str,
     level: float,
     dependence: str | None = None,
+    n_resamples: int | None = None,
+    seed: int | None = None,
 ) -> Threshold:
     """Solve for where ``fit``'s curve crosses ``definition``'s target performance, with a
     confidence interval, or report why no value exists.
@@ -778,7 +1030,18 @@ def threshold(
     definition
         Which target performance to solve for.
     interval_method
-        ``"profile"`` (primary) or ``"delta"`` (cross-check). Required, with no default.
+        Required, with no default. Which a fit accepts depends on its model: a binomial fit takes
+        ``"profile"`` (primary), ``"delta"`` (cross-check), ``"parametric_bootstrap"`` and
+        ``"cell_bootstrap"``; a Gaussian fit takes all but ``"cell_bootstrap"`` (its cells keep
+        no per-observation counts to resample); an isotonic fit takes only ``"cell_bootstrap"``.
+        Any other pairing raises. ``"parametric_bootstrap"`` draws new data from the fitted model
+        at the observed design and refits it; ``"cell_bootstrap"`` resamples each severity level
+        from its own data (counts: ``Binomial(n_i, (k_i + 0.5) / (n_i + 1))``; continuous
+        cells, which keep only ``n``, ``mean`` and ``sd``: a mean drawn from
+        ``N(mean_i, sd_i^2 (n_i - 1) / n_i^2)``, the variance of a mean under resampling with
+        replacement, which needs ``n_i >= 2`` at every level). Both
+        are percentile intervals; see :mod:`robustmargin.intervals` for how unreachable and failed
+        replicates are treated.
         For ``Definition.absolute(a)`` on a fit with estimated asymptotes, the delta standard
         error is the full delta method over every free parameter, the asymptotes included,
         because the target ``a`` is fixed on the outcome's own scale and the fitted asymptotes
@@ -796,6 +1059,17 @@ def threshold(
         input unless the caller explicitly opts in). ``"independent"`` may always be passed
         explicitly. ``"paired"`` raises, naming that it is not implemented in this release. The
         resulting ``Threshold.dependence`` is always ``"independent"`` in this release.
+    n_resamples
+        The number of bootstrap replicates: ``None`` (the default) means 999 for a bootstrap
+        method, otherwise an ``int`` (not a ``bool``) of at least 1. Must be ``None`` for
+        ``"profile"`` and ``"delta"``. A refit of a fit with an estimated asymptote costs
+        orders of magnitude more than one with fixed asymptotes, so such a bootstrap is slow.
+    seed
+        ``None`` or an ``int`` of at least 0 (not a ``bool``), seeding ``numpy.random.default_rng``.
+        With ``None`` a seed is drawn from fresh entropy and recorded in
+        ``Threshold.bootstrap.seed``, so every bootstrap result can be reproduced: the same fit,
+        arguments and seed give a bit-identical ``Threshold``. Must be ``None`` for
+        ``"profile"`` and ``"delta"``.
 
     Returns
     -------
@@ -804,7 +1078,9 @@ def threshold(
     Raises
     ------
     ValueError
-        If ``interval_method`` or ``level`` is invalid; if ``dependence`` is omitted while
+        If ``interval_method`` or ``level`` is invalid, or ``interval_method`` is not one the fit
+        accepts (see above); if ``n_resamples`` or ``seed`` is not valid, or is given with
+        ``"profile"`` or ``"delta"``; if ``dependence`` is omitted while
         ``fit.cluster_ids`` is set, or is any value other than ``None``/``"independent"``/
         ``"paired"``; if ``dependence="paired"`` is requested (not yet implemented); if
         ``definition.kind`` is ``"baseline_fraction"`` and the fit is increasing, or
@@ -813,13 +1089,23 @@ def threshold(
         multiple of zero is not a threshold), or the axis is linear; if ``definition.kind`` is
         ``"baseline_fraction"``, ``"baseline_multiple"`` or ``"relative"`` and ``fit.status`` is
         not ``OK`` (``baseline_fraction`` and ``baseline_multiple`` have no target built from the
-        control's observed rate; with no zero-severity control cell the error says so).
+        control's observed rate; with no zero-severity control cell the error says so); if the
+        fit is isotonic and ``definition.kind`` is ``"relative"``, or is a baseline definition
+        and the fit has no control cell or a baseline that is not positive where that is needed;
+        if an isotonic fit of continuous responses is bootstrapped and a severity level has a
+        single observation.
     """
     if interval_method not in _VALID_INTERVAL_METHOD_REQUESTS:
         raise ValueError(
             "threshold: interval_method must be one of "
             f"{sorted(_VALID_INTERVAL_METHOD_REQUESTS)}, got {interval_method!r}"
         )
+    if interval_method not in _METHODS_BY_MODEL[fit.model]:
+        raise ValueError(
+            f"threshold: a {fit.model} fit does not take interval_method={interval_method!r}; it "
+            f"takes {sorted(_METHODS_BY_MODEL[fit.model])}"
+        )
+    resamples, requested_seed = _check_bootstrap_arguments(interval_method, n_resamples, seed)
     _check_finite_number(level, label="threshold level")
     if not (0.0 < level < 1.0):
         raise ValueError(f"threshold: level must satisfy 0 < level < 1, got {level!r}")
@@ -860,7 +1146,28 @@ def threshold(
     collected_warnings.extend(classification.warnings)
 
     if classification.solve:
-        theta_hat, value = solve_value(view, target=inputs.target)
+        if fit.model == "isotonic":
+            theta_hat = _isotonic_crossing(
+                np.array([c.severity for c in view.cells]),
+                np.asarray(view.cell_estimates, dtype=np.float64),
+                target=inputs.target,
+                scale=view.axis.scale,
+            )
+            if not math.isfinite(theta_hat):
+                shown = inputs.target
+                if inputs.original_target is not None:
+                    shown = inputs.original_target
+                collected_warnings.append(
+                    _isotonic_unreachable_warning(
+                        view, side="high" if theta_hat > 0.0 else "low", shown_target=shown
+                    )
+                )
+                return _unreachable_threshold(
+                    fit, definition=definition, level=level, warnings=collected_warnings
+                )
+            value = math.exp(theta_hat) if view.axis.scale == "log" else theta_hat
+        else:
+            theta_hat, value = solve_value(view, target=inputs.target)
         if value <= 0.0:
             # A linear axis can solve to a crossing at or below zero severity. Severity is
             # non-negative (`Threshold` enforces it), so such a crossing is not reachable on the
@@ -875,23 +1182,10 @@ def threshold(
                 "because this release's severity axis is non-negative and there is no "
                 "model-based equivalent of FAILS_AT_BASELINE for this case"
             )
-            return Threshold(
-                axis=fit.axis,
-                definition=definition,
-                direction=fit.direction,
-                value=None,
-                lo=None,
-                hi=None,
-                level=level,
-                interval_method="exact_bound",
-                censoring=Censoring.NONE,
-                status=Status.UNREACHABLE,
-                dependence="independent",
-                fit=fit,
-                warnings=tuple(collected_warnings),
-                baseline=None,
-                grid=None,
+            return _unreachable_threshold(
+                fit, definition=definition, level=level, warnings=collected_warnings
             )
+        summary: BootstrapSummary | None = None
         if interval_method == "profile":
             interval_result = profile_interval(
                 view,
@@ -900,7 +1194,10 @@ def threshold(
                 level=level,
                 theta_hat=theta_hat,
             )
-        else:
+            result_lo, result_hi = interval_result.lo, interval_result.hi
+            result_censoring = interval_result.censoring
+            collected_warnings.extend(interval_result.warnings)
+        elif interval_method == "delta":
             interval_result = delta_interval(
                 view,
                 definition=inputs.definition,
@@ -909,10 +1206,40 @@ def threshold(
                 theta_hat=theta_hat,
                 value=value,
             )
-        collected_warnings.extend(interval_result.warnings)
+            result_lo, result_hi = interval_result.lo, interval_result.hi
+            result_censoring = interval_result.censoring
+            collected_warnings.extend(interval_result.warnings)
+        else:
+            drawn_seed = requested_seed if requested_seed is not None else _fresh_seed()
+            outcome = _bootstrap_interval(
+                view,
+                definition=inputs.definition,
+                method=interval_method,
+                level=level,
+                n_resamples=resamples,
+                seed=drawn_seed,
+                theta_hat=theta_hat,
+            )
+            summary = outcome.summary
+            collected_warnings.extend(outcome.warnings)
+            if outcome.gave_up:
+                return _bootstrap_gave_up(
+                    fit,
+                    view=view,
+                    inputs=inputs,
+                    definition=definition,
+                    level=level,
+                    summary=summary,
+                    warnings=collected_warnings,
+                )
+            result_lo, result_hi, result_censoring = outcome.lo, outcome.hi, outcome.censoring
         # Report-only and last: it describes `value` alone, whatever the interval method or its
-        # outcome, and changes no number, status, censoring or method.
-        extrapolation = _extrapolation_warning(fit, value=value)
+        # outcome, and changes no number, status, censoring or method. An isotonic fit
+        # interpolates between tested severities (the control included on a linear axis) and
+        # never reads its fit outside them, so there is nothing to flag.
+        extrapolation = (
+            None if fit.model == "isotonic" else _extrapolation_warning(fit, value=value)
+        )
         if extrapolation is not None:
             collected_warnings.append(extrapolation)
         return Threshold(
@@ -920,17 +1247,18 @@ def threshold(
             definition=definition,
             direction=fit.direction,
             value=value,
-            lo=interval_result.lo,
-            hi=interval_result.hi,
+            lo=result_lo,
+            hi=result_hi,
             level=level,
             interval_method=interval_method,
-            censoring=interval_result.censoring,
+            censoring=result_censoring,
             status=Status.OK,
             dependence="independent",
             fit=fit,
             warnings=tuple(collected_warnings),
             baseline=None,
             grid=None,
+            bootstrap=summary,
         )
 
     return Threshold(
@@ -950,3 +1278,81 @@ def threshold(
         baseline=_reported_baseline(classification.baseline, fit=fit, level=level),
         grid=classification.grid,
     )
+
+
+def _bootstrap_gave_up(
+    fit: Fit,
+    *,
+    view: Fit,
+    inputs: _SolveInputs,
+    definition: Definition,
+    level: float,
+    summary: BootstrapSummary,
+    warnings: list[str],
+) -> Threshold:
+    """The result of a bootstrap that gave up because too many refits failed: ``NOT_CONVERGED``
+    with ``interval_method="exact_bound"`` and no point estimate. For counts the exact-bound
+    fallback of :mod:`robustmargin.censoring` supplies a bracket or one-sided bound and the grid
+    break-point; a continuous response has no exact claim to fall back to, so it carries no
+    number. The summary stays, so the failure count survives serialisation."""
+    lo: float | None = None
+    hi: float | None = None
+    grid: GridBreakPoint | None = None
+    if not _is_continuous_fit(fit):
+        fallback = _bootstrap_give_up(
+            view, target=inputs.target, level=level, original_target=inputs.original_target
+        )
+        lo, hi, grid = fallback.lo, fallback.hi, fallback.grid
+        warnings.extend(fallback.warnings)
+    return Threshold(
+        axis=fit.axis,
+        definition=definition,
+        direction=fit.direction,
+        value=None,
+        lo=lo,
+        hi=hi,
+        level=level,
+        interval_method="exact_bound",
+        censoring=Censoring.NONE,
+        status=Status.NOT_CONVERGED,
+        dependence="independent",
+        fit=fit,
+        warnings=tuple(warnings),
+        baseline=None,
+        grid=grid,
+        bootstrap=summary,
+    )
+
+
+def _bootstrap_replicates(
+    fit: Fit, *, definition: Definition, method: str, n_resamples: int, seed: int
+) -> list[tuple[Observations | ContinuousObservations, float]]:
+    """Every replicate a bootstrap of ``fit`` draws, for checking the refit against another.
+
+    Returns one ``(data, theta)`` pair per replicate. ``data`` is the simulated
+    :class:`~robustmargin.Observations` or :class:`~robustmargin.ContinuousObservations` in the
+    fit's own direction, ready for :func:`robustmargin.fit_dose_response`; ``theta`` is the
+    replicate's threshold on the transformed axis (``log x`` on a log axis), ``-inf`` or ``+inf``
+    when its target is unreachable on that side, and ``nan`` when its refit did not reach ``OK``.
+    The draws are those :func:`threshold` makes under the same ``seed``. Private: the interface
+    is not part of the package's API.
+    """
+    inputs = _solve_inputs(definition, fit=fit)
+    pairs = _replicate_pairs(
+        inputs.fit,
+        definition=inputs.definition,
+        method=method,
+        n_resamples=n_resamples,
+        seed=seed,
+    )
+    if fit.direction == "decreasing":
+        return pairs
+    return [
+        (
+            _mirror_observations(data)
+            if isinstance(data, ContinuousObservations)
+            else _mirror_observations(data),
+            theta,
+        )
+        for data, theta in pairs
+    ]

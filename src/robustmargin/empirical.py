@@ -62,7 +62,7 @@ class GridBreakPoint:
         produces ``LEFT``, ``OPEN_UPPER``, or ``OPEN_LOWER``.
     schema_version
         The version of the serialised result schema this object belongs to. Defaults to
-        ``"2"``, the version ``to_dict`` writes; ``from_dict`` also reads ``"1"``.
+        ``"3"``, the version ``to_dict`` writes; ``from_dict`` also reads ``"1"`` and ``"2"``.
     provenance
         An opaque mapping the caller may attach (for example with :func:`dataclasses.replace`)
         to record where the inputs came from. robustmargin stores it and never interprets it.
@@ -72,7 +72,7 @@ class GridBreakPoint:
     value: float | None
     max_tested: float
     censoring: Censoring
-    schema_version: str = "2"
+    schema_version: str = "3"
     provenance: Mapping[str, object] = field(default_factory=dict)
 
 

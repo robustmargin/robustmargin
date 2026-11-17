@@ -49,9 +49,9 @@ classifiers = [
 # if the two disagree, one of them is wrong.
 dependencies = [
     "numpy>=1.26",
-    # 1.11.1, not 1.11.0: scipy 1.11.0 was yanked from PyPI for a licence violation, so it is
-    # not a floor any consumer can actually resolve to.
-    "scipy>=1.11.1",
+    # 1.12 is the first release with `scipy.optimize.isotonic_regression`, which the isotonic fit
+    # uses; 1.11.4 does not have it.
+    "scipy>=1.12",
     "statsmodels>=0.14",
 ]
 

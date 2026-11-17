@@ -5,16 +5,15 @@
 # This file repeats the floors declared in pyproject.toml's `dependencies`. If these three
 # numbers disagree with pyproject.toml, this file is the one that is wrong.
 #
-# PYTHON 3.11 ONLY. This set is not installable on 3.12 or 3.13, and that is a property of the
-# published wheels, not a gap to be fixed:
-#   numpy 1.26.0       no cp313 wheel; declares python_requires <3.13
-#   scipy 1.11.1       no cp312 or cp313 wheel; declares python_requires <3.13
-#   statsmodels 0.14.0 no cp313 wheel
+# PYTHON 3.11 ONLY in CI. This set is installable on 3.11 and 3.12 but not on 3.13, and that is a
+# property of the published wheels, not a gap to be fixed:
+#   numpy 1.26.0       cp312 wheel, no cp313 wheel; declares python_requires <3.13
+#   scipy 1.12.0       cp312 wheel, no cp313 wheel
+#   statsmodels 0.14.0 cp312 wheel, no cp313 wheel
 # A newer interpreter only ever resolves to newer dependencies, so testing the floor on 3.11
 # is the whole guarantee. Do not "fix" the CI matrix into a full cross product.
 numpy==1.26.0
-# 1.11.1, not 1.11.0: scipy 1.11.0 is yanked from PyPI for a licence violation. A yanked
-# release installs only when pinned exactly, so pinning it here would test a floor that no
-# consumer resolving `scipy>=1.11.1` can ever land on.
-scipy==1.11.1
+# 1.12.0 is the first scipy with `scipy.optimize.isotonic_regression` (1.11.4 has none), which
+# the isotonic fit uses.
+scipy==1.12.0
 statsmodels==0.14.0

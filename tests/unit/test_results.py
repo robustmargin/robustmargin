@@ -482,9 +482,9 @@ class TestFitDefaults:
         fit = _ok_fit()
 
         assert fit.warnings == ()
-        # One package-wide SCHEMA_VERSION, currently "2" -- Fit's own default tracks the same
+        # One package-wide SCHEMA_VERSION, currently "3" -- Fit's own default tracks the same
         # constant, since report.py versions the whole card format, not each type independently.
-        assert fit.schema_version == "2"
+        assert fit.schema_version == "3"
         assert fit.provenance == {}
 
 
@@ -1526,8 +1526,8 @@ class TestThresholdDefaultsAndFrozen:
         threshold = _threshold(value=0.05, lo=0.03, hi=0.08, interval_method="profile")
 
         assert threshold.warnings == ()
-        # See TestFitDefaults's own comment -- one package-wide SCHEMA_VERSION, currently "2".
-        assert threshold.schema_version == "2"
+        # See TestFitDefaults's own comment -- one package-wide SCHEMA_VERSION, currently "3".
+        assert threshold.schema_version == "3"
         assert threshold.provenance == {}
 
     def test_is_frozen(self) -> None:
@@ -2573,8 +2573,8 @@ class TestRatioDefaultsAndFrozen:
         ratio = _ratio(estimate=1.0, lo=0.5, hi=2.0, shape=IntervalShape.BOUNDED)
 
         assert ratio.warnings == ()
-        # The package-wide SCHEMA_VERSION, currently "2".
-        assert ratio.schema_version == "2"
+        # The package-wide SCHEMA_VERSION, currently "3".
+        assert ratio.schema_version == "3"
         assert ratio.provenance == {}
 
     def test_is_frozen(self) -> None:

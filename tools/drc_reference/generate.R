@@ -1015,4 +1015,41 @@ salba_fixture <- list(
 )
 write_fixture(salba_fixture, "salba_separate.json")
 
+# ---- isotonic_pava.json ----------------------------------------------------------------------
+# NOT YET RUN. tools/drc_reference/isotonic_pava.json currently holds three weighted PAVA
+# solutions derived by hand (source = "hand-computed"). This block would regenerate the same
+# cases with Iso::pava, which is not in the pinned package library listed in the README; install
+# `Iso` from the same CRAN snapshot before running it. Until it has been run, treat the JSON as
+# hand-computed, and do not edit an expected value to match any implementation.
+if (requireNamespace("Iso", quietly = TRUE)) {
+  pava_cases <- list(
+    list(label = "decreasing_pool_pair_and_pair", direction = "decreasing",
+         successes = c(9, 10, 7, 6, 8), trials = c(10, 20, 10, 20, 20)),
+    list(label = "increasing_single_violation", direction = "increasing",
+         successes = c(2, 3, 2, 5, 6), trials = c(20, 10, 10, 20, 10)),
+    list(label = "decreasing_cascade", direction = "decreasing",
+         successes = c(10, 1, 3, 4, 1), trials = c(20, 10, 10, 10, 20))
+  )
+  pava_fixture <- list(
+    source = "Iso::pava",
+    versions = c(versions, list(iso_version = as.character(packageVersion("Iso")))),
+    severity = c(0, 1, 2, 4, 8),
+    cases = lapply(pava_cases, function(case) {
+      y <- case$successes / case$trials
+      list(
+        label = case$label,
+        direction = case$direction,
+        y = y,
+        weights = case$trials,
+        successes = case$successes,
+        trials = case$trials,
+        expected = Iso::pava(y, case$trials, decreasing = case$direction == "decreasing")
+      )
+    })
+  )
+  write_fixture(pava_fixture, "isotonic_pava.json")
+} else {
+  cat("skipping isotonic_pava.json: package 'Iso' is not installed\n")
+}
+
 cat("\nAll fixtures written under", out_dir, "\n")

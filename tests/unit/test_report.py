@@ -377,10 +377,14 @@ class TestSchemaIsStrict:
 
         assert errors
 
-    def test_fit_model_enum_is_exactly_binomial_and_gaussian(self) -> None:
+    def test_fit_model_enum_is_exactly_binomial_gaussian_and_isotonic(self) -> None:
         schema = load_schema()
 
-        assert schema["$defs"]["Fit"]["properties"]["model"]["enum"] == ["binomial", "gaussian"]
+        assert schema["$defs"]["Fit"]["properties"]["model"]["enum"] == [
+            "binomial",
+            "gaussian",
+            "isotonic",
+        ]
 
 
 class TestSchemaFieldParity:
