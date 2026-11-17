@@ -2690,8 +2690,10 @@ def _bootstrap_interval(
 
     ``view`` is the decreasing view of an ``OK`` fit, ``definition`` the definition as stated for
     it, ``method`` ``"parametric_bootstrap"`` or ``"cell_bootstrap"`` and ``theta_hat`` the point
-    estimate on the transformed axis. The result is ``gave_up`` when more than a tenth of the
-    refits failed: it then carries the summary and a warning and no interval.
+    estimate on the transformed axis. The result is ``gave_up`` when the failed replicates exceed
+    ``min(0.10, alpha / 2)`` of all of them (a failure counts toward both ends, so more than
+    ``alpha / 2`` of them leaves no closed interval to report): it then carries the summary and a
+    warning and no interval.
     """
     design = _BootstrapDesign(view, definition=definition, method=method)
     first, second = design.draw(np.random.default_rng(seed), n_resamples)
@@ -2728,10 +2730,11 @@ def _bootstrap_interval(
             "They are counted as -inf in the lower percentile and +inf in the upper one, so "
             "they can only widen the interval"
         )
-    if failed / n_resamples > _BOOTSTRAP_GIVE_UP_FRACTION:
+    give_up_fraction = min(_BOOTSTRAP_GIVE_UP_FRACTION, tail)
+    if failed / n_resamples > give_up_fraction:
         warnings.append(
-            f"intervals.bootstrap: more than {_BOOTSTRAP_GIVE_UP_FRACTION:.0%} of the bootstrap "
-            "refits failed, so no interval is reported"
+            f"intervals.bootstrap: more than {give_up_fraction:.2%} of the bootstrap replicates "
+            "failed, so no interval is reported"
         )
         return _BootstrapOutcome(summary, None, None, Censoring.NONE, tuple(warnings), True)
 
@@ -2770,11 +2773,18 @@ def _bootstrap_interval(
     value = natural(theta_hat)
     if value is not None and ((lo is not None and lo > value) or (hi is not None and hi < value)):
         valid = thetas[~failed_mask]
-        share = float(np.sum(valid < theta_hat)) / valid.size
+        share = float(np.sum(valid < theta_hat) + 0.5 * np.sum(valid == theta_hat)) / valid.size
         z0 = float(norm.ppf(share))
+        if share >= 1.0 or share <= 0.0:
+            where = "below" if share >= 1.0 else "above"
+            z0_text = f"every valid replicate lies {where} the point estimate (z0 is not finite)"
+        else:
+            z0_text = (
+                f"z0 = Phi^-1((#{{theta* < theta_hat}} + #{{theta* = theta_hat}}/2)/B) = {z0!r}"
+            )
         warnings.append(
             f"BOOTSTRAP_EXCLUDES_ESTIMATE: the percentile interval [{lo!r}, {hi!r}] excludes "
-            f"the point estimate {value!r}; z0 = Phi^-1(#{{theta* < theta_hat}}/B) = {z0!r} over "
+            f"the point estimate {value!r}; {z0_text}, over "
             f"the {valid.size} valid replicates, so the resampled thresholds are centred away "
             "from the estimate, which points to bias in the estimator; the interval is "
             "reported as computed"

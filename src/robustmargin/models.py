@@ -520,6 +520,13 @@ class Fit:
         if self.cell_estimates is not None:
             object.__setattr__(self, "cell_estimates", tuple(self.cell_estimates))
 
+        if self.schema_version in ("1", "2") and (
+            self.model == "isotonic" or self.link == "none" or self.cell_estimates is not None
+        ):
+            raise ValueError(
+                f"Fit with schema_version {self.schema_version!r} cannot be an isotonic fit or "
+                "carry cell_estimates: only schema_version '3' has them"
+            )
         if not self.outcome:
             raise ValueError("Fit.outcome must be non-empty")
         if self.direction not in _VALID_DIRECTIONS:

@@ -192,14 +192,14 @@ class Threshold:
     interval is open (``OPEN_UPPER``, ``OPEN_LOWER``) when more than ``alpha / 2`` of all replicates
     are unreachable or failed on it, and when both are the result is ``NONE`` with no bounds and a
     warning. More than 1% of failed replicates adds a ``BOOTSTRAP_FAILURES: `` warning, and more
-    than 10% makes the result ``NOT_CONVERGED`` with the exact-bound fallback (no numbers for a
-    continuous response) and ``interval_method="exact_bound"``. Fewer than ``2 / alpha - 1``
-    resamples adds a ``BOOTSTRAP_FEW_RESAMPLES: `` warning, and an interval of zero width is
-    reported with no bounds and a ``BOOTSTRAP_ZERO_WIDTH: `` warning. A percentile interval can
-    exclude the estimate it was resampled around; it is then reported as computed, and a
-    ``BOOTSTRAP_EXCLUDES_ESTIMATE: `` warning (stating the bias correction ``z0``) is required by
-    the invariants, because clamping the interval to contain the estimate would invent an
-    endpoint.
+    than ``min(10%, alpha / 2)`` makes the result ``NOT_CONVERGED`` with the exact-bound fallback
+    (no numbers for a continuous response) and ``interval_method="exact_bound"``. Fewer than
+    ``2 / alpha - 1`` resamples adds a ``BOOTSTRAP_FEW_RESAMPLES: `` warning, and an interval of
+    zero width is reported with no bounds and a ``BOOTSTRAP_ZERO_WIDTH: `` warning. A percentile
+    interval can exclude the estimate it was resampled around; it is then reported as computed,
+    and a ``BOOTSTRAP_EXCLUDES_ESTIMATE: `` warning (stating the bias correction ``z0``) is
+    required by the invariants, because clamping the interval to contain the estimate would
+    invent an endpoint.
 
     **Exact ties.** A claim is read non-strictly at the tested severities: a lower bound means the
     true rate there is at least the target, an upper bound that it is at most the target. If a
@@ -334,6 +334,13 @@ class Threshold:
     def __post_init__(self) -> None:
         object.__setattr__(self, "warnings", tuple(self.warnings))
 
+        if self.schema_version in ("1", "2") and (
+            self.interval_method in _BOOTSTRAP_METHODS or self.bootstrap is not None
+        ):
+            raise ValueError(
+                f"Threshold with schema_version {self.schema_version!r} cannot carry a bootstrap "
+                "interval_method or a bootstrap summary: only schema_version '3' has them"
+            )
         if self.direction not in _VALID_DIRECTIONS:
             raise ValueError(
                 f"Threshold.direction must be one of {sorted(_VALID_DIRECTIONS)}, "
@@ -429,10 +436,12 @@ class Threshold:
             )
         if gave_up:
             assert self.bootstrap is not None
-            if not self.bootstrap.failed > _GIVE_UP_FRACTION * self.bootstrap.n_resamples:
+            limit = min(_GIVE_UP_FRACTION, (1.0 - self.level) / 2.0)
+            if not self.bootstrap.failed > limit * self.bootstrap.n_resamples:
                 raise ValueError(
                     "Threshold.status NOT_CONVERGED on an OK fit means a bootstrap gave up, which "
-                    "needs bootstrap.failed > 0.1 * bootstrap.n_resamples, got "
+                    "needs bootstrap.failed > min(0.10, (1 - level) / 2) * bootstrap.n_resamples "
+                    f"= {limit * self.bootstrap.n_resamples!r}, got "
                     f"{self.bootstrap.failed!r} of {self.bootstrap.n_resamples!r}"
                 )
         if self.interval_method in _BOOTSTRAP_METHODS and self.value is not None:

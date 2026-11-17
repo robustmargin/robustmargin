@@ -444,7 +444,7 @@ new data from the fitted curve at the tested levels and refits the same model. O
 estimated asymptote each refit is far slower than with fixed asymptotes, so give it a smaller
 `n_resamples`. A replicate whose refit fails is counted in `Threshold.bootstrap` and enters the
 percentiles as the worst case for each end (so failures can only widen the interval), with a warning
-above 1% and no interval above 10%.
+above 1% and no interval above 10% (or above `alpha/2`, if that is smaller).
 
 ## Grid break-point rule
 

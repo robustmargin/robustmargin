@@ -23,6 +23,9 @@ on each unreachable side.
 
 from __future__ import annotations
 
+import math
+
+import numpy as np
 import pytest
 
 from robustmargin import (
@@ -36,6 +39,7 @@ from robustmargin import (
     fit_dose_response,
     threshold,
 )
+from robustmargin.intervals import _BootstrapDesign
 
 _LOG = Axis(name="severity", unit="unit", scale="log")
 _LINEAR = Axis(name="severity", unit="unit", scale="linear")
@@ -77,34 +81,44 @@ def _boot(fit: Fit, method: str, n_resamples: int, seed: int, target: float = 0.
     )
 
 
+def _patch_thetas(monkeypatch: pytest.MonkeyPatch, thetas: list[float]) -> None:
+    monkeypatch.setattr(
+        _BootstrapDesign, "theta", lambda self, first, second, index: float(thetas[index])
+    )
+
+
 _SPARSE_SEVERITY = [0.0, 0.5, 1.0, 2.0, 4.0]
 
 
 class TestFailedReplicates:
-    def test_more_than_one_percent_failed_adds_a_warning_that_states_the_fraction(self) -> None:
+    def test_failures_above_half_of_alpha_give_up_on_real_sparse_data(self) -> None:
         fit = _fit(_SPARSE_SEVERITY, [6, 5, 3, 2, 0], [6] * 5)
 
         t = _boot(fit, "parametric_bootstrap", 400, seed=2026)
 
-        assert t.bootstrap is not None
-        assert 0.01 * 400 < t.bootstrap.failed <= 0.10 * 400
-        assert t.status is Status.OK and t.value is not None
-        assert t.interval_method == "parametric_bootstrap"
-        messages = [w for w in t.warnings if w.startswith("BOOTSTRAP_FAILURES:")]
-        assert len(messages) == 1
-        assert f"{t.bootstrap.failed}/400" in messages[0]
+        # About 6% of the refits separate: above alpha / 2 = 2.5% of the replicates at level 0.95,
+        # so the bootstrap gives up (it did not, when the cut-off was a fixed 10%).
+        assert t.status is Status.NOT_CONVERGED
+        assert t.interval_method == "exact_bound" and t.value is None
+        assert t.bootstrap is not None and t.bootstrap.failed > 0.025 * 400
+        assert any(w.startswith("BOOTSTRAP_FAILURES:") for w in t.warnings)
 
-    def test_failures_above_half_of_alpha_leave_the_point_estimate_with_no_bounds(
-        self,
+    def test_a_failure_share_between_one_percent_and_half_of_alpha_warns_but_keeps_the_interval(
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         fit = _fit(_SPARSE_SEVERITY, [6, 5, 3, 2, 0], [6] * 5)
+        centre = math.log(_boot(fit, "parametric_bootstrap", 20, seed=1).value or 1.0)
+        spread = (centre + np.linspace(-0.2, 0.2, 394)).tolist()
+        _patch_thetas(monkeypatch, [math.nan] * 6 + spread)
 
         t = _boot(fit, "parametric_bootstrap", 400, seed=2026)
 
-        # About 6% failed: more than alpha / 2 = 2.5% of all replicates, so each end of the
-        # percentile interval would be -inf or +inf, and neither is bounded.
+        # 6/400 = 1.5%: above the 1% warning line, within alpha / 2 = 2.5% at level 0.95.
         assert t.status is Status.OK and t.censoring is Censoring.NONE
-        assert t.value is not None and t.lo is None and t.hi is None
+        assert t.lo is not None and t.hi is not None
+        assert t.bootstrap is not None and t.bootstrap.failed == 6
+        messages = [w for w in t.warnings if w.startswith("BOOTSTRAP_FAILURES:")]
+        assert len(messages) == 1 and "6/400" in messages[0]
 
     def test_more_than_ten_percent_failed_gives_up_with_no_number(self) -> None:
         fit = _fit(_SPARSE_SEVERITY, [6, 6, 4, 1, 0], [6] * 5)
@@ -147,6 +161,54 @@ class TestFailedReplicates:
 
         assert t.bootstrap is not None and t.bootstrap.failed == 0
         assert not any(w.startswith("BOOTSTRAP_FAILURES:") for w in t.warnings)
+
+
+class TestGiveUpCutOffFollowsTheLevel:
+    """The bootstrap gives up when more than ``min(0.10, alpha / 2)`` of the replicates failed."""
+
+    def _run(
+        self, monkeypatch: pytest.MonkeyPatch, *, failed: int, n: int, level: float
+    ) -> Threshold:
+        fit = _fit(_SPARSE_SEVERITY, [6, 5, 3, 2, 0], [6] * 5)
+        centre = math.log(_boot(fit, "parametric_bootstrap", 20, seed=1).value or 1.0)
+        spread = (centre + np.linspace(-0.2, 0.2, n - failed)).tolist()
+        _patch_thetas(monkeypatch, [math.nan] * failed + spread)
+        return threshold(
+            fit,
+            definition=Definition.absolute(0.5),
+            interval_method="parametric_bootstrap",
+            level=level,
+            n_resamples=n,
+            seed=1,
+        )
+
+    @pytest.mark.parametrize(("failed", "gave_up"), [(10, False), (11, True)])
+    def test_level_095_gives_up_above_two_and_a_half_percent(
+        self, monkeypatch: pytest.MonkeyPatch, failed: int, gave_up: bool
+    ) -> None:
+        t = self._run(monkeypatch, failed=failed, n=400, level=0.95)
+
+        assert (t.status is Status.NOT_CONVERGED) is gave_up
+        assert t.bootstrap is not None and t.bootstrap.failed == failed
+
+    @pytest.mark.parametrize(("failed", "gave_up"), [(2, False), (3, True)])
+    def test_level_099_gives_up_above_half_a_percent(
+        self, monkeypatch: pytest.MonkeyPatch, failed: int, gave_up: bool
+    ) -> None:
+        t = self._run(monkeypatch, failed=failed, n=400, level=0.99)
+
+        assert (t.status is Status.NOT_CONVERGED) is gave_up
+        if gave_up:
+            assert t.interval_method == "exact_bound" and t.value is None
+
+    @pytest.mark.parametrize(("failed", "gave_up"), [(10, False), (11, True)])
+    def test_a_wide_alpha_is_capped_at_ten_percent(
+        self, monkeypatch: pytest.MonkeyPatch, failed: int, gave_up: bool
+    ) -> None:
+        # Level 0.7: alpha / 2 = 15%, so the cap of 10% applies.
+        t = self._run(monkeypatch, failed=failed, n=100, level=0.7)
+
+        assert (t.status is Status.NOT_CONVERGED) is gave_up
 
 
 class TestUnreachableReplicatesCountBySide:

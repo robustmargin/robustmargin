@@ -44,8 +44,8 @@ minor release may change the public API, and every such change carries a migrati
   - A replicate whose refit fails, or whose baseline is undefined (at or below zero), is counted
     as failed. It enters the percentiles as `-inf` for the lower end and `+inf` for the upper end,
     so a failure can only widen the interval, and it counts toward an open side. Above 1% a
-    `BOOTSTRAP_FAILURES:` warning states `failed/n_resamples`; above 10% the result is
-    `NOT_CONVERGED` with `interval_method` `"exact_bound"` and the exact-bound fallback for counts
+    `BOOTSTRAP_FAILURES:` warning states `failed/n_resamples`; above `min(10%, alpha/2)` the
+    result is `NOT_CONVERGED` with `interval_method` `"exact_bound"` and the exact-bound fallback for counts
     (no numbers for a continuous response).
   - `BOOTSTRAP_FEW_RESAMPLES:` warns when `n_resamples < 2/alpha - 1`. An interval of zero width is
     reported with no bounds and a `BOOTSTRAP_ZERO_WIDTH:` warning.

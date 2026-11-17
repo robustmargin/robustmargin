@@ -7,7 +7,8 @@
   such escape. ``lo > hi`` is never accepted.
 * When more than 10% of the replicates fail the bootstrap gives up: ``NOT_CONVERGED`` with
   ``interval_method="exact_bound"`` on a fit that is itself ``OK``. That is accepted exactly when a
-  ``bootstrap`` summary is attached and its ``failed`` exceeds 10% of ``n_resamples``.
+  ``bootstrap`` summary is attached and its ``failed`` exceeds ``min(0.10, (1 - level) / 2)`` of
+  ``n_resamples``.
 
 Results are built directly from the deterministic fakes, so no resampling runs.
 """
@@ -19,7 +20,7 @@ import dataclasses
 import pytest
 
 from robustmargin import BootstrapSummary, Censoring, Status, Threshold
-from robustmargin.testing import fake_threshold
+from robustmargin.testing import fake_fit, fake_threshold
 
 _BOOTSTRAP_METHODS = ("parametric_bootstrap", "cell_bootstrap")
 _SUMMARY = BootstrapSummary(
@@ -166,11 +167,12 @@ class TestModelIntervalsStillContainTheEstimate:
             )
 
 
-def _give_up(model: str, bootstrap: BootstrapSummary | None) -> Threshold:
+def _give_up(model: str, bootstrap: BootstrapSummary | None, *, level: float = 0.95) -> Threshold:
     t = fake_threshold(model=model)
     assert t.fit.status is Status.OK
     return dataclasses.replace(
         t,
+        level=level,
         status=Status.NOT_CONVERGED,
         censoring=Censoring.NONE,
         interval_method="exact_bound",
@@ -191,19 +193,30 @@ class TestGiveUpOnAnOkFit:
         assert t.status is Status.NOT_CONVERGED and t.fit.status is Status.OK
         assert t.bootstrap == _GIVE_UP
 
-    @pytest.mark.parametrize(("failed", "accepted"), [(5, False), (10, False), (11, True)])
-    def test_the_give_up_needs_more_than_a_tenth_of_the_replicates_to_have_failed(
-        self, model: str, failed: int, accepted: bool
+    @pytest.mark.parametrize(
+        ("level", "failed", "accepted"),
+        [
+            # Cut-off min(0.10, (1 - level) / 2) * n_resamples, with n_resamples = 100.
+            (0.95, 2, False),
+            (0.95, 3, True),
+            (0.99, 0, False),
+            (0.99, 1, True),
+            (0.7, 10, False),
+            (0.7, 11, True),
+        ],
+    )
+    def test_the_give_up_needs_more_failures_than_the_levels_cut_off(
+        self, model: str, level: float, failed: int, accepted: bool
     ) -> None:
         summary = BootstrapSummary(
             n_resamples=100, failed=failed, unreachable_low=0, unreachable_high=0, seed=1
         )
 
         if accepted:
-            assert _give_up(model, summary).bootstrap == summary
+            assert _give_up(model, summary, level=level).bootstrap == summary
         else:
             with pytest.raises(ValueError):
-                _give_up(model, summary)
+                _give_up(model, summary, level=level)
 
     def test_not_converged_on_an_ok_fit_is_rejected_without_a_bootstrap_summary(
         self, model: str
@@ -264,3 +277,43 @@ class TestExcludedEstimateWarning:
         assert t.lo == pytest.approx(math.exp(np.quantile(thetas, 0.025, method="weibull")))
         assert t.hi == pytest.approx(math.exp(np.quantile(thetas, 0.975, method="weibull")))
         assert t.lo is not None and t.lo > t.value
+
+
+class TestOldTagsRefuseNewContent:
+    """A result tagged ``"1"`` or ``"2"`` cannot hold what only ``"3"`` can express."""
+
+    @pytest.mark.parametrize("version", ["1", "2"])
+    def test_an_isotonic_fit_with_an_old_tag_is_rejected(self, version: str) -> None:
+        with pytest.raises(ValueError):
+            dataclasses.replace(fake_fit(model="isotonic"), schema_version=version)
+
+    @pytest.mark.parametrize("version", ["1", "2"])
+    def test_a_parametric_fit_with_an_old_tag_is_still_accepted(self, version: str) -> None:
+        assert dataclasses.replace(fake_fit(), schema_version=version).schema_version == version
+
+    @pytest.mark.parametrize("version", ["1", "2"])
+    @pytest.mark.parametrize("method", _BOOTSTRAP_METHODS)
+    def test_a_bootstrap_method_with_an_old_tag_is_rejected(
+        self, version: str, method: str
+    ) -> None:
+        with pytest.raises(ValueError):
+            dataclasses.replace(fake_threshold(), schema_version=version, interval_method=method)
+
+    @pytest.mark.parametrize("version", ["1", "2"])
+    def test_a_bootstrap_summary_with_an_old_tag_is_rejected(self, version: str) -> None:
+        with pytest.raises(ValueError):
+            dataclasses.replace(fake_threshold(), schema_version=version, bootstrap=_SUMMARY)
+
+    @pytest.mark.parametrize("version", ["1", "2"])
+    def test_an_isotonic_threshold_with_an_old_tag_is_rejected(self, version: str) -> None:
+        with pytest.raises(ValueError):
+            dataclasses.replace(fake_threshold(model="isotonic"), schema_version=version)
+
+    @pytest.mark.parametrize("version", ["1", "2"])
+    @pytest.mark.parametrize("method", ["profile", "delta"])
+    def test_a_model_interval_threshold_with_an_old_tag_is_still_accepted(
+        self, version: str, method: str
+    ) -> None:
+        t = dataclasses.replace(fake_threshold(interval_method=method), schema_version=version)
+
+        assert t.schema_version == version

@@ -151,23 +151,37 @@ def _seam():  # type: ignore[no-untyped-def]
 
 
 class TestFailedReplicatesAreNotDropped:
-    def test_failures_above_half_of_alpha_open_both_sides(
+    def test_failures_above_half_of_alpha_give_up(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fit = _rich_binomial()
+        point = _point(fit, "delta")
+        assert point.value is not None
+        spread = np.linspace(-0.05, 0.05, 97)
+        _patch_thetas(monkeypatch, [math.nan] * 3 + (math.log(point.value) + spread).tolist())
+
+        t = _boot(fit, Definition.absolute(0.5), "parametric_bootstrap", n_resamples=100)
+
+        # 3 of 100 failed: more than alpha / 2 = 2.5% at level 0.95, so the bootstrap gives up.
+        assert t.status is Status.NOT_CONVERGED and t.interval_method == "exact_bound"
+        assert t.value is None
+        assert t.bootstrap is not None and t.bootstrap.failed == 3
+
+    def test_failures_within_the_cut_off_can_still_leave_a_percentile_at_infinity(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         fit = _rich_binomial()
         point = _point(fit, "delta")
         assert point.value is not None
-        spread = np.linspace(-0.05, 0.05, 97)
-        thetas = [math.nan] * 3 + (math.log(point.value) + spread).tolist()
-        _patch_thetas(monkeypatch, thetas)
+        spread = np.linspace(-0.05, 0.05, 98)
+        _patch_thetas(monkeypatch, [math.nan] * 2 + (math.log(point.value) + spread).tolist())
 
         t = _boot(fit, Definition.absolute(0.5), "parametric_bootstrap", n_resamples=100)
 
-        # 3 of 100 failed: 3 > 0.025 * 100 on both sides, so neither end is bounded.
+        # 2 of 100 failed: within the 2.5% cut-off, but the 2.5th percentile of the lower list
+        # falls between a -inf and a finite replicate, so it is not finite and neither end is
+        # bounded; the point estimate is kept.
         assert t.status is Status.OK and t.censoring is Censoring.NONE
         assert t.value is not None and t.lo is None and t.hi is None
-        assert t.bootstrap is not None and t.bootstrap.failed == 3
-        assert any(w.startswith("BOOTSTRAP_FAILURES:") and "3/100" in w for w in t.warnings)
+        assert t.bootstrap is not None and t.bootstrap.failed == 2
 
     def test_a_single_failure_in_a_hundred_leaves_the_interval_closed_and_unwarned(
         self, monkeypatch: pytest.MonkeyPatch
@@ -200,8 +214,8 @@ class TestFailedReplicatesAreNotDropped:
         assert (t.bootstrap.failed, t.bootstrap.unreachable_low) == (2, 4)
         assert t.lo is None  # the lower side is open
 
-    def test_sparse_counts_where_a_few_percent_of_refits_separate_have_no_bounds(self) -> None:
-        # About 6% of the refits separate: more than alpha / 2 of all replicates on each side.
+    def test_sparse_counts_where_a_few_percent_of_refits_separate_give_up(self) -> None:
+        # About 6% of the refits separate: more than alpha / 2 of all replicates.
         fit = fit_dose_response(
             _counts_obs([0.0, 0.5, 1.0, 2.0, 4.0], [6, 5, 3, 2, 0], [6] * 5),
             model="binomial",
@@ -212,8 +226,8 @@ class TestFailedReplicatesAreNotDropped:
 
         t = _boot(fit, Definition.absolute(0.5), "parametric_bootstrap", n_resamples=400, seed=2026)
 
-        assert t.status is Status.OK and t.censoring is Censoring.NONE
-        assert t.value is not None and t.lo is None and t.hi is None
+        assert t.status is Status.NOT_CONVERGED and t.value is None
+        assert t.interval_method == "exact_bound"
         assert t.bootstrap is not None
         assert 0.025 * 400 < t.bootstrap.failed <= 0.10 * 400
         assert any(w.startswith("BOOTSTRAP_FAILURES:") for w in t.warnings)
@@ -232,9 +246,9 @@ class TestFailedReplicatesAreNotDropped:
 
         t = _boot(fit, Definition.baseline_multiple(5), "cell_bootstrap", n_resamples=400, seed=6)
 
-        assert t.status is Status.OK
-        assert t.bootstrap is not None and 0.01 * 400 < t.bootstrap.failed <= 0.10 * 400
-        assert t.lo is None  # failures widen the lower percentile to -inf and open the side
+        # About 8% of the replicates have no baseline: above alpha / 2, so the bootstrap gives up.
+        assert t.status is Status.NOT_CONVERGED and t.value is None
+        assert t.bootstrap is not None and 0.025 * 400 < t.bootstrap.failed <= 0.10 * 400
         messages = [w for w in t.warnings if w.startswith("BOOTSTRAP_FAILURES:")]
         assert len(messages) == 1
         assert "baseline" in messages[0].lower()
@@ -265,10 +279,14 @@ class TestFailedReplicatesAreNotDropped:
             fit, Definition.baseline_multiple(5), "parametric_bootstrap", n_resamples=400, seed=5
         )
 
-        assert t.status is Status.OK
+        # Replicates whose baseline is undefined failed: the result is no longer an OK interval
+        # with a closed lower bound.
         assert t.bootstrap is not None and t.bootstrap.failed > 0
-        assert t.lo is None
-        assert t.censoring in (Censoring.OPEN_LOWER, Censoring.NONE)
+        assert not (t.status is Status.OK and t.lo is not None)
+        if t.status is Status.OK:
+            assert t.censoring in (Censoring.OPEN_LOWER, Censoring.NONE)
+        else:
+            assert t.status is Status.NOT_CONVERGED and t.value is None
         assert any(w.startswith("BOOTSTRAP_FAILURES:") for w in t.warnings)
 
 
@@ -567,6 +585,70 @@ class TestExcludedEstimateWarningStatesZ0:
         assert len(messages) == 1
         assert "z0" in messages[0]
         assert f"{norm.ppf(0.01):.2f}" in messages[0] or f"{norm.ppf(0.01):.3f}" in messages[0]
+
+
+def _patch_thetas_around_the_estimate(
+    monkeypatch: pytest.MonkeyPatch, *, below: int, equal: int, above: int
+) -> None:
+    """Replicate thetas with exact counts below, equal to and above ``theta_hat``, which is read
+    from the call ``threshold()`` makes, so the ties are exact."""
+    module = importlib.import_module("robustmargin.threshold")
+    seen: dict[str, float] = {}
+    original = module._bootstrap_interval
+
+    def spy(*args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+        seen["hat"] = float(kwargs["theta_hat"])  # type: ignore[arg-type]
+        return original(*args, **kwargs)
+
+    def theta(self: object, first: object, second: object, index: int) -> float:
+        hat = seen["hat"]
+        if index < below:
+            return hat - 0.5 - 0.001 * index
+        if index < below + equal:
+            return hat
+        return hat + 0.5 + 0.001 * index
+
+    monkeypatch.setattr(module, "_bootstrap_interval", spy)
+    monkeypatch.setattr(_BootstrapDesign, "theta", theta)
+
+
+class TestExcludedEstimateWarningTies:
+    def test_a_replicate_equal_to_the_estimate_counts_half_in_z0(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fit = _rich_binomial()
+        _patch_thetas_around_the_estimate(monkeypatch, below=1, equal=1, above=98)
+
+        t = _boot(fit, Definition.absolute(0.5), "parametric_bootstrap", n_resamples=100)
+
+        (message,) = [w for w in t.warnings if w.startswith("BOOTSTRAP_EXCLUDES_ESTIMATE:")]
+        # (1 below + half of 1 tie) / 100 = 0.015, not 1 / 100.
+        assert f"{norm.ppf(0.015):.2f}" in message
+        assert f"{norm.ppf(0.01):.2f}" not in message
+
+    def test_every_replicate_above_the_estimate_is_said_in_words_with_no_infinite_z0(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fit = _rich_binomial()
+        _patch_thetas_around_the_estimate(monkeypatch, below=0, equal=0, above=100)
+
+        t = _boot(fit, Definition.absolute(0.5), "parametric_bootstrap", n_resamples=100)
+
+        (message,) = [w for w in t.warnings if w.startswith("BOOTSTRAP_EXCLUDES_ESTIMATE:")]
+        assert "above" in message
+        assert "inf" not in message.lower()
+
+    def test_every_replicate_below_the_estimate_is_said_in_words_with_no_infinite_z0(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fit = _rich_binomial()
+        _patch_thetas_around_the_estimate(monkeypatch, below=100, equal=0, above=0)
+
+        t = _boot(fit, Definition.absolute(0.5), "parametric_bootstrap", n_resamples=100)
+
+        (message,) = [w for w in t.warnings if w.startswith("BOOTSTRAP_EXCLUDES_ESTIMATE:")]
+        assert "below" in message
+        assert "inf" not in message.lower()
 
 
 class TestFewResamples:

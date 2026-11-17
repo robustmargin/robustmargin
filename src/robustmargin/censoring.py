@@ -921,11 +921,11 @@ def _bootstrap_give_up(
     """The exact-bound fallback of a bootstrap interval that gave up, for a binomial or isotonic
     ``fit`` of counts that is itself ``OK``.
 
-    More than a tenth of the bootstrap refits failed, so no interval is reported and the result is
-    ``NOT_CONVERGED``. What it still says is what the data say without any fitted curve: the
-    bracket or one-sided bound of the fixed-sequence exact tests, step 9 of the sequence in this
-    module's docstring, with the grid break-point attached. Arguments are those of
-    :func:`classify`, which has already run on ``fit`` and returned ``solve=True``.
+    More than ``min(10%, alpha / 2)`` of the bootstrap replicates failed, so no interval is
+    reported and the result is ``NOT_CONVERGED``. What it still says is what the data say without
+    any fitted curve: the bracket or one-sided bound of the fixed-sequence exact tests, step 9 of
+    the sequence in this module's docstring, with the grid break-point attached. Arguments are
+    those of :func:`classify`, which has already run on ``fit`` and returned ``solve=True``.
     """
     mirrored = original_target is not None
     shown_target = original_target if original_target is not None else target
