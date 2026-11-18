@@ -25,8 +25,8 @@ robustness and safety carry weight:
 > with severity and for real-valued scores (Gaussian least squares), thresholds with
 > profile-likelihood or delta confidence intervals, censoring, ratios of two thresholds with
 > Fieller or log-delta intervals, fit diagnostics, and the grid break-point rule. The development
-> version adds model-free isotonic fits and bootstrap intervals (see below). Clustered and paired
-> inference and design helpers are planned for `0.4`. While the version is below 1.0, a minor
+> version adds model-free isotonic fits, bootstrap intervals, and clustered and paired inference
+> (see below). Design helpers are planned for `0.4`. While the version is below 1.0, a minor
 > release may change the public API.
 
 ## What it does
@@ -272,8 +272,8 @@ assert any(w.startswith("OVERDISPERSED: ") for w in form_b.diagnostics.warnings)
 assert any(w.startswith("NON_MONOTONE_DATA: ") for w in ratio.warnings)
 ```
 
-Treat an overdispersed fit's intervals as too narrow. Clustered inference, which addresses this,
-is planned for `0.4`.
+Treat an overdispersed fit's intervals as too narrow. When the extra variation comes from trials
+that share a cluster, see "Repeated scenarios: clustered and paired inference" below.
 
 ### An outcome that rises with severity
 
@@ -445,6 +445,113 @@ estimated asymptote each refit is far slower than with fixed asymptotes, so give
 `n_resamples`. A replicate whose refit fails is counted in `Threshold.bootstrap` and enters the
 percentiles as the worst case for each end (so failures can only widen the interval), with a warning
 above 1% and no interval above 10% (or above `alpha/2`, if that is smaller).
+
+### Repeated scenarios: clustered and paired inference
+
+When many trials come from the same scenario, they are not independent, and intervals that assume
+they are come out too narrow. Give `Observations` a `cluster` id for every row and ask for
+`dependence="clustered"`. The point estimate is the usual maximum-likelihood fit, unchanged; its
+covariance becomes a cluster-robust sandwich that uses only the variation between clusters, and
+`Fit.cluster_cells` keeps the per-cluster counts so that whole clusters can be resampled. This is
+for count outcomes (`model="binomial"`) only. A clustered fit needs more clusters than it has
+estimated parameters (`ValueError` otherwise), and a result built on few clusters carries a
+`FEW_CLUSTERS:` warning stating the count it considers few. Monotonicity is checked by an exact sign
+test across clusters (`check_monotonicity(obs, dependence="clustered")`).
+
+A clustered threshold makes no exact claim, because the exact bounds treat trials as independent.
+Its recommended interval is `"delta"`: the sandwich covariance with a Student-t quantile on
+`G - 1` degrees of freedom. `"cluster_bootstrap"` (resample whole clusters with replacement and
+refit) is an alternative that needs about 40 or more clusters, because a percentile interval from
+few clusters covers less than its stated level; the other methods raise. A beyond-range crossing is
+an `EXTRAPOLATED` value, not a `RIGHT` bound. When two outcomes are measured on the same clusters,
+the ratio of their thresholds takes `dependence="paired"`, with `method="log_delta"` (or
+`"fieller"`), which keeps the correlation between the two. The example below uses 12 clusters, so
+its results carry the `FEW_CLUSTERS:` warning, which is raised below 20 clusters (below 40 for
+`"cluster_bootstrap"`).
+
+```python
+import math
+
+import numpy as np
+
+from robustmargin import (
+    Axis,
+    Definition,
+    Observations,
+    Status,
+    fit_dose_response,
+    ratio_interval,
+    threshold,
+)
+
+axis = Axis(name="severity", unit="unit", scale="log")
+levels = [0.0, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
+n_clusters, trials = 12, 20
+rng = np.random.default_rng(3)
+scenario_shift = rng.normal(0.0, 0.4, n_clusters)  # each scenario is easier or harder
+
+
+def observe(log_midpoint_shift: float) -> Observations:
+    severity, successes, cluster = [], [], []
+    for g in range(n_clusters):
+        for x in levels:
+            z = (math.log(x) - (math.log(6.0) + log_midpoint_shift)) / 0.6 if x > 0 else -4.0
+            p = 1.0 - 0.5 * (1.0 + math.erf((z + scenario_shift[g]) / math.sqrt(2.0)))
+            severity.append(x)
+            successes.append(int(rng.binomial(trials, p)))
+            cluster.append(f"scenario-{g}")
+    return Observations.from_counts(
+        axis,
+        severity=severity,
+        successes=successes,
+        trials=[trials] * len(severity),
+        outcome="success",
+        direction="decreasing",
+        cluster=cluster,
+    )
+
+
+margins = {}
+for name, shift in {"a": 0.0, "b": 0.5}.items():
+    fit = fit_dose_response(
+        observe(shift),
+        model="binomial",
+        link="probit",
+        upper=1.0,
+        lower=0.0,
+        dependence="clustered",
+    )
+    assert fit.status is Status.OK and fit.dependence == "clustered"
+    margins[name] = threshold(
+        fit,
+        definition=Definition.absolute(0.5),
+        interval_method="delta",
+        dependence="clustered",
+        level=0.95,
+    )
+    assert margins[name].status is Status.OK
+    assert margins[name].lo < margins[name].value < margins[name].hi
+
+# Outcome "b" is measured on the same twelve scenarios as "a": a paired ratio of the two margins.
+ratio = ratio_interval(
+    margins["b"],
+    margins["a"],
+    method="log_delta",
+    dependence="paired",
+    level=0.95,
+)
+assert ratio.status is Status.OK and ratio.dependence == "paired"
+assert 1.0 < ratio.lo < ratio.estimate < ratio.hi
+```
+
+`method="fieller"` and `"log_delta"` with `dependence="paired"` use the covariance between the two
+fits' cluster-robust estimates and Student-t quantiles on `G - 1` degrees of freedom. Both
+thresholds must come from clustered fits over the same set of cluster ids. `method="cluster_bootstrap"`
+with `dependence="paired"` resamples the same clusters for both and is the alternative; it also
+computes the sandwich standard error alongside, and a `CLUSTER_CROSS_CHECK:` warning says when the
+two disagree by more than a stated tolerance. A ratio of clustered thresholds on disjoint sets of
+clusters (`dependence="independent"`) uses a Student-t quantile with Welch-Satterthwaite degrees of
+freedom.
 
 ## Grid break-point rule
 

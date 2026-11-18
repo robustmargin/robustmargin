@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:robustmargin:schema:scorecard-v3",
   "title": "robustmargin score card (v3)",
-  "description": "A robustmargin Scorecard: a collection of GridBreakPoint, Fit, Threshold and Ratio results plus provenance metadata. This is schema version \"3\", the version robustmargin writes; robustmargin also reads versions \"1\" and \"2\". Version \"2\" differs from \"1\" in admitting increasing outcomes, the baseline_multiple definition and the Gaussian model; version \"3\" differs from \"2\" in admitting the isotonic model, the parametric_bootstrap and cell_bootstrap interval methods, Fit.cell_estimates and Threshold.bootstrap, and nothing else. Fit.model is \"binomial\" (counts), \"gaussian\" (real-valued responses, with Fit.cells as ContinuousCell, Fit.residual set, Fit.diagnostics a ContinuousDiagnostics, and Fit.params.upper and .lower any finite response values; a binomial fit has Cell cells, no residual, and upper and lower probabilities in [0, 1]) or \"isotonic\" (a monotone nonparametric fit to counts or to real-valued responses, with Fit.link \"none\", status OK, null params, covariance, diagnostics and residual, and Fit.cell_estimates holding the fitted value of every cell; Fit.cell_estimates is null exactly when the model is not isotonic). A Gaussian fit's status is OK or NOT_CONVERGED, and a Threshold on a Gaussian or continuous isotonic fit makes no exact claim: its censoring is never RIGHT or LEFT. Threshold.bootstrap is null or a BootstrapSummary, set when a bootstrap interval method ran. Fit.diagnostics is an object or null, set only when the fit's own status is OK (model-only goodness of fit and link comparison -- see the Diagnostics and ContinuousDiagnostics defs, which deliberately have no monotonicity entry of their own); Fit.monotonicity is an object or null, set on every fresh Fit regardless of status (a data-only adjacent-severity-level check on the raw data -- see the MonotonicityCheck, AdjacentPair and ContinuousAdjacentPair defs). Neither field is required on Fit: a payload that omits either still validates and still loads through from_dict with that field None; the same holds for Fit.residual, which a binomial fit omits, and for Fit.cell_estimates and Threshold.bootstrap, which a version \"2\" writer omits. IntervalShape.HALF_OPEN is valid; Fit.direction and Threshold.direction accept \"decreasing\" and \"increasing\" (an outcome that rises with severity), and Ratio.dependence accepts only \"independent\". Adding a result family or an enum value (for example paired) is a schema_version change, not a silent extension of this one. Each object's `properties` keys match its dataclass's field names exactly (plus `type` for the five tagged result types). additionalProperties is false everywhere: an unrecognised field is a reader/writer version mismatch, not a safe extension, in this schema version.",
+  "description": "A robustmargin Scorecard: a collection of GridBreakPoint, Fit, Threshold and Ratio results plus provenance metadata. This is schema version \"3\", the version robustmargin writes; robustmargin also reads versions \"1\" and \"2\". Version \"2\" differs from \"1\" in admitting increasing outcomes, the baseline_multiple definition and the Gaussian model; version \"3\" differs from \"2\" in admitting the isotonic model, the parametric_bootstrap, cell_bootstrap and cluster_bootstrap interval methods, Fit.cell_estimates, Threshold.bootstrap, and the clustered and paired fields: Fit.dependence and Fit.cluster_cells, the cluster sign test of MonotonicityCheck (ClusterAdjacentPair entries), Threshold.dependence \"clustered\", Ratio.dependence \"paired\", Ratio.method \"cluster_bootstrap\" and Ratio.bootstrap. None of the added keys is required, and a payload tagged \"1\" or \"2\" carries none of them with a non-null or non-independent value. Fit.model is \"binomial\" (counts), \"gaussian\" (real-valued responses, with Fit.cells as ContinuousCell, Fit.residual set, Fit.diagnostics a ContinuousDiagnostics, and Fit.params.upper and .lower any finite response values; a binomial fit has Cell cells, no residual, and upper and lower probabilities in [0, 1]) or \"isotonic\" (a monotone nonparametric fit to counts or to real-valued responses, with Fit.link \"none\", status OK, null params, covariance, diagnostics and residual, and Fit.cell_estimates holding the fitted value of every cell; Fit.cell_estimates is null exactly when the model is not isotonic). A Gaussian fit's status is OK or NOT_CONVERGED, and a Threshold on a Gaussian or continuous isotonic fit makes no exact claim: its censoring is never RIGHT or LEFT. Threshold.bootstrap and Ratio.bootstrap are null or a BootstrapSummary, set when a bootstrap interval method ran. Fit.dependence is \"independent\" (a model-based covariance) or \"clustered\" (a cluster-robust covariance, binomial fits only); Fit.cluster_cells is an array of ClusterCell exactly when Fit.dependence is \"clustered\", and null otherwise. Fit.diagnostics is an object or null, set only when the fit's own status is OK (model-only goodness of fit and link comparison -- see the Diagnostics and ContinuousDiagnostics defs, which deliberately have no monotonicity entry of their own); Fit.monotonicity is an object or null, set on every fresh Fit regardless of status (a data-only adjacent-severity-level check on the raw data -- see the MonotonicityCheck, AdjacentPair and ContinuousAdjacentPair defs). Neither field is required on Fit: a payload that omits either still validates and still loads through from_dict with that field None; the same holds for Fit.residual, which a binomial fit omits, and for Fit.cell_estimates and Threshold.bootstrap, which a version \"2\" writer omits. IntervalShape.HALF_OPEN is valid; Fit.direction and Threshold.direction accept \"decreasing\" and \"increasing\" (an outcome that rises with severity). Adding a result family or an enum value is a schema_version change, not a silent extension of this one. Each object's `properties` keys match its dataclass's field names exactly (plus `type` for the five tagged result types). additionalProperties is false everywhere: an unrecognised field is a reader/writer version mismatch, not a safe extension, in this schema version.",
   "type": "object",
   "properties": {
     "type": {
@@ -242,6 +242,27 @@
               "type": "array",
               "items": {
                 "type": "number"
+              }
+            }
+          ]
+        },
+        "dependence": {
+          "description": "\"independent\": covariance is the model-based one, whether or not the data carried cluster ids. \"clustered\": covariance is the cluster-robust sandwich, the model is binomial, and cluster_cells is set. Absent in a payload written by a release that predates clustered inference.",
+          "enum": [
+            "independent",
+            "clustered"
+          ]
+        },
+        "cluster_cells": {
+          "description": "Counts per (severity, cluster) of a clustered fit, as counted, strictly ordered by severity and then by the cluster's position in cluster_ids; an array exactly when dependence is \"clustered\", null otherwise.",
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ClusterCell"
               }
             }
           ]
@@ -507,7 +528,8 @@
             "delta",
             "exact_bound",
             "parametric_bootstrap",
-            "cell_bootstrap"
+            "cell_bootstrap",
+            "cluster_bootstrap"
           ]
         },
         "censoring": {
@@ -517,8 +539,10 @@
           "$ref": "#/$defs/Status"
         },
         "dependence": {
+          "description": "\"clustered\" exactly when fit.dependence is \"clustered\"; a clustered threshold makes no exact claim (its censoring is never RIGHT or LEFT and its status is never FAILS_AT_BASELINE) and its interval_method is cluster_bootstrap, delta or exact_bound.",
           "enum": [
-            "independent"
+            "independent",
+            "clustered"
           ]
         },
         "fit": {
@@ -589,7 +613,7 @@
     },
     "Ratio": {
       "type": "object",
-      "description": "robustmargin.Ratio: the ratio of two thresholds' severities, on the same axis, with a confidence interval. A failed or censored ratio (status != OK or censoring != NONE) carries shape=null, estimate=null, lo=null, hi=null -- no numbers. dependence accepts only \"independent\" (a later release adds \"paired\"). IntervalShape.HALF_OPEN means lo set, hi null, i.e. [lo, inf); EXCLUSIVE stays a valid shape (its Ratio invariants are still enforced) but is unreachable from ratio_interval() while dependence=\"independent\".",
+      "description": "robustmargin.Ratio: the ratio of two thresholds' severities, on the same axis, with a confidence interval. A failed or censored ratio (status != OK or censoring != NONE) carries shape=null, estimate=null, lo=null, hi=null -- no numbers. dependence is \"independent\" or \"paired\" (two outcomes measured on the same clusters, both thresholds clustered); method is fieller, log_delta or cluster_bootstrap, the last only with \"paired\". bootstrap is a BootstrapSummary exactly when a paired cluster bootstrap ran, null otherwise. IntervalShape.HALF_OPEN means lo set, hi null, i.e. [lo, inf); EXCLUSIVE means (-inf, lo] union [hi, inf), and arises only with \"paired\", where the covariance between the two thresholds is not zero.",
       "properties": {
         "type": {
           "const": "Ratio"
@@ -631,12 +655,14 @@
         "method": {
           "enum": [
             "fieller",
-            "log_delta"
+            "log_delta",
+            "cluster_bootstrap"
           ]
         },
         "dependence": {
           "enum": [
-            "independent"
+            "independent",
+            "paired"
           ]
         },
         "level": {
@@ -659,6 +685,17 @@
         },
         "provenance": {
           "type": "object"
+        },
+        "bootstrap": {
+          "description": "What a paired cluster bootstrap did with its replicates (a BootstrapSummary); null for every other method and for a ratio decided from an input's status or censoring before any resampling.",
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/BootstrapSummary"
+            }
+          ]
         }
       },
       "required": [
@@ -745,6 +782,34 @@
       },
       "required": [
         "severity",
+        "successes",
+        "trials"
+      ],
+      "additionalProperties": false
+    },
+    "ClusterCell": {
+      "type": "object",
+      "description": "robustmargin.ClusterCell: one row of counts at a single severity within a single cluster.",
+      "properties": {
+        "severity": {
+          "type": "number"
+        },
+        "cluster": {
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "successes": {
+          "type": "integer"
+        },
+        "trials": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "severity",
+        "cluster",
         "successes",
         "trials"
       ],
@@ -1156,9 +1221,58 @@
       ],
       "additionalProperties": false
     },
+    "ClusterAdjacentPair": {
+      "type": "object",
+      "description": "robustmargin.ClusterAdjacentPair: one adjacent-severity-level pair of a cluster sign test: how many clusters moved against the outcome's direction (reversed), with it (ordered) or not at all (tied), how many observed at both levels with unequal trials were left out (unbalanced), the exact one-sided sign-test p-value and its Holm-adjusted p-value.",
+      "properties": {
+        "severity_low": {
+          "type": "number"
+        },
+        "severity_high": {
+          "type": "number"
+        },
+        "clusters_reversed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "clusters_ordered": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "clusters_tied": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "clusters_unbalanced": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "p_value": {
+          "type": "number"
+        },
+        "holm_adjusted_p": {
+          "type": "number"
+        },
+        "flagged": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "severity_low",
+        "severity_high",
+        "clusters_reversed",
+        "clusters_ordered",
+        "clusters_tied",
+        "clusters_unbalanced",
+        "p_value",
+        "holm_adjusted_p",
+        "flagged"
+      ],
+      "additionalProperties": false
+    },
     "MonotonicityCheck": {
       "type": "object",
-      "description": "robustmargin.MonotonicityCheck: a data-only adjacent-level monotonicity check on the raw data -- populated on every fit_dose_response return path, whatever the Status, since it needs only the data, never a fitted curve. Counts are tested with a one-sided Fisher exact test (AdjacentPair) and real-valued responses with a one-sided Welch t-test (ContinuousAdjacentPair), both Holm-corrected. An untagged helper, like BaselineRate: it appears only as Fit.monotonicity.",
+      "description": "robustmargin.MonotonicityCheck: a data-only adjacent-level monotonicity check on the raw data -- populated on every fit_dose_response return path, whatever the Status, since it needs only the data, never a fitted curve. Counts are tested with a one-sided Fisher exact test (AdjacentPair), clustered counts with an exact one-sided cluster sign test (ClusterAdjacentPair, dependence \"clustered\") and real-valued responses with a one-sided Welch t-test (ContinuousAdjacentPair), all Holm-corrected. An untagged helper, like BaselineRate: it appears only as Fit.monotonicity.",
       "properties": {
         "direction": {
           "enum": [
@@ -1173,7 +1287,8 @@
         },
         "dependence": {
           "enum": [
-            "independent"
+            "independent",
+            "clustered"
           ]
         },
         "pairs": {
@@ -1185,6 +1300,9 @@
               },
               {
                 "$ref": "#/$defs/ContinuousAdjacentPair"
+              },
+              {
+                "$ref": "#/$defs/ClusterAdjacentPair"
               }
             ]
           }
@@ -1196,7 +1314,8 @@
           "type": "string",
           "enum": [
             "fisher_exact_one_sided_holm",
-            "welch_t_one_sided_holm"
+            "welch_t_one_sided_holm",
+            "cluster_sign_test_one_sided_holm"
           ]
         },
         "warnings": {

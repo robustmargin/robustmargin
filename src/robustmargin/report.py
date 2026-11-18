@@ -37,16 +37,21 @@ have produced it (the check is per object, not per card). The same holds for a `
 binomial ``Fit`` writes no ``residual`` key at all, so its serialised form is unchanged.
 
 Version ``"3"`` adds the isotonic model (``model="isotonic"``, ``link="none"``), the
-``"parametric_bootstrap"`` and ``"cell_bootstrap"`` interval methods, ``Fit.cell_estimates`` and
-``Threshold.bootstrap``. ``to_dict`` writes the last two, as ``null`` when unset, except on a
-result tagged ``"1"`` or ``"2"``, where an unset one is left out. A ``Fit``
-or ``Threshold`` tagged ``"1"`` or ``"2"`` that carries any non-null value of those raises, since
-no earlier writer could have produced it; a card from an earlier release (no such keys, or
-explicit ``null`` ones) still reads. A result read from a ``"1"`` or ``"2"`` card keeps that
-``schema_version``, as it did before version ``"3"``, so writing it back gives a card the release
-that wrote it can still read. Only the ``Scorecard`` root
-requires the tag; a nested or bare result that omits it is read as ``"3"``. A reader older than
-this release rejects every card written now, so upgrade readers before writers.
+``"parametric_bootstrap"``, ``"cell_bootstrap"`` and ``"cluster_bootstrap"`` interval methods,
+``Fit.cell_estimates``, ``Threshold.bootstrap`` and, for clustered and paired inference,
+``Fit.dependence`` (``"clustered"``), ``Fit.cluster_cells``, the cluster sign test of
+``MonotonicityCheck``, ``Threshold.dependence`` (``"clustered"``), ``Ratio.dependence``
+(``"paired"``), ``Ratio.method`` (``"cluster_bootstrap"``) and ``Ratio.bootstrap``. ``to_dict``
+writes the keys ``cell_estimates``, ``bootstrap`` and ``cluster_cells``, as ``null`` when unset,
+and a ``Fit``'s ``dependence``, except on a result tagged ``"1"`` or ``"2"``, where an unset one
+(and an ``"independent"`` ``Fit.dependence``) is left out. A result tagged ``"1"`` or ``"2"`` that
+carries any of the new values raises, since no earlier writer could have produced it; a card from
+an earlier release (no such keys, or explicit ``null`` or ``"independent"`` ones) still reads.
+A result read from a ``"1"`` or ``"2"`` card keeps that ``schema_version``, as it did before
+version ``"3"``, so writing it back gives a card the release that wrote it can still read. Only
+the ``Scorecard`` root requires the tag; a nested or bare result that omits it is read as ``"3"``.
+A reader older than this release rejects every card written now, so upgrade readers before
+writers.
 
 ``load_schema`` reads the packaged ``schema/scorecard-v{version}.json`` with
 :mod:`importlib.resources`; ``scorecard-v1.json``, ``scorecard-v2.json`` and
@@ -76,6 +81,8 @@ from robustmargin.types import (
     BootstrapSummary,
     Cell,
     Censoring,
+    ClusterAdjacentPair,
+    ClusterCell,
     ContinuousCell,
     Definition,
     IntervalShape,
@@ -106,8 +113,15 @@ _VERSION_2_MODELS = frozenset({"gaussian"})
 # produced.
 _VERSION_3_MODELS = frozenset({"isotonic"})
 _VERSION_3_LINKS = frozenset({"none"})
-_VERSION_3_INTERVAL_METHODS = frozenset({"parametric_bootstrap", "cell_bootstrap"})
-_VERSION_3_KEYS = ("cell_estimates", "bootstrap")
+_VERSION_3_INTERVAL_METHODS = frozenset(
+    {"parametric_bootstrap", "cell_bootstrap", "cluster_bootstrap"}
+)
+_VERSION_3_KEYS = ("cell_estimates", "bootstrap", "cluster_cells")
+# What a "1" or "2" writer never wrote for ``dependence`` (on a Fit, Threshold or Ratio), for a
+# Ratio's ``method`` and for a Fit's nested monotonicity check.
+_VERSION_3_DEPENDENCE = frozenset({"clustered", "paired"})
+_VERSION_3_RATIO_METHODS = frozenset({"cluster_bootstrap"})
+_CLUSTER_SIGN_TEST_METHOD = "cluster_sign_test_one_sided_holm"
 # A field written only when set: a binomial Fit has no residual and writes no key for it, so its
 # serialised form is the one a schema "1" reader accepts.
 _OMITTED_WHEN_NONE = frozenset({"residual"})
@@ -253,6 +267,16 @@ def _encode_dataclass_instance(obj: Any) -> dict[str, JSONValue]:
             f.name in _VERSION_3_KEYS
             and raw is None
             and getattr(obj, "schema_version", None) in ("1", "2")
+        ):
+            continue
+        # `dependence` is a required key of a Threshold, a Ratio and a MonotonicityCheck in every
+        # version, so only a Fit leaves it out: a Fit written by an earlier release has no such
+        # key.
+        if (
+            isinstance(obj, Fit)
+            and f.name == "dependence"
+            and raw == "independent"
+            and obj.schema_version in ("1", "2")
         ):
             continue
         if f.name == "provenance":
@@ -534,16 +558,27 @@ def _continuous_adjacent_pair_from_dict(
     return ContinuousAdjacentPair(**fields)
 
 
+def _cluster_adjacent_pair_from_dict(data: object, card_version: str | None) -> ClusterAdjacentPair:
+    """``ClusterAdjacentPair`` is an untagged helper, like ``AdjacentPair``."""
+    fields = _validated_fields(ClusterAdjacentPair, data, tagged=False, card_version=card_version)
+    return ClusterAdjacentPair(**fields)
+
+
+def _cluster_cell_from_dict(data: object, card_version: str | None) -> ClusterCell:
+    return ClusterCell(
+        **_validated_fields(ClusterCell, data, tagged=False, card_version=card_version)
+    )
+
+
 def _monotonicity_check_from_dict(data: object, card_version: str | None) -> MonotonicityCheck:
     """``MonotonicityCheck`` is an untagged helper, like ``BaselineRate``: it only ever appears
     as ``Fit.monotonicity``. Its ``method`` says which pair type its ``pairs`` are.
     """
     fields = _validated_fields(MonotonicityCheck, data, tagged=False, card_version=card_version)
-    build_pair = (
-        _continuous_adjacent_pair_from_dict
-        if fields.get("method") == "welch_t_one_sided_holm"
-        else _adjacent_pair_from_dict
-    )
+    build_pair: Any = {
+        "welch_t_one_sided_holm": _continuous_adjacent_pair_from_dict,
+        _CLUSTER_SIGN_TEST_METHOD: _cluster_adjacent_pair_from_dict,
+    }.get(str(fields.get("method")), _adjacent_pair_from_dict)
     fields["pairs"] = tuple(build_pair(p, card_version) for p in fields["pairs"])
     return MonotonicityCheck(**fields)
 
@@ -597,9 +632,11 @@ def _reject_version_2_content(
 
 def _reject_version_3_content(fields: dict[str, Any], *, type_name: str) -> None:
     """Refuse a payload that says it is schema ``"1"`` or ``"2"`` but carries what only ``"3"``
-    has: a non-null ``cell_estimates`` or ``bootstrap``, the isotonic model, the ``"none"`` link or
-    a bootstrap interval method. An explicit ``null`` for either new key is what a version ``"3"``
-    writer emits for an unset field, and is read."""
+    has: a non-null ``cell_estimates``, ``bootstrap`` or ``cluster_cells``, the isotonic model, the
+    ``"none"`` link, a bootstrap interval method, a clustered or paired ``dependence``, a ratio's
+    cluster bootstrap method, or a Fit's nested cluster sign test. An explicit ``null`` for a new
+    key, and an explicit ``"independent"`` ``dependence``, are what a version ``"3"`` writer emits
+    for an unset field, and are read."""
     version = fields.get("schema_version", SCHEMA_VERSION)
     if version not in ("1", "2"):
         return
@@ -613,16 +650,33 @@ def _reject_version_3_content(fields: dict[str, Any], *, type_name: str) -> None
         ("model", _VERSION_3_MODELS),
         ("link", _VERSION_3_LINKS),
         ("interval_method", _VERSION_3_INTERVAL_METHODS),
+        ("dependence", _VERSION_3_DEPENDENCE),
     ):
         if fields.get(key) in only_in_3:
             raise ValueError(
                 f"from_dict: {type_name} has schema_version {version!r} but {key} "
                 f"{fields[key]!r}, which only schema_version '3' has"
             )
+    if type_name == "Ratio" and fields.get("method") in _VERSION_3_RATIO_METHODS:
+        raise ValueError(
+            f"from_dict: Ratio has schema_version {version!r} but method {fields['method']!r}, "
+            "which only schema_version '3' has"
+        )
+    monotonicity = fields.get("monotonicity")
+    if type_name == "Fit" and isinstance(monotonicity, Mapping):
+        if (
+            monotonicity.get("dependence") == "clustered"
+            or monotonicity.get("method") == _CLUSTER_SIGN_TEST_METHOD
+        ):
+            raise ValueError(
+                f"from_dict: Fit has schema_version {version!r} but carries a cluster sign test "
+                "in its monotonicity check, which only schema_version '3' has"
+            )
 
 
 def _bootstrap_summary_from_dict(data: object, card_version: str | None) -> BootstrapSummary:
-    """``BootstrapSummary`` is an untagged helper: it only appears as ``Threshold.bootstrap``."""
+    """``BootstrapSummary`` is an untagged helper: it only appears as ``Threshold.bootstrap`` and
+    ``Ratio.bootstrap``."""
     return BootstrapSummary(
         **_validated_fields(BootstrapSummary, data, tagged=False, card_version=card_version)
     )
@@ -653,6 +707,10 @@ def _fit_from_dict(data: object, card_version: str | None) -> Fit:
         fields["cluster_ids"] = tuple(fields["cluster_ids"])
     if fields.get("cell_estimates") is not None:
         fields["cell_estimates"] = tuple(fields["cell_estimates"])
+    if fields.get("cluster_cells") is not None:
+        fields["cluster_cells"] = tuple(
+            _cluster_cell_from_dict(c, card_version) for c in fields["cluster_cells"]
+        )
     # Neither `diagnostics` nor `monotonicity` is in the schema's `required` list for a Fit, and
     # `_validated_fields` fills a key a card omits from the dataclass default (`None`), so a card
     # that omits either decodes with `None` and needs no special case beyond the nested-object
@@ -703,6 +761,7 @@ def _threshold_from_dict(data: object, card_version: str | None) -> Threshold:
 
 def _ratio_from_dict(data: object, card_version: str | None) -> Ratio:
     fields = _validated_fields(Ratio, data, tagged=True, card_version=card_version)
+    _reject_version_3_content(fields, type_name="Ratio")
     fields["threshold_a"] = _threshold_from_dict(
         _expect_tag(fields["threshold_a"], expected="Threshold"), card_version
     )
@@ -713,6 +772,8 @@ def _ratio_from_dict(data: object, card_version: str | None) -> Ratio:
         fields["shape"] = IntervalShape(fields["shape"])
     fields["censoring"] = Censoring(fields["censoring"])
     fields["status"] = Status(fields["status"])
+    if fields.get("bootstrap") is not None:
+        fields["bootstrap"] = _bootstrap_summary_from_dict(fields["bootstrap"], card_version)
     return Ratio(**fields)
 
 
@@ -778,9 +839,11 @@ def from_dict(data: object) -> object:
         result they give keeps its ``schema_version``. A ``Fit`` or ``Threshold`` tagged ``"1"``
         carries no increasing outcome, no ``baseline_multiple`` definition and no Gaussian model,
         and one tagged ``"1"`` or ``"2"`` carries no isotonic model, bootstrap interval method,
-        ``cell_estimates`` or ``bootstrap``; one that does is rejected (checked per object, not
-        per card). Constructors do not check the tag, so an object built with any other
-        ``schema_version`` serialises but does not read back.
+        ``cell_estimates`` or ``bootstrap``, no clustered or paired ``dependence``, no
+        ``cluster_cells``, no cluster sign test and no ``"cluster_bootstrap"`` ratio method; one
+        that does is rejected (checked per object, not per card). Constructors do not check the
+        tag, so an object built with any other ``schema_version`` serialises but does not read
+        back.
 
     Raises
     ------
@@ -789,8 +852,9 @@ def from_dict(data: object) -> object:
         is not ``"1"``, ``"2"`` or ``"3"``, or is ``"1"`` on a ``Fit`` or ``Threshold`` carrying
         what only ``"2"`` has (an ``"increasing"`` direction, a ``"baseline_multiple"``
         definition or a Gaussian model), or ``"1"`` or ``"2"`` on one carrying what only ``"3"``
-        has (the isotonic model, a bootstrap interval method, or a non-null ``cell_estimates`` or
-        ``bootstrap``); if a field (at any nesting level) is not recognised; or if a required
+        has (the isotonic model, a bootstrap interval method, a clustered or paired
+        ``dependence``, the cluster sign test, or a non-null ``cell_estimates``, ``bootstrap`` or
+        ``cluster_cells``); if a field (at any nesting level) is not recognised; or if a required
         field is missing.
     """
     return _from_dict_impl(data, card_version=None)

@@ -7,11 +7,14 @@ classification says to -- solves the closed form and runs the requested interval
 result records ``"exact_bound"`` regardless of what was asked for, because that is the method
 that actually produced its numbers.
 
-Four interval methods exist. ``"profile"`` and ``"delta"`` need a fitted curve's covariance.
+Five interval methods exist. ``"profile"`` and ``"delta"`` need a fitted curve's covariance.
 ``"parametric_bootstrap"`` simulates from a fitted binomial or Gaussian curve and refits;
 ``"cell_bootstrap"`` resamples each severity level from its own data, and is the only method an
-isotonic fit accepts. Both bootstrap methods take a replicate count and a seed, and record what
-happened to the replicates in :class:`~robustmargin.BootstrapSummary`.
+isotonic fit accepts. A clustered fit (``fit.dependence == "clustered"``) takes ``"delta"``, the
+cluster-robust covariance with a Student-t quantile on ``G - 1`` degrees of freedom, which is the
+recommended method, or ``"cluster_bootstrap"``, which resamples whole clusters. Every bootstrap
+method takes a replicate count and a seed, and records what happened to the replicates in
+:class:`~robustmargin.BootstrapSummary`.
 """
 
 from __future__ import annotations
@@ -28,13 +31,17 @@ from robustmargin.intervals import (
     _bootstrap_interval,
     _isotonic_crossing,
     _replicate_pairs,
+    _theta_variance,
     delta_interval,
     profile_interval,
     solve_value,
 )
 from robustmargin.models import (
+    _FEW_CLUSTERS_BOOTSTRAP,
+    _FEW_CLUSTERS_SANDWICH,
     Fit,
     _count_cells,
+    _few_clusters_warning,
     _is_continuous_fit,
     _mirror_fit,
     _mirror_observations,
@@ -54,8 +61,20 @@ from robustmargin.types import (
 
 __all__ = ["Threshold", "threshold"]
 
-_BOOTSTRAP_METHODS = frozenset({"parametric_bootstrap", "cell_bootstrap"})
+_BOOTSTRAP_METHODS = frozenset({"parametric_bootstrap", "cell_bootstrap", "cluster_bootstrap"})
 _MODEL_INTERVALS = frozenset({"profile", "delta"})
+# A clustered threshold makes no exact claim and its intervals must not assume independent
+# trials: only the cluster bootstrap and the cluster-robust delta method qualify.
+_CLUSTERED_INTERVAL_METHODS = frozenset({"cluster_bootstrap", "delta", "exact_bound"})
+_CLUSTERED_THRESHOLD_STATUSES = frozenset(
+    {
+        Status.OK,
+        Status.UNREACHABLE,
+        Status.SEPARATION,
+        Status.NOT_CONVERGED,
+        Status.CONTROL_INCOMPATIBLE,
+    }
+)
 _VALID_INTERVAL_METHODS = _MODEL_INTERVALS | _BOOTSTRAP_METHODS | {"exact_bound"}
 _DEFAULT_RESAMPLES = 999
 _GIVE_UP_FRACTION = 0.10
@@ -80,7 +99,7 @@ _REQUIRE_FIT_OK_CENSORING = frozenset({Censoring.OPEN_UPPER, Censoring.OPEN_LOWE
 _MIRROR_FIT_STATUS_STATUSES = frozenset(
     {Status.SEPARATION, Status.NOT_CONVERGED, Status.CONTROL_INCOMPATIBLE}
 )
-_VALID_DEPENDENCE = frozenset({"independent"})
+_VALID_DEPENDENCE = frozenset({"independent", "clustered"})
 
 
 def _check_value(value: float | None, *, label: str, scale: str) -> None:
@@ -184,7 +203,22 @@ class Threshold:
     ``relative`` has no asymptotes to work from and raises. The only interval is
     ``"cell_bootstrap"``.
 
-    **Bootstrap intervals** (``"parametric_bootstrap"``, ``"cell_bootstrap"``) are percentile
+    **A clustered fit makes no exact claim.** Every exact test above is a cell-level
+    Clopper-Pearson test that treats trials as independent, and under clustering it is
+    anti-conservative. A threshold with ``dependence="clustered"`` is therefore ``OK``,
+    ``UNREACHABLE`` (the target is outside ``(0, 1)`` or outside the fitted asymptotes) or has the
+    status of a failed fit (``SEPARATION``, ``NOT_CONVERGED`` or ``CONTROL_INCOMPATIBLE``, with
+    ``interval_method="exact_bound"`` and no value, bound or grid), and is never
+    ``FAILS_AT_BASELINE``, ``RIGHT`` or ``LEFT``. Its ``interval_method`` is ``"delta"`` (the
+    recommended one), which uses the cluster-robust covariance with a Student-t quantile on
+    ``G - 1`` degrees of freedom, or ``"cluster_bootstrap"``. A crossing beyond the tested range,
+    which independence would report as an exact ``RIGHT``, is an ``EXTRAPOLATED`` value with an
+    interval here. Clustered thresholds carry a ``"FEW_CLUSTERS: "`` warning below 20 clusters, and
+    a ``"cluster_bootstrap"`` threshold below 40, where the percentile cluster bootstrap
+    under-covers.
+
+    **Bootstrap intervals** (``"parametric_bootstrap"``, ``"cell_bootstrap"``,
+    ``"cluster_bootstrap"``) are percentile
     intervals of the thresholds of resampled-and-refitted data (:mod:`robustmargin.intervals`).
     ``bootstrap`` records the replicate count, how many refits failed, how many replicates were
     unreachable on each side, and the seed. A failed replicate counts as ``-inf`` in the lower
@@ -239,9 +273,15 @@ class Threshold:
     - ``censoring == NONE`` with ``status == OK``: ``value`` is set and ``lo`` and ``hi`` are
       either both set or both ``None``. When set, ``lo <= value <= hi`` for ``"profile"`` and
       ``"delta"``, and ``lo <= hi`` for a bootstrap method. ``interval_method`` is ``"profile"``,
-      ``"delta"``, ``"parametric_bootstrap"`` or ``"cell_bootstrap"``.
+      ``"delta"``, ``"parametric_bootstrap"``, ``"cell_bootstrap"`` or ``"cluster_bootstrap"``.
     - ``bootstrap`` is set only with a bootstrap ``interval_method``, or with ``"exact_bound"``
-      and ``status == NOT_CONVERGED`` (a bootstrap that gave up).
+      and ``status == NOT_CONVERGED`` (a bootstrap that gave up); it is always set with
+      ``"cluster_bootstrap"``.
+    - ``dependence == "clustered"`` exactly when ``fit.dependence == "clustered"``. A clustered
+      threshold's ``interval_method`` is ``"cluster_bootstrap"``, ``"delta"`` or
+      ``"exact_bound"``, its ``status`` is not ``FAILS_AT_BASELINE``, its ``censoring`` is not
+      ``RIGHT`` or ``LEFT``, and it has no ``baseline`` or ``grid`` and no bound on a failed fit.
+      ``"cluster_bootstrap"`` is only ever a clustered threshold's method.
     - When both ``lo`` and ``hi`` are set: ``lo < hi`` strictly for a ``SEPARATION`` /
       ``NOT_CONVERGED`` bracket, ``lo <= hi`` otherwise.
     - On a log axis, ``value``, ``lo`` and ``hi`` must each be ``> 0`` when present (a linear
@@ -270,15 +310,16 @@ class Threshold:
     level
         The confidence level, strictly between 0 and 1.
     interval_method
-        ``"profile"``, ``"delta"``, ``"parametric_bootstrap"``, ``"cell_bootstrap"`` or
-        ``"exact_bound"``.
+        ``"profile"``, ``"delta"``, ``"parametric_bootstrap"``, ``"cell_bootstrap"``,
+        ``"cluster_bootstrap"`` or ``"exact_bound"``.
     censoring
         The :class:`~robustmargin.Censoring` classification.
     status
         The :class:`~robustmargin.Status` of this threshold.
     dependence
-        ``"independent"`` in this release. Required, with no default: a threshold built from
-        clustered data must say so explicitly rather than silently assuming independence.
+        ``"independent"`` or ``"clustered"``, and equal to ``fit.dependence``. Required, with no
+        default: a threshold built from clustered data must say so explicitly rather than silently
+        assuming independence.
     fit
         The :class:`~robustmargin.Fit` this threshold was solved from. Per-level trial counts
         live on ``fit.cells``, not on a separate field.
@@ -310,6 +351,19 @@ class Threshold:
         The :class:`~robustmargin.BootstrapSummary` of a bootstrap interval, set exactly when a
         bootstrap ran: ``None`` for ``profile``, ``delta`` and every result decided before any
         resampling (censored, failed or unreachable). The last field.
+
+    Raises
+    ------
+    ValueError
+        If the invariants above do not hold, among them (not an exhaustive list): ``direction``,
+        ``interval_method`` or ``dependence`` is not one of its allowed values; ``level`` is not
+        strictly between 0 and 1; ``dependence`` disagrees with ``fit.dependence``; ``axis`` or
+        ``direction`` differs from the fit's; ``status``, ``censoring``, ``value``, ``lo`` and
+        ``hi`` are inconsistent with one another or with ``interval_method``; ``lo`` exceeds
+        ``hi`` or a value is not positive on a log axis; ``fit.status`` contradicts a set
+        ``value`` or the threshold's own failed status; ``baseline``, ``grid`` or ``bootstrap``
+        is set where it may not be, or missing where it is required; or ``schema_version`` is
+        ``"1"`` or ``"2"`` on a result only version ``"3"`` can carry.
     """
 
     axis: Axis
@@ -335,11 +389,14 @@ class Threshold:
         object.__setattr__(self, "warnings", tuple(self.warnings))
 
         if self.schema_version in ("1", "2") and (
-            self.interval_method in _BOOTSTRAP_METHODS or self.bootstrap is not None
+            self.interval_method in _BOOTSTRAP_METHODS
+            or self.bootstrap is not None
+            or self.dependence == "clustered"
         ):
             raise ValueError(
                 f"Threshold with schema_version {self.schema_version!r} cannot carry a bootstrap "
-                "interval_method or a bootstrap summary: only schema_version '3' has them"
+                "interval_method, a bootstrap summary or dependence='clustered': only "
+                "schema_version '3' has them"
             )
         if self.direction not in _VALID_DIRECTIONS:
             raise ValueError(
@@ -374,6 +431,18 @@ class Threshold:
         _check_finite_number(self.level, label="Threshold.level")
         if not (0.0 < self.level < 1.0):
             raise ValueError(f"Threshold.level must satisfy 0 < level < 1, got {self.level!r}")
+        if (self.dependence == "clustered") != (self.fit.dependence == "clustered"):
+            raise ValueError(
+                f"Threshold.dependence ({self.dependence!r}) must be 'clustered' exactly when "
+                f"Threshold.fit.dependence is ({self.fit.dependence!r}): a threshold on a "
+                "cluster-robust fit must say so, and a cluster-robust threshold needs that fit"
+            )
+        if self.interval_method == "cluster_bootstrap" and self.dependence != "clustered":
+            raise ValueError(
+                "Threshold.interval_method 'cluster_bootstrap' needs dependence='clustered'"
+            )
+        if self.dependence == "clustered":
+            self._check_clustered()
         if self.axis != self.fit.axis:
             raise ValueError("Threshold.axis must equal Threshold.fit.axis")
         if self.direction != self.fit.direction:
@@ -617,6 +686,36 @@ class Threshold:
                     f"value={self.value!r}, hi={self.hi!r}"
                 )
 
+    def _check_clustered(self) -> None:
+        """The invariants of a threshold on a cluster-robust fit: no exact claim of any kind, and
+        only intervals that do not assume independent trials."""
+        if self.interval_method not in _CLUSTERED_INTERVAL_METHODS:
+            raise ValueError(
+                "Threshold.interval_method for a clustered threshold must be one of "
+                f"{sorted(_CLUSTERED_INTERVAL_METHODS)}, got {self.interval_method!r}: the other "
+                "methods assume independent trials"
+            )
+        if self.interval_method == "cluster_bootstrap" and self.bootstrap is None:
+            raise ValueError("Threshold.bootstrap must be set when interval_method is a bootstrap")
+        if self.status not in _CLUSTERED_THRESHOLD_STATUSES:
+            raise ValueError(
+                "Threshold.status for a clustered threshold must be one of "
+                f"{sorted(s.value for s in _CLUSTERED_THRESHOLD_STATUSES)}, got {self.status!r}: "
+                "an exact claim assumes independent trials"
+            )
+        if self.censoring in (Censoring.RIGHT, Censoring.LEFT):
+            raise ValueError(
+                f"Threshold.censoring for a clustered threshold must not be {self.censoring!r}: "
+                "an exact bound assumes independent trials"
+            )
+        if self.baseline is not None or self.grid is not None:
+            raise ValueError("Threshold.baseline and .grid must be None for a clustered threshold")
+        if self.status in _NONCONVERGENT_STATUSES and (self.lo is not None or self.hi is not None):
+            raise ValueError(
+                "Threshold.lo and .hi must be None for a clustered threshold that did not "
+                "converge: there is no exact bound to fall back to"
+            )
+
 
 _VALID_INTERVAL_METHOD_REQUESTS = _MODEL_INTERVALS | _BOOTSTRAP_METHODS
 # Which of the requests each kind of fit takes. An isotonic fit has no covariance to build a
@@ -627,7 +726,7 @@ _METHODS_BY_MODEL: dict[str, frozenset[str]] = {
     "gaussian": _MODEL_INTERVALS | {"parametric_bootstrap"},
     "isotonic": frozenset({"cell_bootstrap"}),
 }
-_VALID_DEPENDENCE_INPUTS = frozenset({"independent"})
+_VALID_DEPENDENCE_INPUTS = frozenset({"independent", "clustered"})
 
 
 def _control_cell_or_none(fit: Fit) -> Cell | None:
@@ -888,7 +987,7 @@ def _gaussian_not_converged(fit: Fit, *, definition: Definition, level: float) -
         interval_method="exact_bound",
         censoring=Censoring.NONE,
         status=Status.NOT_CONVERGED,
-        dependence="independent",
+        dependence=fit.dependence,
         fit=fit,
         warnings=(
             *reasons,
@@ -962,7 +1061,7 @@ def _unreachable_threshold(
         interval_method="exact_bound",
         censoring=Censoring.NONE,
         status=Status.UNREACHABLE,
-        dependence="independent",
+        dependence=fit.dependence,
         fit=fit,
         warnings=tuple(warnings),
         baseline=None,
@@ -1032,11 +1131,18 @@ def threshold(
     interval_method
         Required, with no default. Which a fit accepts depends on its model: a binomial fit takes
         ``"profile"`` (primary), ``"delta"`` (cross-check), ``"parametric_bootstrap"`` and
-        ``"cell_bootstrap"``; a Gaussian fit takes all but ``"cell_bootstrap"`` (its cells keep
-        no per-observation counts to resample); an isotonic fit takes only ``"cell_bootstrap"``.
-        Any other pairing raises. ``"parametric_bootstrap"`` draws new data from the fitted model
-        at the observed design and refits it; ``"cell_bootstrap"`` resamples each severity level
-        from its own data (counts: ``Binomial(n_i, (k_i + 0.5) / (n_i + 1))``; continuous
+        ``"cell_bootstrap"``; a Gaussian fit takes ``"profile"``, ``"delta"`` and
+        ``"parametric_bootstrap"`` (its cells keep no per-observation counts to resample); an
+        isotonic fit takes only ``"cell_bootstrap"``. A clustered binomial fit takes only
+        ``"delta"`` (recommended) and ``"cluster_bootstrap"``: ``"cluster_bootstrap"`` draws ``G``
+        cluster ids with replacement, rebuilds the counts from ``fit.cluster_cells`` and refits
+        with the same model, link and asymptotes, and ``"delta"`` uses the cluster-robust
+        covariance with a Student-t quantile on ``G - 1`` degrees of freedom. The other methods
+        assume independent trials and raise on a clustered fit, and ``"cluster_bootstrap"``
+        raises on any other. Any other pairing raises. ``"parametric_bootstrap"`` draws new data
+        from the fitted model at the observed design and refits it; ``"cell_bootstrap"``
+        resamples each severity level from its own data (counts:
+        ``Binomial(n_i, (k_i + 0.5) / (n_i + 1))``; continuous
         cells, which keep only ``n``, ``mean`` and ``sd``: a mean drawn from
         ``N(mean_i, sd_i^2 (n_i - 1) / n_i^2)``, the variance of a mean under resampling with
         replacement, which needs ``n_i >= 2`` at every level). Both
@@ -1056,9 +1162,12 @@ def threshold(
     dependence
         ``None`` (the default) resolves to ``"independent"`` unless ``fit.cluster_ids`` is set,
         in which case omitting it raises (a method assuming independence must refuse clustered
-        input unless the caller explicitly opts in). ``"independent"`` may always be passed
-        explicitly. ``"paired"`` raises, naming that it is not implemented in this release. The
-        resulting ``Threshold.dependence`` is always ``"independent"`` in this release.
+        input unless the caller explicitly opts in). ``"independent"`` may be passed explicitly
+        for a fit that is not clustered, including a fit of clustered data made with
+        ``dependence="independent"``. ``"clustered"`` is required for a fit made with
+        ``dependence="clustered"`` and refused for any other. ``"paired"`` belongs to
+        :func:`robustmargin.ratio_interval` and raises here. The resulting
+        ``Threshold.dependence`` is the value passed, resolved as above.
     n_resamples
         The number of bootstrap replicates: ``None`` (the default) means 999 for a bootstrap
         method, otherwise an ``int`` (not a ``bool``) of at least 1. Must be ``None`` for
@@ -1081,8 +1190,9 @@ def threshold(
         If ``interval_method`` or ``level`` is invalid, or ``interval_method`` is not one the fit
         accepts (see above); if ``n_resamples`` or ``seed`` is not valid, or is given with
         ``"profile"`` or ``"delta"``; if ``dependence`` is omitted while
-        ``fit.cluster_ids`` is set, or is any value other than ``None``/``"independent"``/
-        ``"paired"``; if ``dependence="paired"`` is requested (not yet implemented); if
+        ``fit.cluster_ids`` is set, or is any value other than ``None``, ``"independent"`` or
+        ``"clustered"``; if ``dependence="clustered"`` is given for a fit that was not made with
+        it, or a fit that was is given anything else; if
         ``definition.kind`` is ``"baseline_fraction"`` and the fit is increasing, or
         ``"baseline_multiple"`` and the fit is decreasing; if ``definition.kind`` is
         ``"baseline_multiple"`` and the fit is ``OK`` with ``lower`` fixed at or below zero (a
@@ -1112,23 +1222,52 @@ def threshold(
 
     if dependence == "paired":
         raise ValueError(
-            "threshold: dependence='paired' is not implemented in this release; pass "
-            "dependence='independent' explicitly to acknowledge independence is being assumed "
-            "anyway, or wait for a future release that adds it"
+            "threshold: dependence='paired' describes a ratio of two outcomes and belongs to "
+            "ratio_interval; a threshold takes 'independent' or 'clustered'"
         )
     if dependence is not None and dependence not in _VALID_DEPENDENCE_INPUTS:
         raise ValueError(
-            "threshold: dependence must be None, 'independent', or (not yet implemented) "
-            f"'paired', got {dependence!r}"
+            f"threshold: dependence must be None, 'independent' or 'clustered', got {dependence!r}"
         )
-    if fit.cluster_ids is not None and dependence is None:
+    clustered = fit.dependence == "clustered"
+    if clustered and dependence != "clustered":
+        raise ValueError(
+            "threshold: fit was made with dependence='clustered' and carries a cluster-robust "
+            "covariance; pass dependence='clustered' (a threshold that assumed independence "
+            "would misstate the fit)"
+        )
+    if dependence == "clustered" and not clustered:
+        raise ValueError(
+            "threshold: dependence='clustered' needs a fit made with "
+            "fit_dose_response(dependence='clustered')"
+        )
+    if not clustered and fit.cluster_ids is not None and dependence is None:
         raise ValueError(
             "threshold: fit carries cluster ids (fit.cluster_ids is set); a method that assumes "
             "independence must not run on clustered data unless the caller passes "
             "dependence='independent' explicitly"
         )
+    if clustered and interval_method not in _CLUSTERED_INTERVAL_METHODS:
+        raise ValueError(
+            f"threshold: interval_method={interval_method!r} assumes independent trials and is "
+            "not available for a clustered fit; use 'cluster_bootstrap' or 'delta'"
+        )
+    if interval_method == "cluster_bootstrap" and not clustered:
+        raise ValueError(
+            "threshold: interval_method='cluster_bootstrap' needs a fit made with "
+            "fit_dose_response(dependence='clustered')"
+        )
 
     collected_warnings: list[str] = []
+    if clustered:
+        assert fit.cluster_ids is not None
+        if interval_method == "cluster_bootstrap":
+            if len(fit.cluster_ids) < _FEW_CLUSTERS_BOOTSTRAP:
+                collected_warnings.append(
+                    _few_clusters_warning(len(fit.cluster_ids), bootstrap=True)
+                )
+        elif len(fit.cluster_ids) < _FEW_CLUSTERS_SANDWICH:
+            collected_warnings.append(_few_clusters_warning(len(fit.cluster_ids)))
     if fit.model == "gaussian" and fit.status is not Status.OK:
         return _gaussian_not_converged(fit, definition=definition, level=level)
     inputs = _solve_inputs(definition, fit=fit)
@@ -1211,6 +1350,16 @@ def threshold(
             collected_warnings.extend(interval_result.warnings)
         else:
             drawn_seed = requested_seed if requested_seed is not None else _fresh_seed()
+            standard_error = (
+                math.sqrt(
+                    max(
+                        _theta_variance(view, definition=inputs.definition, target=inputs.target),
+                        0.0,
+                    )
+                )
+                if interval_method == "cluster_bootstrap"
+                else None
+            )
             outcome = _bootstrap_interval(
                 view,
                 definition=inputs.definition,
@@ -1219,6 +1368,7 @@ def threshold(
                 n_resamples=resamples,
                 seed=drawn_seed,
                 theta_hat=theta_hat,
+                standard_error=standard_error,
             )
             summary = outcome.summary
             collected_warnings.extend(outcome.warnings)
@@ -1253,7 +1403,7 @@ def threshold(
             interval_method=interval_method,
             censoring=result_censoring,
             status=Status.OK,
-            dependence="independent",
+            dependence=fit.dependence,
             fit=fit,
             warnings=tuple(collected_warnings),
             baseline=None,
@@ -1272,7 +1422,7 @@ def threshold(
         interval_method="exact_bound",
         censoring=classification.censoring,
         status=classification.status,
-        dependence="independent",
+        dependence=fit.dependence,
         fit=fit,
         warnings=tuple(collected_warnings),
         baseline=_reported_baseline(classification.baseline, fit=fit, level=level),
@@ -1293,12 +1443,13 @@ def _bootstrap_gave_up(
     """The result of a bootstrap that gave up because too many refits failed: ``NOT_CONVERGED``
     with ``interval_method="exact_bound"`` and no point estimate. For counts the exact-bound
     fallback of :mod:`robustmargin.censoring` supplies a bracket or one-sided bound and the grid
-    break-point; a continuous response has no exact claim to fall back to, so it carries no
-    number. The summary stays, so the failure count survives serialisation."""
+    break-point; a continuous response has no exact claim to fall back to, and neither does a
+    clustered fit (its exact tests assume independent trials), so those carry no number. The
+    summary stays, so the failure count survives serialisation."""
     lo: float | None = None
     hi: float | None = None
     grid: GridBreakPoint | None = None
-    if not _is_continuous_fit(fit):
+    if not (_is_continuous_fit(fit) or fit.dependence == "clustered"):
         fallback = _bootstrap_give_up(
             view, target=inputs.target, level=level, original_target=inputs.original_target
         )
@@ -1315,7 +1466,7 @@ def _bootstrap_gave_up(
         interval_method="exact_bound",
         censoring=Censoring.NONE,
         status=Status.NOT_CONVERGED,
-        dependence="independent",
+        dependence=fit.dependence,
         fit=fit,
         warnings=tuple(warnings),
         baseline=None,
