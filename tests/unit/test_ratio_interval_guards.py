@@ -11,8 +11,8 @@ or by checking earlier) rather than silently swallowing the mismatch or crashing
 other than ``ValueError``.
 
 Two guards have no ``Ratio``-level equivalent, because they are about the *call*, not the
-resulting object: ``dependence="paired"`` (not implemented -- mirrors ``threshold()``'s own
-guard, ``threshold.py``'s ``dependence == "paired"`` check) and ``level`` inheritance
+resulting object: ``dependence="paired"`` on thresholds that are not clustered fits (the paired
+rules proper are in ``test_cluster_guards.py``) and ``level`` inheritance
 (``level=None`` takes the level from the two input thresholds, which must agree; an explicit
 ``level`` that contradicts them also raises -- no silent fallback to a value the caller did not
 ask for).
@@ -158,15 +158,13 @@ class TestClusterIdGuard:
         assert result.dependence == "independent"
 
 
-class TestPairedDependenceNotImplemented:
-    """``dependence="paired"`` is not implemented in this release.
-
-    ``threshold()`` raises ``ValueError`` for the same request (``threshold.py``); this mirrors
-    that choice for ``ratio_interval()`` rather than picking ``NotImplementedError``, so the two
-    functions are consistent about how an unimplemented option is reported.
+class TestPairedDependenceRequiresClusteredThresholds:
+    """``dependence="paired"`` is valid only for two thresholds on clustered fits that share a
+    cluster-id set. These thresholds are independent fits, so the call raises ``ValueError`` (not
+    a different exception type, and not a silent fall back to ``"independent"``).
     """
 
-    def test_dependence_paired_raises_value_error(self) -> None:
+    def test_dependence_paired_on_independent_thresholds_raises_value_error(self) -> None:
         t_a = _threshold()
         t_b = _threshold(value=2.0)
 

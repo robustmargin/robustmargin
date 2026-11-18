@@ -24,11 +24,11 @@ executable):
   ``EXCLUSIVE`` with a negative lower bound would be wrong: this occurs on an open region of the
   parameter space, not only in a measure-zero case.) When ``K <= 0`` instead, both roots are
   negative and the set is again all of ``(0, inf)`` -- ``UNBOUNDED``.
-- **``EXCLUSIVE`` is unreachable through ``ratio_interval()`` in this release.** It would need
-  same-signed roots with ``A < 0``, which needs ``B <= 0``, which needs ``C > 0`` -- only
-  possible once ``dependence="paired"`` is implemented. The member stays in ``IntervalShape`` and
-  ``Ratio``'s invariants for it stay enforced (tested directly, not through ``ratio_interval``,
-  in ``TestExclusiveRemainsAValidRatioShapeForPairedDependence``).
+- **``EXCLUSIVE`` is unreachable through ``ratio_interval()`` under ``dependence="independent"``.**
+  It needs same-signed roots with ``A < 0``, which needs ``B <= 0``, which needs ``C > 0`` --
+  possible only under ``dependence="paired"``. ``Ratio``'s invariants for it stay enforced (tested
+  directly here, in ``TestExclusiveIsAValidRatioShapeUnderPairedDependence``, because every test
+  in this file builds independent thresholds).
 
 **The primary versions of every shape here construct their ``Fit``/``Threshold`` objects
 directly rather than fitting real data**, so the expected ``Va``/``Vb`` are known exactly and
@@ -672,13 +672,12 @@ class TestBothRootsNegativeIsUnbounded:
         assert any(len(warning.strip()) > 20 for warning in result.warnings)
 
 
-class TestExclusiveRemainsAValidRatioShapeForPairedDependence:
-    """``EXCLUSIVE`` is unreachable *through* ``ratio_interval()`` in this release --
-    it needs same-signed roots with ``A < 0``, which needs ``B <= 0``, which needs ``C > 0``,
-    which needs ``dependence="paired"`` (not implemented). The member stays in ``IntervalShape``
-    and ``Ratio``'s own invariants for it stay enforced, because the type must already be valid
-    when paired dependence starts producing it -- so this constructs a ``Ratio``
-    directly (not through ``ratio_interval``, which cannot reach this shape) and checks both that
+class TestExclusiveIsAValidRatioShapeUnderPairedDependence:
+    """``EXCLUSIVE`` is unreachable *through* ``ratio_interval()`` under independence
+    -- it needs same-signed roots with ``A < 0``, which needs ``B <= 0``, which needs ``C > 0``,
+    which needs ``dependence="paired"``. ``Ratio``'s own invariants for it stay enforced, so this
+    constructs a ``Ratio`` directly (the independent thresholds built in this file cannot reach
+    this shape through ``ratio_interval``) and checks both that
     a well-formed ``EXCLUSIVE`` ``Ratio`` is still accepted and that a malformed one is still
     rejected, exactly as ``tests/unit/test_results.py``'s ``TestRatioShapeExclusive`` already
     establishes -- restated here, next to the rest of this file's shape coverage, specifically
@@ -742,8 +741,8 @@ class TestEmptyConfidenceSetRaises:
     ``va`` -- no real delta-method variance is ever negative, and a genuine non-negative ``va`` with
     ``theta_a == 0`` forces ``K = -z^2*va <= 0``, never ``> 0``. ``dependence="paired"`` (nonzero
     covariance ``C``) can reach ``B == 0`` without ``theta_a == 0``, and that path may reach
-    ``K > 0`` genuinely -- this branch is guarded, not dead, but it is guarded against a case this
-    release itself cannot construct.
+    ``K > 0`` genuinely -- this branch is guarded, not dead, but this test can only reach it with a
+    deliberately impossible input.
     """
 
     def test_a_zero_b_zero_k_positive_raises_rather_than_reporting_unbounded(self) -> None:

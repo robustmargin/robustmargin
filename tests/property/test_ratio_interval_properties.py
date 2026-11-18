@@ -338,10 +338,10 @@ class TestContainmentAcrossShapes:
     this generalises the same check across many random draws, including some that land on
     ``HALF_OPEN``/``UNBOUNDED`` (``sigma_log_b`` is drawn wide enough to cross ``g=1``).
 
-    ``EXCLUSIVE`` is unreachable through ``ratio_interval()`` in this release: ``A < 0`` with
-    ``K > 0`` is ``HALF_OPEN``, so the ``EXCLUSIVE`` arm below is unreachable dead code, kept
-    only because :class:`~robustmargin.IntervalShape` still has the member and nothing forbids a
-    future ``dependence="paired"`` result from reaching it.
+    ``EXCLUSIVE`` is unreachable through ``ratio_interval()`` under ``dependence="independent"``,
+    which is all that is drawn here: ``A < 0`` with ``K > 0`` is ``HALF_OPEN``, so the
+    ``EXCLUSIVE`` arm below is unreachable. It stays because ``dependence="paired"`` can produce
+    that shape.
     """
 
     @given(
