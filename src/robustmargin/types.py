@@ -6,7 +6,9 @@ severity axis a series of observations was measured on; ``Observations`` holds t
 aggregated-or-per-observation counts a binomial fit is built from, and ``ContinuousObservations``
 the real-valued responses a Gaussian fit is built from; ``Definition`` names which
 target-performance definition a threshold solves for; ``Cell`` is one pooled row of counts at
-a single severity and ``ContinuousCell`` its real-valued counterpart; ``Residual`` is a Gaussian
+a single severity and ``ContinuousCell`` its real-valued counterpart; ``ClusterCell`` is one
+row of counts at a single severity within a single cluster, and ``ClusterAdjacentPair`` is one
+adjacent-level comparison of a cluster sign test; ``Residual`` is a Gaussian
 fit's residual variance; ``BootstrapSummary`` counts what a bootstrap interval did with its
 replicates; ``Status`` and ``IntervalShape`` are the enums results report through.
 """
@@ -23,6 +25,8 @@ __all__ = [
     "BootstrapSummary",
     "Cell",
     "Censoring",
+    "ClusterAdjacentPair",
+    "ClusterCell",
     "ContinuousCell",
     "ContinuousObservations",
     "Definition",
@@ -157,12 +161,10 @@ class IntervalShape(StrEnum):
     EXCLUSIVE
         Two disjoint rays, ``(-inf, lo] union [hi, inf)``, with both ``lo`` and ``hi`` on the
         same side of zero (both negative is the ``UNBOUNDED`` case; a positive ``lo`` never
-        arises under ``dependence="independent"``). **Unreachable in this release**: under
-        ``dependence="independent"`` the covariance term is 0, which forces opposite-signed roots
-        whenever this branch's other conditions hold, so the real result is always ``HALF_OPEN``
-        instead. The member and :class:`~robustmargin.Ratio`'s invariants for it stay enforced
-        against a future ``dependence="paired"``, which can make the covariance term nonzero and
-        reach this shape for the first time.
+        arises under ``dependence="independent"``). Reachable only with ``dependence="paired"``:
+        under ``dependence="independent"`` the covariance term is 0, which forces opposite-signed
+        roots whenever this branch's other conditions hold, so the real result is always
+        ``HALF_OPEN`` instead. A paired ratio's covariance term is not zero.
     HALF_OPEN
         One ray, ``[lo, inf)``: ``lo`` is set, ``hi`` is ``None``. This is what a two-ray
         Fieller set with ``K > 0`` is once intersected with the positive parameter space. It arises
@@ -402,6 +404,135 @@ class Cell:
         object.__setattr__(self, "trials", trials)
 
 
+def _check_cluster_id(cluster_id: object, *, label: str) -> None:
+    """Reject a cluster id that is ``None``, a ``bool``, or neither a ``str`` nor an ``int``."""
+    if cluster_id is None or isinstance(cluster_id, bool):
+        raise ValueError(f"{label} must be a str or int, never None or bool, got {cluster_id!r}")
+    if not isinstance(cluster_id, (str, int)):
+        raise ValueError(f"{label} must be a str or int, got {cluster_id!r}")
+
+
+@dataclass(frozen=True, kw_only=True)
+class ClusterCell:
+    """One row of counts at a single severity within a single cluster: the unit
+    :meth:`Observations.cluster_cells` returns and a clustered :class:`robustmargin.Fit` stores
+    its per-cluster data as.
+
+    Attributes
+    ----------
+    severity
+        The (non-negative, finite) severity level. Must not be a ``bool``.
+    cluster
+        The cluster id, a ``str`` or a non-bool ``int``.
+    successes
+        The number of successes the cluster observed at this level. Accepts a whole-number
+        ``float`` as well as an ``int``; the stored value is a genuine ``int``.
+    trials
+        The number of trials the cluster observed at this level, at least 1 and at least
+        ``successes``. Accepts a whole-number ``float`` the same way.
+
+    Raises
+    ------
+    ValueError
+        If the counts or the severity break the rules of :class:`Cell`, or ``cluster`` is
+        ``None``, a ``bool``, or neither a ``str`` nor an ``int``.
+    """
+
+    severity: float
+    cluster: str | int
+    successes: int
+    trials: int
+
+    def __post_init__(self) -> None:
+        _check_cluster_id(self.cluster, label="ClusterCell.cluster")
+        successes, trials = _check_counts(
+            severity=self.severity,
+            successes=self.successes,
+            trials=self.trials,
+            label="ClusterCell",
+        )
+        object.__setattr__(self, "successes", successes)
+        object.__setattr__(self, "trials", trials)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ClusterAdjacentPair:
+    """One adjacent-severity-level pair from a cluster sign test
+    (:func:`~robustmargin.check_monotonicity` with ``dependence="clustered"``).
+
+    A cluster contributes to a pair only when it was observed at both levels with the same number
+    of trials at each (so that comparing its two rates is a comparison of counts). It is
+    *reversed* when its rate moves against the outcome's direction (a higher rate at the higher
+    severity for a decreasing outcome), *ordered* when it moves with it, and *tied* when the two
+    rates are equal. Clusters observed at both levels with unequal trials are counted in
+    ``clusters_unbalanced`` and left out of the test. The p-value is the exact one-sided sign
+    test ``P(Binomial(reversed + ordered, 1/2) >= reversed)``, which is ``1.0`` when no cluster is
+    reversed or ordered.
+
+    Attributes
+    ----------
+    severity_low, severity_high
+        The two adjacent severity levels, ``severity_low < severity_high``.
+    clusters_reversed, clusters_ordered, clusters_tied
+        The clusters of each kind, genuine non-negative ``int`` values.
+    clusters_unbalanced
+        The clusters observed at both levels with unequal trials, excluded from the test.
+    p_value
+        The raw one-sided exact sign-test p-value, in ``[0, 1]``.
+    holm_adjusted_p
+        ``p_value`` after a Holm step-down correction across every pair of the enclosing
+        :class:`~robustmargin.MonotonicityCheck`, in ``[0, 1]``.
+    flagged
+        ``holm_adjusted_p < alpha``, ``alpha`` being the enclosing check's.
+
+    Raises
+    ------
+    ValueError
+        If the levels are not strictly ordered or not finite, a count is not a genuine
+        non-negative ``int``, a p-value is not finite or outside ``[0, 1]``, or ``flagged`` is
+        not a ``bool``.
+    """
+
+    severity_low: float
+    severity_high: float
+    clusters_reversed: int
+    clusters_ordered: int
+    clusters_tied: int
+    clusters_unbalanced: int
+    p_value: float
+    holm_adjusted_p: float
+    flagged: bool
+
+    def __post_init__(self) -> None:
+        _check_finite_number(self.severity_low, label="ClusterAdjacentPair.severity_low")
+        _check_finite_number(self.severity_high, label="ClusterAdjacentPair.severity_high")
+        if not self.severity_low < self.severity_high:
+            raise ValueError(
+                "ClusterAdjacentPair.severity_low must be strictly less than .severity_high, "
+                f"got severity_low={self.severity_low!r}, severity_high={self.severity_high!r}"
+            )
+        for label, count in (
+            ("clusters_reversed", self.clusters_reversed),
+            ("clusters_ordered", self.clusters_ordered),
+            ("clusters_tied", self.clusters_tied),
+            ("clusters_unbalanced", self.clusters_unbalanced),
+        ):
+            _check_whole_count(count, label=f"ClusterAdjacentPair.{label}")
+        for label, probability in (
+            ("p_value", self.p_value),
+            ("holm_adjusted_p", self.holm_adjusted_p),
+        ):
+            _check_finite_number(probability, label=f"ClusterAdjacentPair.{label}")
+            if not (0.0 <= probability <= 1.0):
+                raise ValueError(
+                    f"ClusterAdjacentPair.{label} must lie in [0, 1], got {probability!r}"
+                )
+        if not isinstance(self.flagged, bool):
+            raise ValueError(
+                f"ClusterAdjacentPair.flagged must be a genuine bool, got {self.flagged!r}"
+            )
+
+
 @dataclass(frozen=True, kw_only=True)
 class Observations:
     """Raw severity/outcome data for one series, either aggregated counts or per-observation
@@ -589,6 +720,37 @@ class Observations:
             for severity, (successes, trials) in sorted(pooled.items())
         )
 
+    def cluster_cells(self) -> tuple[ClusterCell, ...] | None:
+        """Pool rows with exactly equal severity *and* cluster id by summing counts.
+
+        Returns
+        -------
+        tuple[ClusterCell, ...] or None
+            ``None`` when the observations carry no cluster ids. Otherwise one
+            :class:`ClusterCell` per distinct (severity, cluster) pair, ordered by severity
+            ascending and then by the cluster's first appearance in the rows (the order of
+            :attr:`Fit.cluster_ids`). Summed over clusters, the counts at each severity equal
+            :meth:`cells`.
+        """
+        if self.cluster is None:
+            return None
+        order = {cluster_id: rank for rank, cluster_id in enumerate(dict.fromkeys(self.cluster))}
+        pooled: dict[tuple[float, str | int], tuple[int, int]] = {}
+        for severity, cluster_id, successes, trials in zip(
+            self.severity, self.cluster, self.successes, self.trials, strict=True
+        ):
+            existing_successes, existing_trials = pooled.get((severity, cluster_id), (0, 0))
+            pooled[(severity, cluster_id)] = (
+                existing_successes + successes,
+                existing_trials + trials,
+            )
+        return tuple(
+            ClusterCell(severity=severity, cluster=cluster_id, successes=successes, trials=trials)
+            for (severity, cluster_id), (successes, trials) in sorted(
+                pooled.items(), key=lambda item: (item[0][0], order[item[0][1]])
+            )
+        )
+
     @property
     def is_clustered(self) -> bool:
         """Whether this series carries cluster ids."""
@@ -700,8 +862,8 @@ def _check_whole_count(value: object, *, label: str) -> int:
 
 @dataclass(frozen=True, kw_only=True)
 class BootstrapSummary:
-    """What a bootstrap interval did with its replicates, kept on ``Threshold.bootstrap`` so a
-    result can be audited and reproduced.
+    """What a bootstrap interval did with its replicates, kept on ``Threshold.bootstrap`` and on
+    ``Ratio.bootstrap`` so a result can be audited and reproduced.
 
     Every replicate is resampled data that is refitted and solved for its own threshold. A
     replicate whose refit fails is ``failed`` and is left out of the percentiles. A replicate whose
@@ -724,6 +886,14 @@ class BootstrapSummary:
     seed
         The non-negative integer the random generator was seeded with. The same fit, arguments
         and seed reproduce the result bit for bit.
+
+    Notes
+    -----
+    On a ratio's summary (a bootstrap of a paired ratio), ``unreachable_low`` and
+    ``unreachable_high`` count the replicates whose ratio is ``0`` and ``+inf`` respectively
+    (a replicate whose numerator is unreachable on the low side and whose denominator is not, for
+    example), and ``failed`` also counts a replicate whose ratio is undefined because both
+    thresholds are unreachable on the same side.
 
     Raises
     ------

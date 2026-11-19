@@ -129,6 +129,8 @@ from robustmargin.models import (
     _STATSMODELS_LINKS,
     Fit,
     _cells_to_arrays,
+    _cluster_scores,
+    _ClusterCovarianceFailed,
     _count_cells,
     _curve_success_probability,
     _f_cdf,
@@ -355,6 +357,33 @@ def solve_value(fit: Fit, *, target: float) -> tuple[float, float]:
     return theta_hat, _to_natural(theta_hat, scale=fit.axis.scale)
 
 
+def _theta_gradient(
+    fit: Fit, *, definition: Definition, target: float, names: tuple[str, ...]
+) -> NDArray[np.float64]:
+    """The gradient of ``theta`` (the *transformed* axis) with respect to the natural parameters
+    ``names`` of ``fit``, in that order: ``d theta / d mu = 1``, ``d theta / d s = z*`` and, for an
+    estimated asymptote, ``s * dq / d(asymptote) / f(z*)`` (the delta method this module's
+    docstring describes)."""
+    assert fit.params is not None
+    upper = fit.params["upper"].value
+    lower = fit.params["lower"].value
+    z_star = _z_star(fit.link, upper=upper, lower=lower, target=target)
+    assert z_star is not None, "the caller must have already checked reachability"
+
+    gradient_by_name = {"mu": 1.0, "s": z_star}
+    if "upper" in names or "lower" in names:
+        density = _link_density(z_star, fit.link)
+        dq_du, dq_dl = _dq_du_dl(
+            definition, upper=upper, lower=lower, gaussian=fit.model == "gaussian"
+        )
+        s = fit.params["s"].value
+        if "upper" in names:
+            gradient_by_name["upper"] = s * dq_du / density
+        if "lower" in names:
+            gradient_by_name["lower"] = s * dq_dl / density
+    return np.array([gradient_by_name[name] for name in names], dtype=np.float64)
+
+
 def _theta_variance(fit: Fit, *, definition: Definition, target: float) -> float:
     """``Var(theta)`` on the *transformed* axis (``log(severity)`` on a log axis, raw severity on
     a linear one) -- the delta-method gradient assembly this module's docstring describes,
@@ -384,26 +413,10 @@ def _theta_variance(fit: Fit, *, definition: Definition, target: float) -> float
         ``gradient @ covariance @ gradient``, not yet clamped to ``>= 0`` -- callers do that
         (mirrors this module's own ``max(var_theta, 0.0)`` usage below).
     """
-    assert fit.params is not None and fit.covariance is not None
-    upper = fit.params["upper"].value
-    lower = fit.params["lower"].value
-    z_star = _z_star(fit.link, upper=upper, lower=lower, target=target)
-    assert z_star is not None, "the caller must have already checked reachability"
-
-    names = fit.covariance.names
-    gradient_by_name = {"mu": 1.0, "s": z_star}
-    if "upper" in names or "lower" in names:
-        density = _link_density(z_star, fit.link)
-        dq_du, dq_dl = _dq_du_dl(
-            definition, upper=upper, lower=lower, gaussian=fit.model == "gaussian"
-        )
-        s = fit.params["s"].value
-        if "upper" in names:
-            gradient_by_name["upper"] = s * dq_du / density
-        if "lower" in names:
-            gradient_by_name["lower"] = s * dq_dl / density
-
-    gradient = np.array([gradient_by_name[name] for name in names], dtype=np.float64)
+    assert fit.covariance is not None
+    gradient = _theta_gradient(
+        fit, definition=definition, target=target, names=fit.covariance.names
+    )
     matrix = np.array([[float(v) for v in row] for row in fit.covariance.matrix], dtype=np.float64)
     return float(gradient @ matrix @ gradient)
 
@@ -2310,7 +2323,11 @@ def delta_interval(
     ``sigma_log = sigma_theta / value`` -- which is what keeps the interval positive and
     equivariant under ``x -> c * x`` regardless of axis (this module's docstring). A binomial fit
     uses the normal quantile; a Gaussian fit uses the Student-t quantile on its residual degrees
-    of freedom (R ``drc``'s ``ED(interval = "delta")`` calibration).
+    of freedom (R ``drc``'s ``ED(interval = "delta")`` calibration); a clustered binomial fit uses
+    its cluster-robust covariance with the Student-t quantile on ``G - 1`` degrees of freedom,
+    ``G`` the number of clusters, because a cluster-robust variance with a normal quantile
+    under-covers when ``G`` is small (Cameron and Miller, 2015, *Journal of Human Resources*
+    50:317-372).
 
     Parameters
     ----------
@@ -2339,6 +2356,9 @@ def delta_interval(
     if fit.model == "gaussian":
         assert fit.residual is not None
         z_score = float(student_t.ppf(0.5 + level / 2.0, fit.residual.df))
+    elif fit.dependence == "clustered":
+        assert fit.cluster_ids is not None
+        z_score = float(student_t.ppf(0.5 + level / 2.0, len(fit.cluster_ids) - 1))
     else:
         z_score = float(norm.ppf(0.5 + level / 2.0))
     # `math.exp` raises OverflowError rather than returning inf, and a flat curve on a coarse
@@ -2450,6 +2470,11 @@ class _BootstrapDesign:
     ``view`` is an ``OK`` decreasing fit (an increasing fit enters as its complementary view) and
     ``definition`` the definition as stated for that view. Replicates are drawn all at once from
     one generator (:meth:`draw`), refitted one by one (:meth:`theta`).
+
+    The ``"cluster_bootstrap"`` kind resamples the view's clusters, not its trials: a replicate is
+    a multiplicity for every cluster, and its pooled cells are the multiplicity-weighted sums of
+    the view's ``cluster_cells``. Its trials per level therefore differ between replicates (there
+    is no fixed ``n``), and a level that no drawn cluster observed is absent from that replicate.
     """
 
     def __init__(self, view: Fit, *, definition: Definition, method: str) -> None:
@@ -2463,7 +2488,19 @@ class _BootstrapDesign:
         self.isotonic = view.model == "isotonic"
         control = [i for i, c in enumerate(cells) if c.severity == 0.0]
         self.control = control[0] if control else None
-        if self.continuous:
+        self.no_informative_level = 0
+        if method == "cluster_bootstrap":
+            assert view.cluster_cells is not None and view.cluster_ids is not None
+            level_of = {float(x): i for i, x in enumerate(self.severity)}
+            cluster_of = {cluster_id: j for j, cluster_id in enumerate(view.cluster_ids)}
+            shape = (self.severity.size, len(view.cluster_ids))
+            self.cluster_successes = np.zeros(shape, dtype=np.int64)
+            self.cluster_trials = np.zeros(shape, dtype=np.int64)
+            for cell in view.cluster_cells:
+                position = (level_of[cell.severity], cluster_of[cell.cluster])
+                self.cluster_successes[position] = cell.successes
+                self.cluster_trials[position] = cell.trials
+        elif self.continuous:
             continuous_cells = [c for c in cells if isinstance(c, ContinuousCell)]
             self.n = np.array([c.n for c in continuous_cells], dtype=np.int64)
             self.mean = np.array([c.mean for c in continuous_cells], dtype=np.float64)
@@ -2491,7 +2528,14 @@ class _BootstrapDesign:
     ) -> tuple[NDArray[np.float64], NDArray[np.float64] | None]:
         """``count`` replicates of the data: the successes (counts) or the cell means
         (continuous), and for a parametric Gaussian replicate also the within-cell sums of
-        squares (otherwise ``None``, and a continuous replicate keeps the fitted cells')."""
+        squares (otherwise ``None``, and a continuous replicate keeps the fitted cells'). A
+        cluster replicate is the number of times each of the view's clusters was drawn, one row
+        per replicate (the clusters' own order), from ``G`` draws with replacement."""
+        if self.method == "cluster_bootstrap":
+            clusters = self.cluster_trials.shape[1]
+            drawn = rng.integers(0, clusters, size=(count, clusters))
+            multiplicity = np.stack([np.bincount(row, minlength=clusters) for row in drawn])
+            return multiplicity.astype(np.float64), None
         size = (count, self.n.size)
         if not self.continuous:
             if self.method == "cell_bootstrap":
@@ -2541,6 +2585,19 @@ class _BootstrapDesign:
     ) -> Observations | ContinuousObservations:
         """Replicate ``index`` as observations on the view's own (decreasing) direction."""
         view = self.view
+        if self.method == "cluster_bootstrap":
+            multiplicity = np.rint(first[index]).astype(np.int64)
+            trials = self.cluster_trials @ multiplicity
+            successes = self.cluster_successes @ multiplicity
+            kept = np.flatnonzero(trials > 0)
+            return Observations(
+                axis=view.axis,
+                outcome=view.outcome,
+                direction=view.direction,
+                severity=tuple(float(self.severity[i]) for i in kept),
+                successes=tuple(int(successes[i]) for i in kept),
+                trials=tuple(int(trials[i]) for i in kept),
+            )
         severity = tuple(float(x) for x in self.severity)
         if not self.continuous:
             return Observations(
@@ -2608,6 +2665,16 @@ class _BootstrapDesign:
                 self.severity, fitted, target=self._isotonic_target(fitted), scale=self.scale
             )
         observations = self.observations(first, second, index)
+        if (
+            self.method == "cluster_bootstrap"
+            and self.scale == "log"
+            and all(x == 0.0 for x in observations.severity)
+        ):
+            # No drawn cluster observed a severity level besides the zero-severity control, so
+            # the replicate has no curve to fit: a failed replicate, counted as such. This is the
+            # one design failure of the cluster draw; nothing else is intercepted.
+            self.no_informative_level += 1
+            return math.nan
         params = self.view.params
         assert params is not None
         upper_estimated, lower_estimated = not params["upper"].fixed, not params["lower"].fixed
@@ -2676,6 +2743,64 @@ def _replicate_pairs(
     ]
 
 
+def _failure_causes_text(causes: tuple[tuple[int, str], ...]) -> str:
+    """The clause of the failure warning that names why replicates failed, from the
+    ``(count, reason)`` pairs with a nonzero count; empty when there are none."""
+    named = [f"{count} of them because {reason}" for count, reason in causes if count]
+    return "; " + "; ".join(named) if named else ""
+
+
+# The cluster-robust cross-check compares the cluster bootstrap with the sandwich standard error
+# on the scale of theta: the bootstrap spread (the interquartile range of the finite replicates
+# over 1.349, the ratio of the two for a normal distribution) against the standard error scaled
+# by sqrt(G / (G - 1)), and the bootstrap median against the estimate in standard errors. The
+# scaling is there because the bootstrap spread centres near sqrt((G - 1) / G) times the
+# small-sample-corrected standard error. A result is flagged when the scaled spread ratio leaves
+# [1 / _CROSS_CHECK_SPREAD_RATIO, _CROSS_CHECK_SPREAD_RATIO] or the shift exceeds
+# _CROSS_CHECK_SHIFT. Both limits are the simulated 97.5th percentiles of max(r, 1 / r) and of the
+# shift when the data are well behaved with 40 clusters, so about one well-behaved fit in forty
+# is flagged by each check.
+_CROSS_CHECK_SPREAD_RATIO = 1.16
+_CROSS_CHECK_SHIFT = 0.184
+_NORMAL_IQR = 1.349
+# Above this share of censored replicates a paired ratio bootstrap is flagged as unstable.
+_RATIO_CENSORED_WARN_FRACTION = 0.05
+
+
+def _cross_check_warning(
+    thetas: NDArray[np.float64], *, theta_hat: float, standard_error: float, clusters: int
+) -> str | None:
+    """The ``"CLUSTER_CROSS_CHECK: "`` note when the finite bootstrap replicates
+    ``thetas`` and the cluster-robust ``standard_error`` of the estimate ``theta_hat`` (all on one
+    scale) disagree, with the spread ratio scaled by ``sqrt(G / (G - 1))`` for ``clusters`` = ``G``,
+    or ``None`` when they agree or the comparison cannot be made (fewer than two finite replicates
+    or a standard error that is not finite)."""
+    finite = thetas[np.isfinite(thetas)]
+    if finite.size < 2 or not math.isfinite(standard_error):
+        return None
+    q25, q75 = np.percentile(finite, [25.0, 75.0])
+    spread = float(q75 - q25) / _NORMAL_IQR
+    shift = abs(float(np.median(finite)) - theta_hat)
+    if standard_error > 0.0:
+        ratio = spread / standard_error * math.sqrt(clusters / (clusters - 1))
+        distance = shift / standard_error
+    else:
+        ratio = math.inf if spread > 0.0 else 1.0
+        distance = math.inf if shift > 0.0 else 0.0
+    spread_ok = 1.0 / _CROSS_CHECK_SPREAD_RATIO <= ratio <= _CROSS_CHECK_SPREAD_RATIO
+    shift_ok = distance <= _CROSS_CHECK_SHIFT
+    if spread_ok and shift_ok:
+        return None
+    return (
+        "CLUSTER_CROSS_CHECK: the cluster bootstrap and the cluster-robust standard error "
+        f"disagree. The bootstrap spread, scaled by sqrt(G / (G - 1)) for G = {clusters} clusters, "
+        f"is {ratio:.3g} times the standard error "
+        f"(agreement is {1.0 / _CROSS_CHECK_SPREAD_RATIO:.3g} to {_CROSS_CHECK_SPREAD_RATIO:.3g}) "
+        f"and the bootstrap median is {distance:.3g} standard errors from the estimate "
+        f"(agreement is up to {_CROSS_CHECK_SHIFT:.3g}). The interval is reported as computed"
+    )
+
+
 def _bootstrap_interval(
     view: Fit,
     *,
@@ -2685,19 +2810,64 @@ def _bootstrap_interval(
     n_resamples: int,
     seed: int,
     theta_hat: float,
+    standard_error: float | None = None,
 ) -> _BootstrapOutcome:
     """A percentile bootstrap interval for a solved threshold (this module's docstring).
 
     ``view`` is the decreasing view of an ``OK`` fit, ``definition`` the definition as stated for
-    it, ``method`` ``"parametric_bootstrap"`` or ``"cell_bootstrap"`` and ``theta_hat`` the point
-    estimate on the transformed axis. The result is ``gave_up`` when the failed replicates exceed
-    ``min(0.10, alpha / 2)`` of all of them (a failure counts toward both ends, so more than
-    ``alpha / 2`` of them leaves no closed interval to report): it then carries the summary and a
-    warning and no interval.
+    it, ``method`` ``"parametric_bootstrap"``, ``"cell_bootstrap"`` or ``"cluster_bootstrap"`` and
+    ``theta_hat`` the point estimate on the transformed axis. The result is ``gave_up`` when the
+    failed replicates exceed ``min(0.10, alpha / 2)`` of all of them (a failure counts toward both
+    ends, so more than ``alpha / 2`` of them leaves no closed interval to report): it then
+    carries the summary and a warning and no interval. ``standard_error`` is the cluster-robust
+    standard error of ``theta_hat`` for a cluster bootstrap, which a closed interval is checked
+    against (:func:`_cross_check_warning`).
     """
     design = _BootstrapDesign(view, definition=definition, method=method)
     first, second = design.draw(np.random.default_rng(seed), n_resamples)
     thetas = np.array([design.theta(first, second, i) for i in range(n_resamples)])
+    return _percentile_outcome(
+        thetas,
+        scale=design.scale,
+        level=level,
+        n_resamples=n_resamples,
+        seed=seed,
+        theta_hat=theta_hat,
+        causes=(
+            (
+                design.undefined_baseline,
+                "the replicate's baseline was undefined (at or below zero)",
+            ),
+            (
+                design.no_informative_level,
+                "the drawn clusters observed no severity level besides the control",
+            ),
+        ),
+        standard_error=standard_error,
+        clusters=len(view.cluster_ids or ()),
+    )
+
+
+def _percentile_outcome(
+    thetas: NDArray[np.float64],
+    *,
+    scale: str,
+    level: float,
+    n_resamples: int,
+    seed: int,
+    theta_hat: float,
+    causes: tuple[tuple[int, str], ...],
+    standard_error: float | None,
+    clusters: int,
+) -> _BootstrapOutcome:
+    """The percentile interval of replicate values ``thetas`` (``-inf``/``+inf`` for an
+    unreachable side, ``nan`` for a failed replicate) and everything reported about it.
+
+    ``scale`` says how a value maps to the natural scale (``"log"`` exponentiates), ``theta_hat``
+    is the estimate on the same scale and ``causes`` the ``(count, reason)`` pairs that explain
+    the failed replicates. The counting, warnings and give-up rule are those of
+    :func:`_bootstrap_interval`.
+    """
     failed_mask = np.isnan(thetas)
     failed = int(failed_mask.sum())
     low = int(np.sum(thetas == -math.inf))
@@ -2719,14 +2889,9 @@ def _bootstrap_interval(
             "smallest and largest replicate and the interval's coverage is not meaningful"
         )
     if failed / n_resamples > _BOOTSTRAP_WARN_FRACTION:
-        reason = (
-            f"; {design.undefined_baseline} of them because the replicate's baseline was "
-            "undefined (at or below zero)"
-            if design.undefined_baseline
-            else ""
-        )
         warnings.append(
-            f"BOOTSTRAP_FAILURES: {failed}/{n_resamples} bootstrap replicates failed{reason}. "
+            f"BOOTSTRAP_FAILURES: {failed}/{n_resamples} bootstrap replicates failed"
+            f"{_failure_causes_text(causes)}. "
             "They are counted as -inf in the lower percentile and +inf in the upper one, so "
             "they can only widen the interval"
         )
@@ -2747,7 +2912,7 @@ def _bootstrap_interval(
 
     def natural(theta: float) -> float | None:
         try:
-            value = math.exp(theta) if design.scale == "log" else theta
+            value = math.exp(theta) if scale == "log" else theta
         except OverflowError:
             return None
         return value if math.isfinite(value) else None
@@ -2789,9 +2954,213 @@ def _bootstrap_interval(
             "from the estimate, which points to bias in the estimator; the interval is "
             "reported as computed"
         )
+    if standard_error is not None and not (lower_open or upper_open):
+        note = _cross_check_warning(
+            thetas, theta_hat=theta_hat, standard_error=standard_error, clusters=clusters
+        )
+        if note is not None:
+            warnings.append(note)
     censoring = Censoring.NONE
     if upper_open:
         censoring = Censoring.OPEN_UPPER
     elif lower_open:
         censoring = Censoring.OPEN_LOWER
     return _BootstrapOutcome(summary, lo, hi, censoring, tuple(warnings), False)
+
+
+# ------------------------------------------------------------------------------------------
+# Paired thresholds on shared clusters: the covariance between two thresholds and the paired
+# cluster bootstrap of their ratio.
+# ------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _PairedMoments:
+    """``Var(theta_a)``, ``Var(theta_b)`` and ``Cov(theta_a, theta_b)`` on the transformed axis."""
+
+    var_a: float
+    var_b: float
+    cov: float
+
+
+def _relative_matrix_gap(a: NDArray[np.float64], b: NDArray[np.float64]) -> float:
+    """The largest entry difference of ``a`` and ``b``, each scaled by the geometric mean of the
+    two diagonal entries of ``b`` so that parameters in different units share one footing."""
+    diagonal = np.sqrt(np.outer(np.abs(np.diag(b)), np.abs(np.diag(b))))
+    return float(np.max(np.abs(a - b) / diagonal))
+
+
+# How far a recomputed sandwich may lie from the covariance a fit stores before the two are
+# treated as different results.
+_STORED_COVARIANCE_TOLERANCE = 1e-4
+
+
+def _paired_theta_moments(
+    view_a: Fit,
+    view_b: Fit,
+    *,
+    definition_a: Definition,
+    definition_b: Definition,
+    target_a: float,
+    target_b: float,
+) -> _PairedMoments:
+    """The variances and covariance of two thresholds measured on the same clusters, from one
+    stacked cluster-robust recomputation.
+
+    ``view_a`` and ``view_b`` are decreasing, clustered, ``OK`` fits that carry the same set of
+    cluster ids. Each fit's per-cluster scores and bread are recomputed at its stored estimate, the
+    scores of the two fits are matched by cluster id, and with ``M_ab = G / (G - 1) * sum_c
+    s_a,c s_b,c'`` the natural-scale covariance between the parameters is ``J_a B_a M_ab B_b'
+    J_b'``. The variances are the same formula with a fit paired with itself, and are checked
+    against the covariance each fit stores. Mapping through the gradient of each threshold gives
+    the threshold moments.
+
+    Raises
+    ------
+    ValueError
+        If a sandwich cannot be formed, or a recomputed variance differs from the covariance the
+        fit stores (the fit's covariance is then not the cluster-robust covariance of its own
+        cluster counts).
+    """
+    try:
+        pieces_a = _cluster_scores(view_a)
+        pieces_b = _cluster_scores(view_b)
+    except _ClusterCovarianceFailed as failure:
+        raise ValueError(
+            "paired clustered thresholds: the cluster-robust covariance cannot be recomputed "
+            f"({failure})"
+        ) from failure
+    position_b = {cluster_id: i for i, cluster_id in enumerate(pieces_b.cluster_ids)}
+    scores_a = pieces_a.scores
+    scores_b = pieces_b.scores[[position_b[cluster_id] for cluster_id in pieces_a.cluster_ids]]
+    clusters = len(pieces_a.cluster_ids)
+    factor = clusters / (clusters - 1.0)
+
+    def natural(
+        p: Any, q: Any, left: NDArray[np.float64], right: NDArray[np.float64]
+    ) -> NDArray[np.float64]:
+        chart = p.bread @ (factor * (left.T @ right)) @ q.bread.T
+        return np.asarray(p.jacobian @ chart @ q.jacobian.T, dtype=np.float64)
+
+    cov_aa = natural(pieces_a, pieces_a, scores_a, scores_a)
+    cov_bb = natural(pieces_b, pieces_b, scores_b, scores_b)
+    cov_ab = natural(pieces_a, pieces_b, scores_a, scores_b)
+
+    for label, view, pieces, recomputed in (
+        ("first", view_a, pieces_a, cov_aa),
+        ("second", view_b, pieces_b, cov_bb),
+    ):
+        assert view.covariance is not None
+        stored_names = view.covariance.names
+        order = [stored_names.index(name) for name in pieces.names]
+        stored = np.array(view.covariance.matrix, dtype=np.float64)[np.ix_(order, order)]
+        if _relative_matrix_gap(recomputed, stored) > _STORED_COVARIANCE_TOLERANCE:
+            raise ValueError(
+                f"paired clustered thresholds: the {label} fit's stored covariance is not the "
+                "cluster-robust covariance of its own cluster counts (a recomputation differs by "
+                f"more than {_STORED_COVARIANCE_TOLERANCE:g} relative); the paired covariance "
+                "cannot be built from it"
+            )
+    grad_a = _theta_gradient(view_a, definition=definition_a, target=target_a, names=pieces_a.names)
+    grad_b = _theta_gradient(view_b, definition=definition_b, target=target_b, names=pieces_b.names)
+    return _PairedMoments(
+        var_a=float(grad_a @ cov_aa @ grad_a),
+        var_b=float(grad_b @ cov_bb @ grad_b),
+        cov=float(grad_a @ cov_ab @ grad_b),
+    )
+
+
+def _paired_bootstrap_interval(
+    view_a: Fit,
+    view_b: Fit,
+    *,
+    definition_a: Definition,
+    definition_b: Definition,
+    level: float,
+    n_resamples: int,
+    seed: int,
+    ratio_hat: float,
+    standard_error: float,
+) -> _BootstrapOutcome:
+    """A paired cluster-bootstrap percentile interval for the ratio of two thresholds measured
+    on the same clusters.
+
+    Each replicate draws ``G`` cluster ids with replacement, once, from the first fit's cluster
+    list (so the pairing does not depend on how the second fit orders its clusters), applies the
+    draw to both fits by id, refits both and reads both thresholds. On a log axis the replicate
+    value is ``theta_a - theta_b`` and the interval is exponentiated; on a linear axis it is
+    ``theta_a / theta_b`` itself. ``ratio_hat`` is the estimate on that scale (``log`` of the
+    ratio on a log axis) and ``standard_error`` its cluster-robust standard error there.
+
+    A threshold unreachable on one side puts the ratio on that side (``+inf`` or ``-inf``, which
+    is a ratio of ``0``); one unreachable on each side in the same direction (``inf / inf`` or
+    ``0 / 0``) is undefined and counted as failed, like a refit that did not converge. The returned
+    outcome carries the ratio's own censored share in a ``"RATIO_BOOTSTRAP_CENSORED: "`` note
+    when it exceeds :data:`_RATIO_CENSORED_WARN_FRACTION`.
+    """
+    design_a = _BootstrapDesign(view_a, definition=definition_a, method="cluster_bootstrap")
+    design_b = _BootstrapDesign(view_b, definition=definition_b, method="cluster_bootstrap")
+    assert view_a.cluster_ids is not None and view_b.cluster_ids is not None
+    position_a = {cluster_id: i for i, cluster_id in enumerate(view_a.cluster_ids)}
+    align_b = [position_a[cluster_id] for cluster_id in view_b.cluster_ids]
+
+    first_a, _ = design_a.draw(np.random.default_rng(seed), n_resamples)
+    first_b = first_a[:, align_b]
+    log_axis = view_a.axis.scale == "log"
+
+    values = np.empty(n_resamples, dtype=np.float64)
+    same_side = 0
+    # Failure causes are counted per replicate: one in which both fits fail for the same cause
+    # counts once.
+    undefined_baseline = 0
+    no_informative_level = 0
+    for i in range(n_resamples):
+        baseline_before = (design_a.undefined_baseline, design_b.undefined_baseline)
+        informative_before = (design_a.no_informative_level, design_b.no_informative_level)
+        theta_a = design_a.theta(first_a, None, i)
+        theta_b = design_b.theta(first_b, None, i)
+        if (design_a.undefined_baseline, design_b.undefined_baseline) != baseline_before:
+            undefined_baseline += 1
+        if (design_a.no_informative_level, design_b.no_informative_level) != informative_before:
+            no_informative_level += 1
+        if math.isnan(theta_a) or math.isnan(theta_b):
+            values[i] = math.nan
+            continue
+        side_a = 0 if math.isfinite(theta_a) else (1 if theta_a > 0.0 else -1)
+        side_b = 0 if math.isfinite(theta_b) else (1 if theta_b > 0.0 else -1)
+        if side_a == side_b != 0:
+            same_side += 1
+            values[i] = math.nan
+        elif side_a != side_b:
+            values[i] = math.inf if side_a > side_b else -math.inf
+        else:
+            values[i] = theta_a - theta_b if log_axis else theta_a / theta_b
+
+    outcome = _percentile_outcome(
+        values,
+        scale="log" if log_axis else "linear",
+        level=level,
+        n_resamples=n_resamples,
+        seed=seed,
+        theta_hat=ratio_hat,
+        causes=(
+            (same_side, "both thresholds were unreachable on the same side (an undefined ratio)"),
+            (undefined_baseline, "a replicate's baseline was undefined (at or below zero)"),
+            (
+                no_informative_level,
+                "the drawn clusters observed no severity level besides the control",
+            ),
+        ),
+        standard_error=standard_error,
+        clusters=len(view_a.cluster_ids),
+    )
+    censored = outcome.summary.unreachable_low + outcome.summary.unreachable_high
+    if censored / n_resamples <= _RATIO_CENSORED_WARN_FRACTION:
+        return outcome
+    note = (
+        f"RATIO_BOOTSTRAP_CENSORED: {censored}/{n_resamples} cluster-bootstrap replicates "
+        f"({censored / n_resamples:.1%}) had a threshold unreachable on one side, so the ratio "
+        f"was 0 or infinite; {same_side} more were undefined (unreachable on the same side) and "
+        "counted as failed. The ratio interval is unstable"
+    )
+    return replace(outcome, warnings=(*outcome.warnings, note))

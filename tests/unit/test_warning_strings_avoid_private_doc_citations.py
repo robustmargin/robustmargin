@@ -339,7 +339,7 @@ def _collect_dynamic_messages() -> list[str]:
     messages.extend(diagnose(_overdispersed_fit()).warnings)
     messages.extend(diagnose(_sparse_cells_fit()).warnings)
 
-    # ratio_interval: dependence='paired' is not implemented in this release.
+    # ratio_interval: dependence='paired' on thresholds that are not clustered fits.
     t_a = fake_threshold(status=Status.OK, censoring=Censoring.NONE)
     t_b = fake_threshold(status=Status.OK, censoring=Censoring.NONE)
     with pytest.raises(ValueError) as excinfo_paired:

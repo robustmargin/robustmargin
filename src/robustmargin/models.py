@@ -42,6 +42,17 @@ decreasing curve of the complementary outcome (``trials - successes``, asymptote
 ``1 - u``) and mapped back, so the likelihood, the optimisers and every status rule are the ones the
 decreasing case uses; no separate estimator exists. The mapping is kept in :func:`_mirror_fit`.
 
+**Clustered counts.** ``fit_dose_response(dependence="clustered")`` keeps the working-independence
+maximum-likelihood point estimate and replaces the model-based covariance with a cluster-robust
+sandwich, ``B M B``: ``B`` the inverse observed information and ``M = G / (G - 1) * sum_c s_c s_c'``
+over the ``G`` clusters' summed scores ``s_c`` at the estimate (Liang and Zeger, 1986,
+*Biometrika* 73:13-22; the ``G / (G - 1)`` factor, and the ``G - 1`` degrees of freedom a
+critical value should use, follow Cameron and Miller, 2015, *Journal of Human Resources*
+50:317-372). The per-cluster scores are central-difference gradients of the package's own
+per-cluster likelihood, and the cluster sums are assembled by
+:func:`statsmodels.stats.sandwich_covariance.cov_cluster`; no optimiser is involved. The data it
+needs live on :attr:`Fit.cluster_cells`.
+
 :class:`Fit` also carries :attr:`~Fit.diagnostics` (model-only goodness of fit, dispersion and
 link comparison, filled only when ``status`` is ``OK`` -- see :func:`robustmargin.diagnose`) and
 :attr:`~Fit.monotonicity` (a data-only adjacent-level check, filled on *every* return path
@@ -69,12 +80,14 @@ from scipy.stats import t as student_t
 from statsmodels.base.model import GenericLikelihoodModel
 from statsmodels.genmod import families
 from statsmodels.genmod.generalized_linear_model import GLM
+from statsmodels.stats.sandwich_covariance import cov_cluster
 from statsmodels.tools.sm_exceptions import ConvergenceWarning, PerfectSeparationWarning
 from statsmodels.tools.tools import add_constant
 
 from robustmargin.types import (
     Axis,
     Cell,
+    ClusterCell,
     ContinuousCell,
     ContinuousObservations,
     JSONValue,
@@ -113,6 +126,7 @@ _VALID_LINKS: dict[str, frozenset[str]] = {
 _GAUSSIAN_FIT_STATUSES = frozenset({Status.OK, Status.NOT_CONVERGED})
 _BINOMIAL_PARAM_NAMES = frozenset({"mu", "s", "upper", "lower"})
 _VALID_DIRECTIONS = frozenset({"decreasing", "increasing"})
+_VALID_FIT_DEPENDENCE = frozenset({"independent", "clustered"})
 _INVALID_FIT_STATUSES = frozenset({Status.UNREACHABLE, Status.FAILS_AT_BASELINE})
 
 # Tolerance for Covariance's positive-definiteness check: the minimum eigenvalue of the
@@ -374,7 +388,10 @@ class Fit:
     ``upper`` the rate the curve approaches as severity grows, so ``P(0) = l`` on a log axis.
     ``covariance`` is on that same natural scale: when asymptotes are estimated, the
     optimiser's own covariance (which is on its reparametrised scale) is
-    delta-transformed onto the natural scale before being stored here.
+    delta-transformed onto the natural scale before being stored here. On a fit with
+    ``dependence="clustered"`` it is the cluster-robust sandwich covariance rather than the
+    model-based one, and everything computed from it (:meth:`predict`, a ``"delta"`` interval)
+    uses the sandwich; read ``dependence`` to know which covariance a fit carries.
 
     ``status == Status.OK`` if and only if both ``params`` and ``log_likelihood`` are present;
     when ``status`` is anything else, ``params``, ``covariance`` and ``log_likelihood`` are all
@@ -490,7 +507,29 @@ class Fit:
         The isotonic fit's value at every cell, in ``cells`` order (the control included), set
         exactly when ``model="isotonic"`` and ``None`` otherwise. Non-increasing for a
         decreasing outcome and non-decreasing for an increasing one; for counts each lies in
-        ``[0, 1]``. The last field.
+        ``[0, 1]``.
+    dependence
+        ``"independent"`` (the default) or ``"clustered"``. ``"clustered"`` means ``covariance``
+        is the cluster-robust sandwich and the fit carries ``cluster_cells``; it is binomial only.
+        ``"independent"`` is the model-based covariance, whether or not the data carried cluster
+        ids (``cluster_ids`` records the data's structure, ``dependence`` the assumption made).
+    cluster_cells
+        The counts per (severity, cluster) of a clustered fit, as counted (never complemented for
+        an increasing outcome), and ``None`` otherwise: set exactly when
+        ``dependence == "clustered"``. Strictly ordered by severity ascending, then by the
+        cluster's position in ``cluster_ids``; its per-severity sums equal ``cells`` and its
+        cluster ids are exactly ``cluster_ids``. The last field.
+
+    Raises
+    ------
+    ValueError
+        If any field breaks the rules above: an unknown ``model``, ``link``, ``direction`` or
+        ``dependence``; ``status`` incoherent with ``params``, ``covariance``,
+        ``log_likelihood`` or ``diagnostics``; ``cells`` empty or not strictly ascending;
+        ``cluster_cells`` set when ``dependence`` is not ``"clustered"`` or the reverse, not
+        binomial, without ``cluster_ids``, out of order, or not summing to ``cells``; or
+        ``monotonicity`` a cluster sign test on an independent fit or a Fisher/Welch check on a
+        clustered one.
     """
 
     axis: Axis
@@ -511,6 +550,8 @@ class Fit:
     monotonicity: MonotonicityCheck | None = None
     residual: Residual | None = None
     cell_estimates: tuple[float, ...] | None = None
+    dependence: str = "independent"
+    cluster_cells: tuple[ClusterCell, ...] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "warnings", tuple(self.warnings))
@@ -519,6 +560,8 @@ class Fit:
             object.__setattr__(self, "cluster_ids", tuple(self.cluster_ids))
         if self.cell_estimates is not None:
             object.__setattr__(self, "cell_estimates", tuple(self.cell_estimates))
+        if self.cluster_cells is not None:
+            object.__setattr__(self, "cluster_cells", tuple(self.cluster_cells))
 
         if self.schema_version in ("1", "2") and (
             self.model == "isotonic" or self.link == "none" or self.cell_estimates is not None
@@ -526,6 +569,18 @@ class Fit:
             raise ValueError(
                 f"Fit with schema_version {self.schema_version!r} cannot be an isotonic fit or "
                 "carry cell_estimates: only schema_version '3' has them"
+            )
+        if self.dependence not in _VALID_FIT_DEPENDENCE:
+            raise ValueError(
+                f"Fit.dependence must be one of {sorted(_VALID_FIT_DEPENDENCE)}, "
+                f"got {self.dependence!r}"
+            )
+        if self.schema_version in ("1", "2") and (
+            self.dependence != "independent" or self.cluster_cells is not None
+        ):
+            raise ValueError(
+                f"Fit with schema_version {self.schema_version!r} cannot be clustered or carry "
+                "cluster_cells: only schema_version '3' has them"
             )
         if not self.outcome:
             raise ValueError("Fit.outcome must be non-empty")
@@ -588,6 +643,7 @@ class Fit:
                 )
 
         _check_cluster_ids(self.cluster_ids, label="Fit.cluster_ids")
+        self._check_clustered()
 
         if (self.cell_estimates is not None) != isotonic:
             raise ValueError(
@@ -697,6 +753,67 @@ class Fit:
                 f"expected {sorted(non_fixed)}, got {sorted(self.covariance.names)}"
             )
 
+    def _check_clustered(self) -> None:
+        """The invariants of ``dependence`` and ``cluster_cells`` (``__post_init__`` calls this
+        after the checks every model shares): both are set together, only on a binomial fit with
+        cluster ids, the cluster cells sum to ``cells``, and the monotonicity check, when there is
+        one, is the one that goes with the dependence."""
+        clustered = self.dependence == "clustered"
+        if clustered != (self.cluster_cells is not None):
+            raise ValueError(
+                "Fit.cluster_cells is set exactly when dependence is 'clustered': got "
+                f"dependence={self.dependence!r}, cluster_cells is not None="
+                f"{self.cluster_cells is not None!r}"
+            )
+        if self.monotonicity is not None:
+            sign_test = self.monotonicity.dependence == "clustered"
+            if sign_test != clustered:
+                raise ValueError(
+                    f"Fit.monotonicity.dependence ({self.monotonicity.dependence!r}) must match "
+                    f"Fit.dependence ({self.dependence!r}): a clustered fit carries the cluster "
+                    "sign test and an independent fit does not"
+                )
+        if not clustered:
+            return
+        if self.model != "binomial":
+            raise ValueError(
+                f"Fit.dependence 'clustered' needs model='binomial', got {self.model!r}: "
+                "clustered continuous inference is not implemented"
+            )
+        cluster_cells = self.cluster_cells
+        assert cluster_cells is not None  # established above
+        if self.cluster_ids is None:
+            raise ValueError("Fit.cluster_cells requires Fit.cluster_ids")
+        rank = {cluster_id: index for index, cluster_id in enumerate(self.cluster_ids)}
+        sums: dict[float, tuple[int, int]] = {}
+        previous: tuple[float, int] | None = None
+        for cell in cluster_cells:
+            if not isinstance(cell, ClusterCell):
+                raise ValueError(
+                    f"Fit.cluster_cells must each be a ClusterCell, got {type(cell).__name__}"
+                )
+            if cell.cluster not in rank:
+                raise ValueError(
+                    f"Fit.cluster_cells has cluster {cell.cluster!r}, which is not in cluster_ids"
+                )
+            position = (cell.severity, rank[cell.cluster])
+            if previous is not None and not position > previous:
+                raise ValueError(
+                    "Fit.cluster_cells must be in strictly increasing order of severity and, "
+                    "within a severity, of the cluster's position in cluster_ids, with one cell "
+                    f"per (severity, cluster); {position!r} follows {previous!r}"
+                )
+            previous = position
+            successes, trials = sums.get(cell.severity, (0, 0))
+            sums[cell.severity] = (successes + cell.successes, trials + cell.trials)
+        if {c.cluster for c in cluster_cells} != set(self.cluster_ids):
+            raise ValueError("Fit.cluster_cells must cover exactly the clusters in Fit.cluster_ids")
+        expected = {c.severity: (c.successes, c.trials) for c in self.cells if isinstance(c, Cell)}
+        if sums != expected:
+            raise ValueError(
+                "Fit.cluster_cells must sum, at each severity, to Fit.cells exactly (as counted)"
+            )
+
     def _check_isotonic(self) -> None:
         """The invariants of an isotonic fit (``__post_init__`` calls this after the checks every
         model shares): no parameters, no covariance, no diagnostics, no residual, a finite
@@ -760,6 +877,13 @@ class Fit:
         natural parameters and ``t`` the Student-t quantile on the residual degrees of freedom.
         The band is not clipped to any interval. An increasing Gaussian fit is the negation of
         the decreasing fit of the negated response.
+
+        **A clustered fit** (``dependence="clustered"``) builds the same band from its
+        cluster-robust covariance, with a Student-t quantile on ``G - 1`` degrees of freedom
+        (``G`` the number of clusters), because a cluster-robust variance with a normal quantile
+        under-covers when ``G`` is small. The band is unreliable with few clusters (see
+        ``warnings``). Read ``dependence`` to know which
+        covariance a band comes from.
 
         On a log axis, severity ``0.0`` is always the zero-severity control: its estimate
         is ``upper`` exactly (``lower`` for an increasing outcome), never computed through
@@ -861,7 +985,11 @@ class Fit:
         lower = lower_param.value
         covariance = self.covariance
 
-        z_score = float(norm.ppf(0.5 + level / 2.0))
+        if self.dependence == "clustered":
+            assert self.cluster_ids is not None
+            z_score = float(student_t.ppf(0.5 + level / 2.0, len(self.cluster_ids) - 1))
+        else:
+            z_score = float(norm.ppf(0.5 + level / 2.0))
 
         # x = 0 on a log axis is not special-cased here: both band functions below route it
         # through the exact same logit-P gradient/delta computation as every other severity
@@ -1015,7 +1143,8 @@ def _mirror_fit(fit: Fit) -> Fit:
     that couples exactly one asymptote to something else (the map's Jacobian is diagonal, with
     entries ``+1`` for ``mu`` and ``s`` and ``-1`` for the asymptotes). Cell counts are
     complemented, so the map applied twice returns the fit it was given, up to rounding.
-    Diagnostics, monotonicity, cluster ids and warnings are carried over as they are.
+    Diagnostics, monotonicity, cluster ids and warnings are carried over as they are. A clustered
+    fit's ``cluster_cells`` are complemented like its ``cells``, and its ``dependence`` is kept.
 
     A Gaussian fit mirrors by negation instead: ``y -> -y`` turns ``P = l + (u - l) * F(z)`` into
     ``P' = u' - (u' - l') * F(z)`` with ``u' = -l`` and ``l' = -u``. Negation is exact in floating
@@ -1074,7 +1203,25 @@ def _mirror_fit(fit: Fit) -> Fit:
         covariance = Covariance(
             names=tuple(_SWAPPED_PARAMETER_NAME[n] for n in names), matrix=matrix
         )
-    return replace(fit, direction=direction, params=params, covariance=covariance, cells=cells)
+    cluster_cells = fit.cluster_cells
+    if cluster_cells is not None:
+        cluster_cells = tuple(
+            ClusterCell(
+                severity=c.severity,
+                cluster=c.cluster,
+                successes=c.trials - c.successes,
+                trials=c.trials,
+            )
+            for c in cluster_cells
+        )
+    return replace(
+        fit,
+        direction=direction,
+        params=params,
+        covariance=covariance,
+        cells=cells,
+        cluster_cells=cluster_cells,
+    )
 
 
 @overload
@@ -1514,7 +1661,7 @@ def _predict_band_fixed_asymptotes(
         var_mu = _covariance_entry(covariance, "mu", "mu")
         var_s = _covariance_entry(covariance, "s", "s")
         cov_mu_s = _covariance_entry(covariance, "mu", "s")
-        var_z = (var_mu + (z**2) * var_s - 2.0 * z * cov_mu_s) / (s**2)
+        var_z = (var_mu + (z**2) * var_s + 2.0 * z * cov_mu_s) / (s**2)
         se_z = np.sqrt(np.clip(var_z, 0.0, None))
 
         estimate[nonzero] = upper - (upper - lower) * _f_cdf(z, link)
@@ -3346,6 +3493,234 @@ def _fit_glm(
 
 
 # ================================================================================================
+# The cluster-robust covariance of a clustered binomial fit
+# ================================================================================================
+
+# Below this many clusters a cluster-robust (sandwich) interval is disclosed as unreliable.
+_FEW_CLUSTERS_SANDWICH = 20
+# The percentile cluster bootstrap under-covers further, so it is disclosed below this count.
+_FEW_CLUSTERS_BOOTSTRAP = 40
+_FEW_CLUSTERS_WARNING_PREFIX = "FEW_CLUSTERS: "
+_CLUSTER_COVARIANCE_WARNING_PREFIX = "CLUSTER_COVARIANCE: "
+# Relative step of the central differences behind the per-cluster scores, in the optimiser's chart.
+_CLUSTER_SCORE_STEP = 1e-5
+
+
+def _few_clusters_warning(clusters: int, *, bootstrap: bool = False) -> str:
+    """The ``"FEW_CLUSTERS: "`` note a cluster-robust result carries when it rests on few clusters:
+    fewer than :data:`_FEW_CLUSTERS_SANDWICH`, or, for a percentile cluster-bootstrap interval
+    (``bootstrap=True``), fewer than :data:`_FEW_CLUSTERS_BOOTSTRAP`."""
+    if bootstrap:
+        return (
+            f"{_FEW_CLUSTERS_WARNING_PREFIX}{clusters} clusters; the percentile cluster "
+            f"bootstrap under-covers below {_FEW_CLUSTERS_BOOTSTRAP} clusters; use "
+            "interval_method='delta', which uses a t quantile with clusters - 1 degrees of freedom"
+        )
+    return (
+        f"{_FEW_CLUSTERS_WARNING_PREFIX}{clusters} clusters; cluster-robust intervals are "
+        f"unreliable below {_FEW_CLUSTERS_SANDWICH}"
+    )
+
+
+class _ClusterCovarianceFailed(Exception):
+    """The cluster-robust covariance could not be formed: a score or information matrix that is
+    not finite, or a sandwich that is not positive definite. ``str(exception)`` is the reason."""
+
+
+@dataclass(frozen=True)
+class _ClusterScores:
+    """What a cluster-robust covariance is assembled from, for one fit.
+
+    ``scores`` has one row per cluster (``cluster_ids`` order): the gradient of that cluster's own
+    log-likelihood at the estimate, in the optimiser's chart ``(mu', log s', [a], [b])`` of
+    :func:`_unpack_optimizer_params`. ``bread`` is the inverse of the negative Hessian of the
+    whole-sample log-likelihood in the same chart, and ``jacobian`` maps that chart to the natural
+    parameters ``names``. A cross-covariance between two fits on the same clusters is
+    ``B_a (sum_c s_a,c s_b,c') B_b'`` in these charts, mapped through each fit's own Jacobian.
+    """
+
+    names: tuple[str, ...]
+    cluster_ids: tuple[str | int, ...]
+    scores: NDArray[np.float64]
+    bread: NDArray[np.float64]
+    jacobian: NDArray[np.float64]
+
+
+def _cluster_scores(view: Fit) -> _ClusterScores:
+    """The per-cluster scores, bread and Jacobian of a converged, decreasing, clustered ``view``,
+    recomputed at its stored natural-scale estimates from its own ``cells`` and ``cluster_cells``.
+
+    A pure function of the stored fit: nothing is refitted and the stored covariance is never
+    read. The likelihood is :class:`_GenericLogLikelihood` (the stable log-space binomial
+    likelihood both fitting paths share), with the conditioning centre and spread of the whole
+    design (:func:`_centering_and_scale`), never recomputed on the per-cluster rows. Scores are
+    central differences of each cluster's own log-likelihood; the bread is the numerical observed
+    information of the whole sample. Using one chart for both fixed-asymptote paths is
+    harmless: at a maximum the sandwich mapped to the natural scale does not depend on the chart.
+
+    Raises
+    ------
+    _ClusterCovarianceFailed
+        If a score or the information is not finite, or the information is not positive definite.
+    """
+    assert view.params is not None and view.cluster_cells is not None
+    assert view.cluster_ids is not None and view.direction == "decreasing"
+    params = view.params
+    cells = _count_cells(view)
+    scale = view.axis.scale
+    severity, successes, trials = _cells_to_arrays(cells)
+    center, spread = _centering_and_scale(severity, scale=scale)
+    estimate_upper = not params["upper"].fixed
+    estimate_lower = not params["lower"].fixed
+    upper_value = params["upper"].value
+    lower_value = params["lower"].value
+
+    chart = [(params["mu"].value - center) / spread, math.log(params["s"].value / spread)]
+    names = ["mu", "s"]
+    if estimate_lower:
+        share = lower_value if estimate_upper else lower_value / upper_value
+        chart.append(float(_logit(share)))
+        names.append("lower")
+    if estimate_upper:
+        chart.append(float(_logit((upper_value - lower_value) / (1.0 - lower_value))))
+        names.append("upper")
+    point = np.array(chart, dtype=np.float64)
+    if not bool(np.all(np.isfinite(point))):
+        raise _ClusterCovarianceFailed(
+            "the estimate has no finite coordinates in the optimiser's chart"
+        )
+
+    def likelihood(
+        rows_severity: NDArray[np.float64],
+        rows_successes: NDArray[np.float64],
+        rows_trials: NDArray[np.float64],
+    ) -> _GenericLogLikelihood:
+        return _GenericLogLikelihood(
+            severity=rows_severity,
+            successes=rows_successes,
+            trials=rows_trials,
+            scale=scale,
+            link=view.link,
+            estimate_lower=estimate_lower,
+            estimate_upper=estimate_upper,
+            lower_value=lower_value,
+            upper_value=upper_value,
+            center=center,
+            spread=spread,
+        )
+
+    _, hessian = _numerical_gradient_and_hessian(likelihood(severity, successes, trials), point)
+    information = -(hessian + hessian.T) / 2.0
+    if not _is_positive_definite(information):
+        raise _ClusterCovarianceFailed("the observed information is not positive definite")
+    bread = np.asarray(np.linalg.inv(information), dtype=np.float64)
+
+    rows: dict[str | int, list[ClusterCell]] = {cluster_id: [] for cluster_id in view.cluster_ids}
+    for cell in view.cluster_cells:
+        rows[cell.cluster].append(cell)
+    scores = np.zeros((len(view.cluster_ids), point.size), dtype=np.float64)
+    for index, cluster_id in enumerate(view.cluster_ids):
+        own = likelihood(
+            np.array([c.severity for c in rows[cluster_id]], dtype=np.float64),
+            np.array([float(c.successes) for c in rows[cluster_id]], dtype=np.float64),
+            np.array([float(c.trials) for c in rows[cluster_id]], dtype=np.float64),
+        )
+        for j in range(point.size):
+            step = _CLUSTER_SCORE_STEP * max(1.0, abs(float(point[j])))
+            up = point.copy()
+            up[j] += step
+            down = point.copy()
+            down[j] -= step
+            scores[index, j] = (own(up) - own(down)) / (2.0 * step)
+    if not bool(np.all(np.isfinite(scores))):
+        raise _ClusterCovarianceFailed("a cluster's score is not finite at the estimate")
+
+    def natural_vector(p: NDArray[np.float64]) -> NDArray[np.float64]:
+        mu_scaled, s_scaled, lower, upper = _unpack_optimizer_params(
+            p,
+            estimate_lower=estimate_lower,
+            estimate_upper=estimate_upper,
+            lower_value=lower_value,
+            upper_value=upper_value,
+        )
+        values = [center + spread * mu_scaled, spread * s_scaled]
+        if estimate_lower:
+            values.append(lower)
+        if estimate_upper:
+            values.append(upper)
+        return np.array(values, dtype=np.float64)
+
+    return _ClusterScores(
+        names=tuple(names),
+        cluster_ids=view.cluster_ids,
+        scores=scores,
+        bread=bread,
+        jacobian=_central_difference_jacobian(natural_vector, point),
+    )
+
+
+def _cluster_covariance(pieces: _ClusterScores) -> NDArray[np.float64]:
+    """The natural-scale cluster-robust covariance ``J B M B J'`` with
+    ``M = G / (G - 1) * sum_c s_c s_c'``: the sandwich of
+    :func:`statsmodels.stats.sandwich_covariance.cov_cluster` over the per-cluster scores, scaled
+    by the small-sample factor ``G / (G - 1)`` only.
+
+    Raises
+    ------
+    _ClusterCovarianceFailed
+        If the result is not finite and positive definite.
+    """
+    clusters = len(pieces.cluster_ids)
+    sandwich = cov_cluster((pieces.scores, pieces.bread), np.arange(clusters), use_correction=False)
+    chart_covariance = np.asarray(sandwich, dtype=np.float64) * clusters / (clusters - 1.0)
+    natural = pieces.jacobian @ chart_covariance @ pieces.jacobian.T
+    natural = (natural + natural.T) / 2.0
+    if not _is_positive_definite(natural):
+        raise _ClusterCovarianceFailed("the cluster-robust covariance is not positive definite")
+    return natural
+
+
+def _with_cluster_covariance(fit: Fit, *, view_cells: tuple[ClusterCell, ...]) -> Fit:
+    """``fit`` (a decreasing fit of one binomial series, before diagnostics) made clustered: it
+    stores ``view_cells`` (the series' counts per severity and cluster, as in ``fit.cells``), and
+    when it converged its covariance is the cluster-robust sandwich. A sandwich that cannot be
+    formed makes the fit ``NOT_CONVERGED`` with a ``"CLUSTER_COVARIANCE: "`` reason and no
+    numbers, which can differ from the independent fit's status; the point estimate is never
+    changed."""
+    assert fit.cluster_ids is not None
+    notes: list[str] = []
+    if len(fit.cluster_ids) < _FEW_CLUSTERS_SANDWICH:
+        notes.append(_few_clusters_warning(len(fit.cluster_ids)))
+    clustered = replace(fit, dependence="clustered", cluster_cells=view_cells)
+    if fit.status is not Status.OK:
+        return replace(clustered, warnings=(*fit.warnings, *notes))
+    try:
+        pieces = _cluster_scores(clustered)
+        covariance = _cluster_covariance(pieces)
+    except _ClusterCovarianceFailed as failure:
+        return replace(
+            clustered,
+            status=Status.NOT_CONVERGED,
+            params=None,
+            covariance=None,
+            log_likelihood=None,
+            warnings=(
+                *fit.warnings,
+                f"{_CLUSTER_COVARIANCE_WARNING_PREFIX}the cluster-robust covariance could not be "
+                f"formed ({failure}); no estimate is reported",
+                *notes,
+            ),
+        )
+    return replace(
+        clustered,
+        covariance=Covariance(
+            names=pieces.names, matrix=tuple(tuple(row) for row in covariance.tolist())
+        ),
+        warnings=(*fit.warnings, *notes),
+    )
+
+
+# ================================================================================================
 # The Gaussian (continuous-outcome) fit
 # ================================================================================================
 #
@@ -4376,6 +4751,13 @@ def _status_only_fit(
     )
 
 
+def _cluster_cells_of(obs: Observations) -> tuple[ClusterCell, ...]:
+    """``obs.cluster_cells()`` for observations known to carry cluster ids."""
+    cells = obs.cluster_cells()
+    assert cells is not None
+    return cells
+
+
 def _finalize(fit: Fit, *, monotonicity: MonotonicityCheck) -> Fit:
     """Attach ``monotonicity`` (every return path, whatever the status) and ``diagnostics``
     (only when ``fit.status is Status.OK``) to a freshly built ``Fit``. The single place
@@ -4571,6 +4953,22 @@ def fit_dose_response(
     refuse it. The fitted value of a cell is not a smooth curve: a threshold on it is interpolated
     between tested severities (see :func:`robustmargin.threshold`).
 
+    **A clustered fit.** With ``dependence="clustered"`` the point estimate, ``status`` and
+    ``log_likelihood`` are those of ``dependence="independent"`` (a working-independence maximum
+    likelihood), and ``covariance`` is the cluster-robust sandwich ``B M B`` evaluated at that
+    estimate: ``B`` is the inverse observed information, ``M = G / (G - 1) * sum_c s_c s_c'``, and
+    ``s_c`` is the summed score of cluster ``c`` (Liang and Zeger, 1986, *Biometrika* 73:13-22;
+    the ``G / (G - 1)`` factor follows Cameron and Miller, 2015, *Journal of Human Resources*
+    50:317-372, without an ``(N - 1) / (N - k)`` term, which would depend on how rows are
+    aggregated). The estimand is the trial-weighted pooled curve, so an unbalanced design
+    weights big clusters more. The fit stores ``cluster_cells`` and carries a ``"FEW_CLUSTERS: "``
+    warning below 20 clusters. It needs more clusters than estimated parameters (two, plus one
+    for each estimated asymptote). A covariance that is not positive definite makes the fit
+    ``NOT_CONVERGED`` with a ``"CLUSTER_COVARIANCE: "`` reason, even where the independent fit
+    converged. ``diagnostics`` are computed as for an independent fit and carry a
+    ``"CLUSTERED_GOF: "`` note: the goodness-of-fit test is a test of the independent-binomial
+    model, and its AIC overstates the evidence by about the design effect.
+
     Before any of that, :func:`robustmargin.check_monotonicity` is run on ``obs`` directly, and
     its result is attached to the returned ``Fit`` as ``monotonicity`` on *every* return path
     below, whatever the resulting ``status`` -- the check needs only raw counts, so it is not
@@ -4624,7 +5022,10 @@ def fit_dose_response(
         ``None`` (the default) resolves to ``"independent"`` unless ``obs.cluster`` is set, in
         which case omitting it raises -- forwarded to :func:`robustmargin.check_monotonicity`
         as-is, so there is only one implementation of this guard. ``"independent"`` may always
-        be passed explicitly.
+        be passed explicitly. ``"clustered"`` (binomial counts with ``obs.cluster`` only) keeps
+        the same point estimate, status and log-likelihood and replaces the covariance with the
+        cluster-robust sandwich described under "A clustered fit" above; the monotonicity check is
+        then the cluster sign test.
 
     Returns
     -------
@@ -4654,12 +5055,26 @@ def fit_dose_response(
         (Gaussian) or ``"estimate"``,
         if both are fixed with ``upper <= lower``, if ``obs.direction`` is ``"increasing"`` and
         ``lower`` is a fixed value other than 0 so small that ``1 - lower`` equals 1 in double
-        precision, or if ``obs.cluster`` is set and
-        ``dependence`` is not ``"independent"`` (raised by :func:`robustmargin.check_monotonicity`).
+        precision, if ``obs.cluster`` is set and ``dependence`` is ``None`` (raised by
+        :func:`robustmargin.check_monotonicity`), if ``dependence`` is not ``None``,
+        ``"independent"`` or ``"clustered"``, if ``dependence="clustered"`` and ``obs.cluster`` is
+        not set, or ``model`` is not ``"binomial"`` (clustered continuous inference is not
+        implemented), or if the number of clusters does not exceed the number of estimated
+        parameters (a cluster-robust covariance needs more clusters than parameters).
     """
     if model not in ("binomial", "gaussian", "isotonic"):
         raise ValueError(
             f"fit_dose_response: model must be 'binomial', 'gaussian' or 'isotonic', got {model!r}"
+        )
+    if dependence == "clustered" and model != "binomial":
+        raise ValueError(
+            "fit_dose_response: clustered continuous inference is not implemented"
+            + (
+                "; clustered inference is binomial-model only, and model='isotonic' fits no curve "
+                "to take a cluster-robust covariance of"
+                if model == "isotonic"
+                else "; dependence='clustered' needs model='binomial'"
+            )
         )
     if model == "isotonic":
         given = [
@@ -4720,6 +5135,18 @@ def fit_dose_response(
             "complementary parametrisation the curve is fit in. Use lower=0.0 or a larger value"
         )
 
+    clustered = dependence == "clustered"
+    if clustered:
+        assert obs.cluster is not None  # check_monotonicity has refused anything else
+        clusters = len(set(obs.cluster))
+        estimated = 2 + int(upper_is_estimate) + int(lower_is_estimate)
+        if clusters <= estimated:
+            raise ValueError(
+                f"fit_dose_response: too few clusters for a cluster-robust covariance: {clusters} "
+                f"cluster(s) for {estimated} estimated parameters (it needs more clusters than "
+                "parameters)"
+            )
+
     if obs.direction == "decreasing":
         fit = _fit_counts(
             obs,
@@ -4730,12 +5157,15 @@ def fit_dose_response(
             lower_value=lower_value,
             mirrored=False,
         )
+        if clustered:
+            fit = _with_cluster_covariance(fit, view_cells=_cluster_cells_of(obs))
         return _finalize(fit, monotonicity=monotonicity)
 
     # The complementary outcome is fit as a decreasing curve with the asymptotes exchanged and
     # complemented, then mapped back.
+    complement = _mirror_observations(obs)
     complement_fit = _fit_counts(
-        _mirror_observations(obs),
+        complement,
         link=link,
         upper_is_estimate=lower_is_estimate,
         upper_value=1.0 - lower_value,
@@ -4743,6 +5173,10 @@ def fit_dose_response(
         lower_value=1.0 - upper_value,
         mirrored=True,
     )
+    if clustered:
+        complement_fit = _with_cluster_covariance(
+            complement_fit, view_cells=_cluster_cells_of(complement)
+        )
     fit = _mirror_fit(_finalize(complement_fit, monotonicity=monotonicity))
     if fit.params is None:
         return fit

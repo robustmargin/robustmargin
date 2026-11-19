@@ -2,9 +2,10 @@
 
 The package exports the vocabulary types (:class:`Axis`, :class:`Observations`,
 :class:`ContinuousObservations`, :class:`Definition`, :class:`Cell`, :class:`ContinuousCell`,
-:class:`Residual`, :class:`BootstrapSummary`), the status and interval-shape enums (:class:`Status`,
-:class:`IntervalShape`, alongside :class:`Censoring`), the result dataclasses (:class:`Fit`,
-:class:`Threshold`, :class:`Ratio`, :class:`Scorecard`), the grid break-point rule
+:class:`Residual`, :class:`BootstrapSummary`, and :class:`ClusterCell` and
+:class:`ClusterAdjacentPair` for clustered counts), the status and interval-shape enums
+(:class:`Status`, :class:`IntervalShape`, alongside :class:`Censoring`), the result dataclasses
+(:class:`Fit`, :class:`Threshold`, :class:`Ratio`, :class:`Scorecard`), the grid break-point rule
 (:func:`grid_break_point`, returning :class:`GridBreakPoint`), and the dose-response fitter
 (:func:`fit_dose_response`, returning a :class:`Fit` whose :meth:`~Fit.predict` returns a
 :class:`Prediction`; ``model="isotonic"`` fits a monotone, parameter-free :class:`Fit` whose
@@ -50,6 +51,8 @@ from robustmargin.types import (
     BootstrapSummary,
     Cell,
     Censoring,
+    ClusterAdjacentPair,
+    ClusterCell,
     ContinuousCell,
     ContinuousObservations,
     Definition,
@@ -77,6 +80,8 @@ __all__ = [
     "BootstrapSummary",
     "Cell",
     "Censoring",
+    "ClusterAdjacentPair",
+    "ClusterCell",
     "ContinuousAdjacentPair",
     "ContinuousCell",
     "ContinuousDiagnostics",

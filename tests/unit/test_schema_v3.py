@@ -8,6 +8,16 @@ Schema ``"3"`` is ``"2"`` plus exactly these edits, and nothing else:
 * ``Fit.cell_estimates`` (null or an array of numbers) is a new property;
 * ``Threshold.bootstrap`` (null or an object with the five integer fields, no others) is a new
   property;
+* ``Fit.dependence`` (``"independent"`` or ``"clustered"``) and ``Fit.cluster_cells`` (null or an
+  array of ``ClusterCell``) are new properties, and ``ClusterCell`` and ``ClusterAdjacentPair``
+  are new definitions;
+* ``Threshold.interval_method`` also accepts ``"cluster_bootstrap"``, and ``Threshold.dependence``,
+  ``Ratio.dependence`` and ``MonotonicityCheck.dependence`` accept ``"clustered"`` or
+  ``"paired"`` as applicable;
+* ``Ratio.method`` accepts ``"cluster_bootstrap"`` and ``Ratio.bootstrap`` (null or a
+  ``BootstrapSummary``) is a new property;
+* ``MonotonicityCheck.method`` accepts ``"cluster_sign_test_one_sided_holm"`` and its pairs may be
+  ``ClusterAdjacentPair``;
 * the ``Fit`` conditionals: an isotonic fit with status ``OK`` may have null ``params``,
   ``covariance`` and ``diagnostics``, and ``cell_estimates`` is non-null if and only if the model
   is isotonic.
@@ -15,7 +25,7 @@ Schema ``"3"`` is ``"2"`` plus exactly these edits, and nothing else:
 ``scorecard-v1.json`` and ``scorecard-v2.json`` stay byte-for-byte what they were. ``from_dict``
 reads all three; a payload tagged ``"1"`` or ``"2"`` that carries a value only ``"3"`` has is
 rejected, because such a writer could never have produced it. A card written by an earlier
-release (no ``cell_estimates`` or ``bootstrap`` key at all) still reads and is written back with
+release (none of the keys above) still reads and is written back with
 the tag it had, byte for byte (``test_schema_read_keeps_tag.py``). A result constructed now writes
 ``"3"``.
 
@@ -113,12 +123,14 @@ def _relabel(obj: Any, version: str) -> Any:
 
 
 def _without_v3_only_keys(node: Any) -> Any:
-    """What a ``"2"`` writer emitted: no ``cell_estimates`` and no ``bootstrap`` key at all."""
+    """What a ``"2"`` writer emitted: no ``cell_estimates``, ``bootstrap`` or ``cluster_cells``
+    key, and no Fit ``dependence``."""
     if isinstance(node, dict):
         return {
             k: _without_v3_only_keys(v)
             for k, v in node.items()
-            if k not in ("cell_estimates", "bootstrap")
+            if k not in ("cell_estimates", "bootstrap", "cluster_cells")
+            and not (k == "dependence" and v == "independent" and "cluster_cells" in node)
         }
     if isinstance(node, list):
         return [_without_v3_only_keys(item) for item in node]
@@ -270,9 +282,33 @@ class TestSchemaFiles:
         assert "cell_estimates" not in d2["Fit"]["properties"]
         assert "bootstrap" not in d2["Threshold"]["properties"]
 
-    def test_the_enum_additions_are_exactly_the_three_named(self) -> None:
+    def test_the_enum_additions_are_exactly_the_named_ones(self) -> None:
+        d2 = _schema("2")["$defs"]
         d3 = _schema("3")["$defs"]
 
+        def added(name: str, *path: str) -> list[str]:
+            old = d2[name]
+            new = d3[name]
+            for step in path:
+                old, new = old[step], new[step]
+            assert set(old["enum"]) <= set(new["enum"])
+            return sorted(set(new["enum"]) - set(old["enum"]))
+
+        assert added("Fit", "properties", "model") == ["isotonic"]
+        assert added("Fit", "properties", "link") == ["none"]
+        assert sorted(d3["Fit"]["properties"]["dependence"]["enum"]) == ["clustered", "independent"]
+        assert added("Threshold", "properties", "interval_method") == [
+            "cell_bootstrap",
+            "cluster_bootstrap",
+            "parametric_bootstrap",
+        ]
+        assert added("Threshold", "properties", "dependence") == ["clustered"]
+        assert added("Ratio", "properties", "method") == ["cluster_bootstrap"]
+        assert added("Ratio", "properties", "dependence") == ["paired"]
+        assert added("MonotonicityCheck", "properties", "dependence") == ["clustered"]
+        assert added("MonotonicityCheck", "properties", "method") == [
+            "cluster_sign_test_one_sided_holm"
+        ]
         assert sorted(d3["Fit"]["properties"]["model"]["enum"]) == [
             "binomial",
             "gaussian",
@@ -286,6 +322,7 @@ class TestSchemaFiles:
         ]
         assert sorted(d3["Threshold"]["properties"]["interval_method"]["enum"]) == [
             "cell_bootstrap",
+            "cluster_bootstrap",
             "delta",
             "exact_bound",
             "parametric_bootstrap",
@@ -297,41 +334,89 @@ class TestSchemaFiles:
         v3 = _schema("3")
         d2, d3 = v2["$defs"], v3["$defs"]
 
-        # The only definition that may be added is the bootstrap summary object, if it is kept
-        # as a named definition rather than inline.
-        assert set(d3) - set(d2) <= {"BootstrapSummary"}
+        # Definitions: three are added, none removed.
+        assert set(d3) - set(d2) == {"BootstrapSummary", "ClusterCell", "ClusterAdjacentPair"}
         assert set(d2) - set(d3) == set()
-        # The two new properties are optional on the wire (older cards omit them) or required,
-        # but nothing else changes in a `required` list.
-        for name, new in (("Fit", "cell_estimates"), ("Threshold", "bootstrap")):
-            assert set(d3[name]["required"]) - set(d2[name]["required"]) <= {new}
-            assert set(d2[name]["required"]) <= set(d3[name]["required"])
-        assert set(d3["Fit"]["properties"]) - set(d2["Fit"]["properties"]) == {"cell_estimates"}
-        assert set(d3["Threshold"]["properties"]) - set(d2["Threshold"]["properties"]) == {
-            "bootstrap"
+        # No `required` list of an existing definition changes: every new property is optional
+        # on the wire, so every card written by an earlier release still validates.
+        for name in d2:
+            assert sorted(d3[name].get("required", [])) == sorted(d2[name].get("required", [])), (
+                name
+            )
+        # Properties: exactly these are new, on exactly these definitions.
+        new_properties = {
+            "Fit": {"cell_estimates", "dependence", "cluster_cells"},
+            "Threshold": {"bootstrap"},
+            "Ratio": {"bootstrap"},
         }
+        for name in d2:
+            added = set(d3[name].get("properties", {})) - set(d2[name].get("properties", {}))
+            assert added == new_properties.get(name, set()), name
+            assert set(d2[name].get("properties", {})) <= set(d3[name].get("properties", {}))
+        # The new definitions' fields and `required` lists.
+        assert set(d3["ClusterCell"]["properties"]) == {
+            "severity",
+            "cluster",
+            "successes",
+            "trials",
+        }
+        assert sorted(d3["ClusterCell"]["required"]) == sorted(d3["ClusterCell"]["properties"])
+        assert set(d3["ClusterAdjacentPair"]["properties"]) == {
+            "severity_low",
+            "severity_high",
+            "clusters_reversed",
+            "clusters_ordered",
+            "clusters_tied",
+            "clusters_unbalanced",
+            "p_value",
+            "holm_adjusted_p",
+            "flagged",
+        }
+        assert sorted(d3["ClusterAdjacentPair"]["required"]) == sorted(
+            d3["ClusterAdjacentPair"]["properties"]
+        )
+        assert d3["ClusterCell"]["additionalProperties"] is False
+        assert d3["ClusterAdjacentPair"]["additionalProperties"] is False
+        # The new Fit properties.
+        assert d3["Fit"]["properties"]["dependence"]["enum"] == ["independent", "clustered"]
+        assert d3["Fit"]["properties"]["cluster_cells"]["anyOf"] == [
+            {"type": "null"},
+            {"type": "array", "items": {"$ref": "#/$defs/ClusterCell"}},
+        ]
+        # The new Ratio property is a null-or-summary, like Threshold's.
+        assert d3["Ratio"]["properties"]["bootstrap"]["anyOf"] == [
+            {"type": "null"},
+            {"$ref": "#/$defs/BootstrapSummary"},
+        ]
+        assert (
+            d3["Ratio"]["properties"]["bootstrap"]["anyOf"]
+            == d3["Threshold"]["properties"]["bootstrap"]["anyOf"]
+        )
 
         edited = copy.deepcopy(v2)
-        fit = edited["$defs"]["Fit"]
+        ed = edited["$defs"]
+        fit = ed["Fit"]
         fit["properties"]["model"]["enum"].append("isotonic")
         fit["properties"]["link"]["enum"].append("none")
-        edited["$defs"]["Threshold"]["properties"]["interval_method"]["enum"].extend(
-            ["parametric_bootstrap", "cell_bootstrap"]
+        ed["Threshold"]["properties"]["interval_method"]["enum"].extend(
+            ["parametric_bootstrap", "cell_bootstrap", "cluster_bootstrap"]
         )
-        # The values of the new properties, the Fit conditionals, the `required` lists and a
-        # possible named definition are taken from version 3; their behaviour is pinned by name
-        # in the validation tests below.
-        fit["properties"]["cell_estimates"] = copy.deepcopy(
-            d3["Fit"]["properties"]["cell_estimates"]
-        )
-        edited["$defs"]["Threshold"]["properties"]["bootstrap"] = copy.deepcopy(
-            d3["Threshold"]["properties"]["bootstrap"]
-        )
+        ed["Threshold"]["properties"]["dependence"]["enum"].append("clustered")
+        ed["Ratio"]["properties"]["method"]["enum"].append("cluster_bootstrap")
+        ed["Ratio"]["properties"]["dependence"]["enum"].append("paired")
+        monotonicity = ed["MonotonicityCheck"]["properties"]
+        monotonicity["dependence"]["enum"].append("clustered")
+        monotonicity["method"]["enum"].append("cluster_sign_test_one_sided_holm")
+        monotonicity["pairs"]["items"]["oneOf"].append({"$ref": "#/$defs/ClusterAdjacentPair"})
+        # The values of the new properties, the Fit conditionals and the new definitions are
+        # taken from version 3; their behaviour is pinned by name in the validation tests.
+        for key in ("cell_estimates", "dependence", "cluster_cells"):
+            fit["properties"][key] = copy.deepcopy(d3["Fit"]["properties"][key])
+        for name in ("Threshold", "Ratio"):
+            ed[name]["properties"]["bootstrap"] = copy.deepcopy(d3[name]["properties"]["bootstrap"])
         fit["allOf"] = copy.deepcopy(d3["Fit"]["allOf"])
-        fit["required"] = list(d3["Fit"]["required"])
-        edited["$defs"]["Threshold"]["required"] = list(d3["Threshold"]["required"])
         for extra in set(d3) - set(d2):
-            edited["$defs"][extra] = copy.deepcopy(d3[extra])
+            ed[extra] = copy.deepcopy(d3[extra])
 
         assert _digest(edited) == _digest(v3)
 
@@ -620,6 +705,8 @@ class TestCardsWrittenBeforeVersion3StillRead:
         payload = _relabel(_json(fake_threshold()), version)
 
         assert payload["bootstrap"] is None and payload["fit"]["cell_estimates"] is None
+        assert payload["fit"]["cluster_cells"] is None
+        assert payload["fit"]["dependence"] == "independent"
         result = from_dict(payload)
         assert result.schema_version == version
         assert set(_versions_in(_json(result))) == {version}

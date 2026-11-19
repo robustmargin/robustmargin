@@ -36,12 +36,14 @@ def _relabel(obj: Any, version: str) -> Any:
 
 
 def _without_v3_only_keys(node: Any) -> Any:
-    """What a ``"2"`` writer emitted: no ``cell_estimates`` and no ``bootstrap`` key at all."""
+    """What a ``"2"`` writer emitted: no ``cell_estimates``, ``bootstrap`` or ``cluster_cells``
+    key, and no Fit ``dependence``."""
     if isinstance(node, dict):
         return {
             k: _without_v3_only_keys(v)
             for k, v in node.items()
-            if k not in ("cell_estimates", "bootstrap")
+            if k not in ("cell_estimates", "bootstrap", "cluster_cells")
+            and not (k == "dependence" and v == "independent" and "cluster_cells" in node)
         }
     if isinstance(node, list):
         return [_without_v3_only_keys(item) for item in node]

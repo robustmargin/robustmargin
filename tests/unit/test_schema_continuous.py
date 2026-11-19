@@ -51,14 +51,25 @@ def _validator(version: str, type_name: str) -> jsonschema.protocols.Validator:
     )
 
 
+def _is_v3_only_default(node: dict[str, Any], key: str, value: Any) -> bool:
+    """Whether ``key`` is one of the keys only the current format has, at its default: a null
+    ``cell_estimates``, ``bootstrap`` (Threshold or Ratio) or ``cluster_cells``, or a Fit's
+    ``dependence`` equal to ``"independent"``. A Fit is the node carrying ``cluster_cells``;
+    a Threshold's or Ratio's own ``dependence`` is a v2 key and is never stripped."""
+    if key in ("cell_estimates", "bootstrap", "cluster_cells"):
+        return value is None
+    return key == "dependence" and value == "independent" and "cluster_cells" in node
+
+
 def _without_v3_only_keys(node: Any) -> Any:
-    """What a ``"2"`` writer emitted: the payload without the two null-valued keys
-    (``Fit.cell_estimates``, ``Threshold.bootstrap``) that only the current format has."""
+    """What a ``"2"`` writer emitted: the payload without the default-valued keys
+    (``Fit.cell_estimates``, ``Fit.cluster_cells``, ``Fit.dependence``, ``Threshold.bootstrap``,
+    ``Ratio.bootstrap``) that only the current format has."""
     if isinstance(node, dict):
         return {
             k: _without_v3_only_keys(v)
             for k, v in node.items()
-            if not (k in ("cell_estimates", "bootstrap") and v is None)
+            if not _is_v3_only_default(node, k, v)
         }
     if isinstance(node, list):
         return [_without_v3_only_keys(item) for item in node]

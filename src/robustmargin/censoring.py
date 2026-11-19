@@ -89,6 +89,10 @@ tested range; a value beyond it is flagged by the caller as extrapolated. A Gaus
 not converge has no exact-bound fallback and never reaches this module: it is ``NOT_CONVERGED``
 with no bound and no grid.
 
+A clustered binomial fit makes no exact claim either, for the same reason: every exact test above
+assumes independent trials. Only the target-range and reachability tests run, a failed fit keeps
+its status with no number, and the rest is solved.
+
 An isotonic fit of counts runs the sequence above with step 4 left out. An isotonic fit of
 continuous responses makes no exact claim and no reachability claim here: it is always solved.
 """
@@ -809,6 +813,56 @@ def _classify_gaussian(fit: Fit, *, target: float, shown_target: float) -> Class
     )
 
 
+def _classify_clustered(fit: Fit, *, target: float, shown_target: float) -> Classification:
+    """:func:`classify` for a clustered binomial fit: no exact claim of any kind.
+
+    Every exact test here is a cell-level Clopper-Pearson test that treats trials as independent,
+    so under clustering it is anti-conservative, and none is run: there is no ``FAILS_AT_BASELINE``,
+    ``RIGHT`` or ``LEFT``, no exact-bound fallback for a failed fit, and no contradiction check
+    built from exact bounds. What remains is decided from the fit alone: a failed fit keeps its
+    status with no numbers, a target outside ``(0, 1)`` is ``UNREACHABLE``, a target outside the
+    fitted asymptotes is ``UNREACHABLE``, and anything else is solved. ``shown_target`` is the
+    target as the caller stated it.
+    """
+    if fit.status is Status.CONTROL_INCOMPATIBLE:
+        return Classification(
+            status=Status.CONTROL_INCOMPATIBLE,
+            censoring=Censoring.NONE,
+            lo=None,
+            hi=None,
+            baseline=None,
+            grid=None,
+        )
+    out_of_range = _target_out_of_range(target=target, shown_target=shown_target)
+    if out_of_range is not None:
+        return out_of_range
+    if fit.status is not Status.OK:
+        return Classification(
+            status=fit.status,
+            censoring=Censoring.NONE,
+            lo=None,
+            hi=None,
+            baseline=None,
+            grid=None,
+            warnings=(
+                f"censoring.classify: the clustered fit did not converge ({fit.status.value}); "
+                "an exact bound assumes independent trials, so no value or bound is reported",
+            ),
+        )
+    unreachable = _unreachable(fit, target=target)
+    if unreachable is not None:
+        return unreachable
+    return Classification(
+        status=Status.OK,
+        censoring=Censoring.NONE,
+        lo=None,
+        hi=None,
+        baseline=None,
+        grid=None,
+        solve=True,
+    )
+
+
 def classify(
     fit: Fit, *, target: float, level: float, original_target: float | None = None
 ) -> Classification:
@@ -850,6 +904,8 @@ def classify(
             grid=None,
             solve=True,
         )
+    if fit.dependence == "clustered":
+        return _classify_clustered(fit, target=target, shown_target=shown_target)
     if fit.status is Status.CONTROL_INCOMPATIBLE:
         return Classification(
             status=Status.CONTROL_INCOMPATIBLE,

@@ -69,8 +69,105 @@ minor release may change the public API, and every such change carries a migrati
 - `robustmargin.testing`: `fake_fit(model="isotonic")`, `fake_threshold(model="isotonic")` and
   `fake_threshold(interval_method=)`, which takes `"profile"`, `"delta"`,
   `"parametric_bootstrap"` and `"cell_bootstrap"`.
+- **Clustered fits: `fit_dose_response(obs, ..., dependence="clustered")`.** For binomial fits of
+  `Observations` that carry `cluster` ids. The point estimate, status and log-likelihood are those
+  of the independent fit (a working-independence maximum likelihood); the covariance is the
+  cluster-robust (CR1) sandwich, `G/(G - 1)` times the sum over clusters of the outer product of
+  each cluster's summed score, around the fit's observed-information inverse. Gaussian and isotonic
+  fits raise `ValueError` ("clustered continuous inference is not implemented"), and so does
+  missing `cluster`. A fit with no more clusters than estimated parameters raises `ValueError`
+  before fitting ("too few clusters for a cluster-robust covariance").
+  - `Fit.dependence` (`"independent"` or `"clustered"`) and `Fit.cluster_cells` (new, last fields)
+    say which covariance a fit carries. `cluster_cells` holds one `ClusterCell` (`severity`,
+    `cluster`, `successes`, `trials`) per severity and cluster, and is set exactly when
+    `dependence == "clustered"`. `Observations.cluster_cells()` returns the same counts, or `None`
+    when unclustered. `ClusterCell` and `ClusterAdjacentPair` are exported.
+  - A clustered fit whose sandwich is not positive definite is `NOT_CONVERGED` with a
+    `CLUSTER_COVARIANCE:` warning and no parameters, even where the independent fit converged.
+  - Below 20 clusters a clustered fit carries `FEW_CLUSTERS:`, because its `predict` band rests on
+    the sandwich.
+  - `Diagnostics.warnings` carries `CLUSTERED_GOF:`: the goodness-of-fit test is a test of the
+    independent-binomial model and is expected to reject under clustering, and each link's AIC uses
+    the working-independence likelihood, so it overstates the evidence by about the design effect.
+  - `Fit.covariance`, `Fit.predict` and `"delta"` use the sandwich on a clustered fit; read
+    `Fit.dependence` to know which.
+- **Clustered thresholds.** `threshold(fit, ..., dependence="clustered")` requires a clustered fit
+  (and a clustered fit requires `"clustered"`); a mismatch raises `ValueError`. `interval_method`
+  is `"delta"` (the recommended method: the sandwich with a Student-t quantile on `G - 1`
+  degrees of freedom) or `"cluster_bootstrap"` (an alternative that needs about 40 or more
+  clusters: draw `G` clusters with replacement, refit, and take percentiles; the replicate
+  counting, failures, open sides and warnings of the other bootstraps apply, and
+  `Threshold.bootstrap` is set). `"profile"`, `"parametric_bootstrap"` and `"cell_bootstrap"` raise
+  `ValueError`, and so does `"cluster_bootstrap"` on a fit that is not clustered.
+  - A clustered threshold makes no exact claim: it is never `FAILS_AT_BASELINE`, `RIGHT` or
+    `LEFT`. A crossing beyond the tested range is `EXTRAPOLATED` with an interval, and a failed fit
+    keeps its status with `interval_method="exact_bound"` and no value.
+  - The sandwich standard error is computed beside the bootstrap. When the bootstrap spread (scaled
+    by `sqrt(G / (G - 1))`) or location departs from it by more than a stated tolerance, the result
+    carries a `CLUSTER_CROSS_CHECK:` warning. The numbers never change. It is skipped when either
+    interval is not closed.
+  - Few clusters: a clustered threshold carries `FEW_CLUSTERS:` below 20 clusters with `"delta"`,
+    and below 40 with `"cluster_bootstrap"`, whose percentile interval under-covers there; that
+    warning names `"delta"`.
+  - With unbalanced clusters the estimand is the trial-weighted pooled curve.
+- **Cluster sign test: `check_monotonicity(obs, dependence="clustered")`.** For each adjacent pair
+  of severities, an exact one-sided sign test over the clusters observed at both levels: with `r`
+  clusters whose rate moves against `direction` and `o` that move with it, `p = P(Binomial(r + o,
+  1/2) >= r)`, Holm-adjusted across all pairs. Ties are dropped, and each cluster counts once
+  whatever its size. The null is that every cluster's own curve is monotone, so this is a
+  median-direction test, not a test of the pooled curve's monotonicity. Only balanced clusters (equal trials at both levels) take part; the rest are
+  counted in `ClusterAdjacentPair.clusters_unbalanced` and a warning says so. Further warnings say
+  when no cluster is observed at both levels of a pair and when the test cannot flag anything at
+  `alpha`. The result has `dependence="clustered"` and
+  `method="cluster_sign_test_one_sided_holm"`. It requires `cluster` and count `Observations`
+  (`ContinuousObservations` raises `ValueError`).
+- **The paired ratio: `ratio_interval(t_a, t_b, method=..., dependence="paired")`.** For two
+  thresholds on the same clusters. `method` is `"cluster_bootstrap"` (new; each replicate draws one
+  set of cluster ids and refits both fits, so the correlation is kept), `"fieller"` or
+  `"log_delta"`. The last two use the cross-covariance of the two fits' cluster-robust estimates,
+  recomputed from the stored cluster counts and parameters, with Student-t quantiles on `G - 1`
+  degrees of freedom. `"paired"` requires both thresholds clustered, on fits with the same cluster
+  ids and the usual matching axis, unit and definition (`ValueError` otherwise);
+  `"cluster_bootstrap"` requires `"paired"`; `n_resamples` and `seed` are accepted only with
+  `"cluster_bootstrap"`.
+  - Under `"paired"` the `B <= 0` rule can hold, so `EXCLUSIVE` is now reachable, and a Fieller set
+    that is bounded above only is reported as `BOUNDED` `[0, K / (2B)]`.
+  - `ratio_interval(..., dependence="independent")` on clustered thresholds (disjoint cluster sets,
+    or one clustered and one not) uses a Student-t quantile with Welch-Satterthwaite degrees of
+    freedom built from `(V_a, G_a - 1)` and `(V_b, G_b - 1)`, as Gaussian thresholds already did; an
+    unclustered binomial input contributes infinite degrees of freedom.
+  - `Ratio.bootstrap` (new, last field, a `BootstrapSummary`) is set when the cluster bootstrap
+    ran. A replicate with one unreachable threshold is a ratio of 0 or infinity and counts toward
+    an open side; one with both unreachable on the same side is undefined and counts as failed. A
+    `RATIO_BOOTSTRAP_CENSORED:` warning gives the share of replicates with a censored threshold and
+    the number undefined, when that share is large. Give-up, open sides and `BOOTSTRAP_*` warnings
+    follow the threshold bootstrap, and `CLUSTER_CROSS_CHECK:` compares with the paired
+    `"log_delta"` (log axis) or `"fieller"` (linear axis). `FEW_CLUSTERS:` is carried from the
+    inputs, below 20 clusters for `"fieller"` and `"log_delta"` and below 40 for
+    `"cluster_bootstrap"`. Failure causes are counted per replicate, so a replicate in which both
+    fits fail for the same cause counts once. The percentile interval need not contain the estimate.
+- **Testing fakes.** `fake_fit`, `fake_threshold` and `fake_ratio` take `dependence=`.
+  `fake_fit(dependence="clustered")` builds a schema-valid clustered binomial fit;
+  `fake_threshold` follows it (default `"cluster_bootstrap"`); `fake_ratio(dependence="paired")`
+  builds two clustered fits on shared clusters (default `"cluster_bootstrap"`, `BOUNDED`).
+- **Schema `"3"` additions.** `Fit.dependence` and `Fit.cluster_cells`, `Threshold.dependence`
+  `"clustered"` and `interval_method` `"cluster_bootstrap"`, `Ratio.dependence` `"paired"`,
+  `Ratio.method` `"cluster_bootstrap"` and `Ratio.bootstrap`, `MonotonicityCheck.dependence`
+  `"clustered"` with the sign-test method and its pair type. A card tagged `"1"` or `"2"` that
+  carries any of them is rejected; on such a card `to_dict` leaves out `Fit.dependence` when it is
+  `"independent"`.
 
 ### Changed
+- **A paired ratio no longer raises when its inputs are clustered fits on shared clusters.**
+  `ratio_interval(..., dependence="paired")` used to raise `ValueError`; it now returns a `Ratio`
+  (see above), and `"cluster_bootstrap"` is a new `method`. This changes a raise into a result.
+  - **Migration.** No existing call changes behaviour: `"paired"` and `"clustered"` are reachable
+    only with the new inputs (clustered fits and thresholds). A paired ratio of two thresholds from
+    one fit still raises, as does `"independent"` on clustered thresholds that share a cluster.
+    Code that relied on the `ValueError` as a guard should check `Ratio.dependence` instead.
+- **`Fit.predict` on a clustered fit uses a Student-t quantile on `G - 1` degrees of freedom** for
+  its confidence band, like every other clustered sandwich interval. An independent fit is
+  unchanged.
 - **Score-card schema `"3"`** (`schema/scorecard-v3.json`). It is `"2"` plus: `Fit.model`
   `"isotonic"`, `Fit.link` `"none"`, `Threshold.interval_method` `"parametric_bootstrap"` and
   `"cell_bootstrap"`, a nullable `Fit.cell_estimates` and a nullable `Threshold.bootstrap`.
@@ -92,6 +189,15 @@ minor release may change the public API, and every such change carries a migrati
   contributors", and links the Zenodo DOI and the author's ORCID. A `NOTICE` file carries the
   copyright line and ships in the sdist and wheel beside `LICENSE`. The README gains a "Citing"
   section.
+
+### Fixed
+- **`Fit.predict` confidence band for a binomial fit with both asymptotes fixed.** The delta-method
+  variance of `z = (t - mu)/s` had the wrong sign on the `mu`-`s` covariance term: the term is
+  `+2z Cov(mu, s)`, not `-2z Cov(mu, s)`. The band was too wide on one side of the curve's midpoint
+  and too narrow on the other. Present in every release up to 0.3.0. The affected outputs are
+  `lo` and `hi` of `Fit.predict` for every binomial fit with both asymptotes fixed, in both
+  directions and with every link; the estimates and every threshold are unchanged. Bands for fits
+  with an estimated asymptote were unaffected. Recompute any stored bands after upgrading.
 
 ## [0.3.0] — 2026-11-11
 

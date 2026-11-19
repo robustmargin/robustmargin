@@ -1826,10 +1826,12 @@ class TestThresholdIntervalMethodByStatusAndCensoring:
 
 class TestThresholdDependence:
     """``Threshold.dependence`` is required, with no default -- a wrong default (like a wrong
-    default ``definition``) would silently mislabel a clustered result as independent. Only
-    ``"independent"`` is valid in v1; ``"paired"`` is not implemented."""
+    default ``definition``) would silently mislabel a clustered result as independent. A
+    ``Threshold`` takes ``"independent"`` or ``"clustered"``; ``"paired"`` describes a ratio of two
+    thresholds, never one threshold, so it is not a valid value here. (The clustered rules are in
+    ``test_cluster_invariants.py``.)"""
 
-    def test_dependence_other_than_independent_raises(self) -> None:
+    def test_paired_dependence_on_a_threshold_raises(self) -> None:
         with pytest.raises(ValueError):
             _threshold(
                 value=0.05,
@@ -2551,8 +2553,10 @@ class TestRatioMethodDependenceLevel:
 
         assert ratio.method == method
 
-    def test_dependence_other_than_independent_raises(self) -> None:
-        """``dependence="paired"`` is not implemented; only ``"independent"`` is allowed."""
+    def test_paired_dependence_on_independent_thresholds_raises(self) -> None:
+        """``dependence="paired"`` needs both thresholds clustered on one cluster-id set; the
+        default thresholds here are independent fits, so it raises. (The paired rules are in
+        ``test_cluster_invariants.py``.)"""
         with pytest.raises(ValueError):
             _ratio(
                 estimate=1.0,

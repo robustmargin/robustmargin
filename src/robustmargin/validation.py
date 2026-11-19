@@ -10,7 +10,9 @@ Two independent things live here, deliberately kept apart:
   exact one-sided Fisher test on adjacent severity levels, Holm-corrected across the family. It
   therefore runs on *every* :func:`~robustmargin.fit_dose_response` return path, whatever the
   ``Status``, because non-monotone data is a common cause of a failed fit and disappearing the
-  check exactly then would hide the finding it exists to surface.
+  check exactly then would hide the finding it exists to surface. For clustered data the check
+  is an exact cluster sign test instead (``dependence="clustered"``), because Fisher's test
+  assumes independent trials.
 
 Both are reported and never acted on automatically: nothing here changes a
 reported number, chooses a link, or corrects for dispersion. ``Fit.link`` stays whatever the
@@ -33,13 +35,15 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 from scipy.special import xlogy
+from scipy.stats import binomtest, fisher_exact
 from scipy.stats import f as f_distribution
-from scipy.stats import fisher_exact
 from scipy.stats import t as t_distribution
 from statsmodels.stats.multitest import multipletests
 
 from robustmargin.types import (
     Cell,
+    ClusterAdjacentPair,
+    ClusterCell,
     ContinuousCell,
     ContinuousObservations,
     Observations,
@@ -86,9 +90,13 @@ _COMPARISON_LINKS: tuple[str, ...] = ("probit", "logit", "cloglog")
 
 _MONOTONICITY_METHOD = "fisher_exact_one_sided_holm"
 _CONTINUOUS_MONOTONICITY_METHOD = "welch_t_one_sided_holm"
-_MONOTONICITY_METHODS = frozenset({_MONOTONICITY_METHOD, _CONTINUOUS_MONOTONICITY_METHOD})
+_CLUSTER_MONOTONICITY_METHOD = "cluster_sign_test_one_sided_holm"
+_MONOTONICITY_METHODS = frozenset(
+    {_MONOTONICITY_METHOD, _CONTINUOUS_MONOTONICITY_METHOD, _CLUSTER_MONOTONICITY_METHOD}
+)
 _VALID_DIRECTIONS = frozenset({"decreasing", "increasing"})
-_VALID_DEPENDENCE_INPUTS = frozenset({"independent"})
+_VALID_DEPENDENCE_INPUTS = frozenset({"independent", "clustered"})
+_CLUSTERED_GOF_WARNING_PREFIX = "CLUSTERED_GOF: "
 
 
 def _check_link_tables(
@@ -512,7 +520,8 @@ class ContinuousAdjacentPair:
 class MonotonicityCheck:
     """A data-only adjacent-level monotonicity check: for each pair of adjacent severity levels
     in the data, a one-sided Fisher exact test for "the higher severity performs better" under
-    ``direction``, Holm-corrected across the whole family.
+    ``direction``, Holm-corrected across the whole family. For clustered data the test is an
+    exact cluster sign test instead (:class:`~robustmargin.ClusterAdjacentPair`).
 
     Needs only raw counts, never a fitted curve, so it is attached to
     :attr:`~robustmargin.Fit.monotonicity` on *every* :func:`~robustmargin.fit_dose_response` return
@@ -527,25 +536,37 @@ class MonotonicityCheck:
     alpha
         The significance level ``flagged`` is decided at, strictly between 0 and 1.
     dependence
-        ``"independent"`` in this release: the check assumes independent trials. Recorded so a
-        serialised result states the assumption it relies on.
+        ``"independent"`` (the check assumes independent trials) or ``"clustered"`` (the check
+        compares whole clusters, not trials). Recorded so a serialised result states the
+        assumption it relies on.
     method
-        Names the statistical method: ``"fisher_exact_one_sided_holm"`` for counts and
-        ``"welch_t_one_sided_holm"`` for a Gaussian series.
+        Names the statistical method: ``"fisher_exact_one_sided_holm"`` for counts,
+        ``"welch_t_one_sided_holm"`` for a Gaussian series and
+        ``"cluster_sign_test_one_sided_holm"`` for clustered counts. The method, ``dependence``
+        and the type of ``pairs`` entries must agree: the sign test goes with ``"clustered"`` and
+        with no other dependence.
     pairs
-        One :class:`AdjacentPair` (counts) or :class:`ContinuousAdjacentPair` (Gaussian series) per
-        adjacent pair of severity levels, ascending. Empty when fewer than two distinct severity
-        levels exist (``warnings`` then names the reason).
+        One :class:`AdjacentPair` (counts), :class:`ContinuousAdjacentPair` (Gaussian series) or
+        :class:`ClusterAdjacentPair` (clustered counts) per adjacent pair of severity levels,
+        ascending. Empty when fewer than two distinct severity levels exist (``warnings`` then
+        names the reason).
     any_flagged
         ``True`` exactly when at least one entry of ``pairs`` is ``flagged``.
     warnings
         Free-text notes (for example, naming a degenerate single-level input). Empty by default.
+
+    Raises
+    ------
+    ValueError
+        If ``direction``, ``alpha``, ``dependence`` or ``method`` is out of range, the method,
+        ``dependence`` and ``pairs`` entry type disagree, ``any_flagged`` is not
+        ``any(pair.flagged)``, or a pair's ``flagged`` is not ``holm_adjusted_p < alpha``.
     """
 
     direction: str
     alpha: float
     dependence: str
-    pairs: tuple[AdjacentPair | ContinuousAdjacentPair, ...]
+    pairs: tuple[AdjacentPair | ContinuousAdjacentPair | ClusterAdjacentPair, ...]
     any_flagged: bool
     method: str = _MONOTONICITY_METHOD
     warnings: tuple[str, ...] = ()
@@ -578,11 +599,19 @@ class MonotonicityCheck:
             raise ValueError(
                 f"MonotonicityCheck.any_flagged must be a genuine bool, got {self.any_flagged!r}"
             )
-        pair_type = (
-            ContinuousAdjacentPair
-            if self.method == _CONTINUOUS_MONOTONICITY_METHOD
-            else AdjacentPair
-        )
+        if (self.method == _CLUSTER_MONOTONICITY_METHOD) != (self.dependence == "clustered"):
+            raise ValueError(
+                f"MonotonicityCheck.method {self.method!r} and dependence {self.dependence!r} "
+                "disagree: the cluster sign test goes with dependence='clustered' and with no "
+                "other"
+            )
+        pair_type: type[AdjacentPair | ContinuousAdjacentPair | ClusterAdjacentPair]
+        if self.method == _CONTINUOUS_MONOTONICITY_METHOD:
+            pair_type = ContinuousAdjacentPair
+        elif self.method == _CLUSTER_MONOTONICITY_METHOD:
+            pair_type = ClusterAdjacentPair
+        else:
+            pair_type = AdjacentPair
         for pair in self.pairs:
             if not isinstance(pair, pair_type):
                 raise ValueError(
@@ -630,6 +659,23 @@ def check_monotonicity(
     likelihood a fit built from the same data used the control row (a fit drops an
     all-success control under a fixed ``upper=1.0``; this function never reads a fit at all).
 
+    **Clustered counts.** With ``dependence="clustered"`` the test between two adjacent levels is
+    an exact one-sided sign test on whole clusters, because Fisher's test treats every trial as
+    independent and is anti-conservative when trials within a cluster are correlated. A cluster
+    contributes to a pair when it is observed at both levels with the same number of trials at
+    each; the sign of its change in success rate is "reversed" when it moves against
+    ``obs.direction``, "ordered" when it moves with it, and a tie (dropped) when the rates are
+    equal. With ``r`` reversed and ``o`` ordered clusters the p-value is
+    ``P(Binomial(r + o, 1/2) >= r)`` (``1.0`` when ``r + o == 0``), Holm-adjusted across all
+    adjacent pairs. The null is that every cluster's own curve is monotone, so that each cluster is
+    as likely to move one way as the other: this is a test of the median direction of the clusters'
+    changes, not of marginal monotonicity of the pooled curve. Clusters observed at both levels with
+    unequal trials are left out so that the test stays exact; each pair records how many
+    (``clusters_unbalanced``) and ``warnings`` says so. Each cluster counts once, whatever its size.
+    ``warnings`` also says so when the test cannot flag anything at ``alpha`` (the smallest
+    Holm-adjusted p-value its clusters allow is not below ``alpha``) and when no cluster is observed
+    at both levels of a pair.
+
     Parameters
     ----------
     obs
@@ -638,8 +684,8 @@ def check_monotonicity(
         ``None`` (the default) resolves to ``"independent"`` unless ``obs.cluster`` is set, in
         which case omitting it raises (a method assuming independence must refuse clustered
         input unless the caller explicitly opts in). ``"independent"`` may always be passed
-        explicitly; the resulting ``MonotonicityCheck.dependence`` is always ``"independent"`` in
-        this release.
+        explicitly. ``"clustered"`` requires ``obs.cluster`` and counts
+        (:class:`~robustmargin.Observations`) and runs the cluster sign test above.
     alpha
         The significance level ``flagged`` is decided at (``holm_adjusted_p < alpha``), strictly
         between 0 and 1. Defaults to ``0.05``.
@@ -653,33 +699,47 @@ def check_monotonicity(
     Raises
     ------
     ValueError
-        If ``dependence`` is not ``None`` or ``"independent"``; if ``obs.cluster`` is set and
-        ``dependence`` is ``None``; or if ``alpha`` is not a finite number strictly between 0
-        and 1.
+        If ``dependence`` is not ``None``, ``"independent"`` or ``"clustered"``; if ``obs.cluster``
+        is set and ``dependence`` is ``None``; if ``dependence="clustered"`` and ``obs.cluster``
+        is not set or ``obs`` is continuous; or if ``alpha`` is not a finite number strictly
+        between 0 and 1.
     """
     if dependence is not None and dependence not in _VALID_DEPENDENCE_INPUTS:
         raise ValueError(
-            "check_monotonicity: dependence must be None or 'independent' in this release, got "
-            f"{dependence!r} (the check assumes independent trials; a paired/clustered design "
-            "needs its own method, deferred to a future decision)"
+            "check_monotonicity: dependence must be None, 'independent' or 'clustered', got "
+            f"{dependence!r}"
         )
     if obs.cluster is not None and dependence is None:
         raise ValueError(
             "check_monotonicity: obs carries cluster ids (obs.cluster is set); a method that "
             "assumes independence must not run on clustered data unless the caller passes "
-            "dependence='independent' explicitly"
+            "dependence='independent' explicitly, or dependence='clustered' for the cluster "
+            "sign test"
         )
+    if dependence == "clustered":
+        if obs.cluster is None:
+            raise ValueError(
+                "check_monotonicity: dependence='clustered' needs cluster ids, but obs.cluster "
+                "is not set"
+            )
+        if isinstance(obs, ContinuousObservations):
+            raise ValueError(
+                "check_monotonicity: dependence='clustered' is implemented for binomial counts "
+                "only, not for continuous observations"
+            )
     _check_finite_number(alpha, label="check_monotonicity alpha")
     if not (0.0 < alpha < 1.0):
         raise ValueError(f"check_monotonicity: alpha must satisfy 0 < alpha < 1, got {alpha!r}")
 
-    resolved_dependence = "independent"
     direction = obs.direction
     alternative = "greater" if direction == "decreasing" else "less"
     if isinstance(obs, ContinuousObservations):
         return _check_continuous_monotonicity(
-            obs, alpha=alpha, alternative=alternative, dependence=resolved_dependence
+            obs, alpha=alpha, alternative=alternative, dependence="independent"
         )
+    if dependence == "clustered":
+        return _check_cluster_monotonicity(obs, alpha=alpha)
+    resolved_dependence = "independent"
     cells = obs.cells()
 
     if len(cells) < 2:
@@ -731,6 +791,115 @@ def check_monotonicity(
         pairs=pairs,
         any_flagged=any_flagged,
         warnings=(),
+    )
+
+
+def _severity_pairs_text(pairs: list[tuple[float, float]]) -> str:
+    return ", ".join(f"({low!r}, {high!r})" for low, high in pairs)
+
+
+def _check_cluster_monotonicity(obs: Observations, *, alpha: float) -> MonotonicityCheck:
+    """The exact cluster sign test behind ``check_monotonicity(obs, dependence="clustered")``."""
+    cluster_cells = obs.cluster_cells()
+    assert cluster_cells is not None  # the caller has checked obs.cluster
+    levels = [cell.severity for cell in obs.cells()]
+    if len(levels) < 2:
+        return MonotonicityCheck(
+            direction=obs.direction,
+            alpha=alpha,
+            dependence="clustered",
+            pairs=(),
+            any_flagged=False,
+            method=_CLUSTER_MONOTONICITY_METHOD,
+            warnings=(
+                "check_monotonicity: fewer than two distinct severity levels "
+                f"({len(levels)}) -- no adjacent pairs to test",
+            ),
+        )
+    by_level: dict[float, dict[str | int, ClusterCell]] = {level: {} for level in levels}
+    for cell in cluster_cells:
+        by_level[cell.severity][cell.cluster] = cell
+
+    decreasing = obs.direction == "decreasing"
+    level_pairs = list(zip(levels, levels[1:]))
+    counts: list[tuple[int, int, int, int]] = []  # reversed, ordered, tied, unbalanced
+    shared: list[int] = []
+    for low, high in level_pairs:
+        at_low, at_high = by_level[low], by_level[high]
+        reversed_, ordered, tied, unbalanced = 0, 0, 0, 0
+        both = [cluster for cluster in at_low if cluster in at_high]
+        for cluster in both:
+            cell_low, cell_high = at_low[cluster], at_high[cluster]
+            if cell_low.trials != cell_high.trials:
+                unbalanced += 1
+                continue
+            change = cell_high.successes - cell_low.successes
+            if change == 0:
+                tied += 1
+            elif (change > 0) == decreasing:
+                reversed_ += 1
+            else:
+                ordered += 1
+        counts.append((reversed_, ordered, tied, unbalanced))
+        shared.append(len(both))
+
+    raw_p_values = [
+        1.0
+        if reversed_ + ordered == 0
+        else float(binomtest(reversed_, reversed_ + ordered, 0.5, alternative="greater").pvalue)
+        for reversed_, ordered, _, _ in counts
+    ]
+    _, holm_adjusted, _, _ = multipletests(raw_p_values, method="holm")
+    pairs = tuple(
+        ClusterAdjacentPair(
+            severity_low=low,
+            severity_high=high,
+            clusters_reversed=reversed_,
+            clusters_ordered=ordered,
+            clusters_tied=tied,
+            clusters_unbalanced=unbalanced,
+            p_value=p_value,
+            holm_adjusted_p=float(holm_p),
+            flagged=bool(holm_p < alpha),
+        )
+        for (low, high), (reversed_, ordered, tied, unbalanced), p_value, holm_p in zip(
+            level_pairs, counts, raw_p_values, holm_adjusted, strict=True
+        )
+    )
+
+    notes: list[str] = []
+    excluded = [(low, high) for (low, high), c in zip(level_pairs, counts, strict=True) if c[3] > 0]
+    if excluded:
+        total = sum(c[3] for c in counts)
+        notes.append(
+            f"check_monotonicity: {total} cluster comparison(s) were left out because the "
+            "cluster has a different number of trials at the two levels (unbalanced), at "
+            f"severity pair(s) {_severity_pairs_text(excluded)}; the exact sign test uses "
+            "equal-trial clusters only"
+        )
+    unshared = [(low, high) for (low, high), n in zip(level_pairs, shared, strict=True) if n == 0]
+    if unshared:
+        notes.append(
+            "check_monotonicity: no cluster is observed at both levels of severity pair(s) "
+            f"{_severity_pairs_text(unshared)}, so the sign test has nothing to compare there "
+            "and its p-value is recorded as 1.0"
+        )
+    informative = [reversed_ + ordered for reversed_, ordered, _, _ in counts]
+    smallest_adjusted = min(1.0, len(pairs) * 0.5 ** max(informative))
+    if not smallest_adjusted < alpha:
+        notes.append(
+            f"check_monotonicity: the cluster sign test cannot flag any pair at alpha={alpha!r}: "
+            f"with {len(pairs)} pair(s) and at most {max(informative)} informative cluster(s) "
+            f"per pair, the minimum achievable Holm-adjusted p-value is {smallest_adjusted!r}"
+        )
+    return MonotonicityCheck(
+        direction=obs.direction,
+        alpha=alpha,
+        dependence="clustered",
+        pairs=pairs,
+        any_flagged=any(pair.flagged for pair in pairs),
+        method=_CLUSTER_MONOTONICITY_METHOD,
+        warnings=tuple(notes),
     )
 
 
@@ -1147,6 +1316,14 @@ def diagnose(fit: Fit) -> Diagnostics | ContinuousDiagnostics:
             f"{_SPARSE_EXPECTED_CUTOFF!r} with at least one observed there (minimum "
             f"{minimum_expected:.6f}); Pearson chi-square and dispersion (phi) are unreliable "
             "there; no number here is changed as a result"
+        )
+
+    if fit.dependence == "clustered":
+        warnings.append(
+            f"{_CLUSTERED_GOF_WARNING_PREFIX}the goodness-of-fit and dispersion statistics test "
+            "the independent-binomial model and are expected to reject when trials are "
+            "correlated within clusters; the AIC of each link uses the working-independence "
+            "likelihood, so it overstates the evidence by about the design effect"
         )
 
     link_aic, link_status = _link_comparison(fit, mirrored=mirrored)

@@ -34,6 +34,10 @@ shape ``Ratio`` has no member for; and with ``K > 0`` the ``EXCLUSIVE``-candidat
 ``IntervalShape.HALF_OPEN``. The measure-zero boundary ``A == 0`` next to it yields the same
 half-line and is reported the same way. The shared-``Fit`` check of the
 ``dependence="independent"`` guard is made by :func:`ratio_interval`, not by :class:`Ratio`.
+
+``dependence="paired"`` is a ratio of two outcomes measured on the same clusters (two metrics of
+one system, or two systems on the same episodes): both thresholds come from clustered fits on one
+set of cluster ids, and the covariance ``C`` between the two thresholds is no longer zero.
 """
 
 from __future__ import annotations
@@ -45,14 +49,34 @@ from dataclasses import dataclass, field
 from scipy.stats import norm
 from scipy.stats import t as student_t
 
-from robustmargin.intervals import _MAX_LOG_HALF_WIDTH, _theta_variance
-from robustmargin.threshold import Threshold, _solve_inputs
-from robustmargin.types import Censoring, IntervalShape, JSONValue, Status, _check_finite_number
+from robustmargin.intervals import (
+    _MAX_LOG_HALF_WIDTH,
+    _paired_bootstrap_interval,
+    _paired_theta_moments,
+    _PairedMoments,
+    _theta_variance,
+)
+from robustmargin.models import (
+    _FEW_CLUSTERS_BOOTSTRAP,
+    _FEW_CLUSTERS_SANDWICH,
+    _FEW_CLUSTERS_WARNING_PREFIX,
+    _few_clusters_warning,
+)
+from robustmargin.threshold import Threshold, _fresh_seed, _solve_inputs
+from robustmargin.types import (
+    BootstrapSummary,
+    Censoring,
+    IntervalShape,
+    JSONValue,
+    Status,
+    _check_finite_number,
+)
 
 __all__ = ["Ratio", "ratio_interval"]
 
-_VALID_METHODS = frozenset({"fieller", "log_delta"})
-_VALID_DEPENDENCE = frozenset({"independent"})
+_VALID_METHODS = frozenset({"fieller", "log_delta", "cluster_bootstrap"})
+_VALID_DEPENDENCE = frozenset({"independent", "paired"})
+_DEFAULT_RESAMPLES = 999
 
 
 def _check_finite(value: float | None, *, label: str) -> None:
@@ -108,9 +132,8 @@ class Ratio:
         - ``EXCLUSIVE``: both set, ``lo < hi`` strictly, meaning
           ``(-inf, lo] union [hi, inf)``, and ``estimate`` lies in that union (``estimate <=
           lo`` or ``estimate >= hi``) -- the point estimate always lies inside the Fieller
-          confidence set, never in the excluded gap. **Unreachable via ``ratio_interval`` in
-          this release**: the invariant stays enforced for a directly-constructed
-          ``Ratio`` and for a future ``dependence="paired"``.
+          confidence set, never in the excluded gap. Reachable only with ``dependence="paired"``,
+          where the covariance term is not zero; under ``"independent"`` it is not.
         - ``HALF_OPEN``: ``lo`` set, ``hi`` is ``None``, meaning ``[lo, inf)``, and
           ``lo <= estimate``. ``method="log_delta"`` additionally requires ``lo > 0``, as for
           ``BOUNDED``. This is what a two-ray Fieller set with ``K > 0`` is once intersected
@@ -124,13 +147,22 @@ class Ratio:
         ``censoring`` is ``NONE``; ``None`` otherwise (including when ``status``/``censoring``
         make a shape meaningless).
     method
-        ``"fieller"`` or ``"log_delta"``. ``"log_delta"`` additionally requires, on the
-        ``OK`` + ``NONE`` path, that ``threshold_a.axis.scale`` and ``threshold_b.axis.scale``
-        are both ``"log"`` and that ``threshold_a.value`` and ``threshold_b.value`` are both
-        ``> 0`` (the log-scale delta method is undefined off the log axis or through zero).
+        ``"fieller"``, ``"log_delta"`` or ``"cluster_bootstrap"``. ``"log_delta"`` additionally
+        requires, on the ``OK`` + ``NONE`` path, that ``threshold_a.axis.scale`` and
+        ``threshold_b.axis.scale`` are both ``"log"`` and that ``threshold_a.value`` and
+        ``threshold_b.value`` are both ``> 0`` (the log-scale delta method is undefined off the
+        log axis or through zero). ``"cluster_bootstrap"`` belongs to ``dependence="paired"``
+        and is the percentile interval of a paired cluster bootstrap; unlike the analytic
+        intervals it is not required to contain ``estimate``.
     dependence
-        ``"independent"`` in this release (``"paired"`` is not yet implemented). With
-        ``"independent"``, the two thresholds' fits must not share a cluster id.
+        ``"independent"`` or ``"paired"``. With ``"independent"``, the two thresholds' fits must
+        not share a cluster id. With ``"paired"``, both thresholds are clustered
+        (``dependence="clustered"``) and their fits carry the same set of cluster ids.
+    bootstrap
+        The :class:`~robustmargin.BootstrapSummary` of a paired cluster bootstrap, set only when
+        ``method == "cluster_bootstrap"`` and a bootstrap ran; ``None`` otherwise (every other
+        method, and a ratio decided from an input's status or censoring before any resampling).
+        The last field.
     level
         The confidence level, strictly between 0 and 1.
     censoring
@@ -150,6 +182,19 @@ class Ratio:
     provenance
         An opaque mapping the caller may attach to record where the inputs came from.
         robustmargin stores it and never interprets it. Empty by default.
+
+    Raises
+    ------
+    ValueError
+        If the invariants above do not hold, among them (not an exhaustive list): the two
+        thresholds differ in axis name, axis unit, definition or fit model; ``method``,
+        ``dependence`` or ``level`` is invalid; ``"cluster_bootstrap"`` is used without
+        ``dependence="paired"``, or ``bootstrap`` without that method; a paired ratio's
+        thresholds are not both clustered over the same cluster ids; an independent ratio's fits
+        share a cluster id; ``shape``, ``estimate``, ``lo`` and ``hi`` are set on a failed or
+        censored ratio, or inconsistent with one another or with ``method`` on a clean one;
+        ``estimate`` is not ``threshold_a.value / threshold_b.value``; or ``schema_version`` is
+        ``"1"`` or ``"2"`` on a result only version ``"3"`` can carry.
     """
 
     threshold_a: Threshold
@@ -166,10 +211,20 @@ class Ratio:
     warnings: tuple[str, ...] = ()
     schema_version: str = "3"
     provenance: Mapping[str, JSONValue] = field(default_factory=dict)
+    bootstrap: BootstrapSummary | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "warnings", tuple(self.warnings))
 
+        if self.schema_version in ("1", "2") and (
+            self.dependence == "paired"
+            or self.method == "cluster_bootstrap"
+            or self.bootstrap is not None
+        ):
+            raise ValueError(
+                f"Ratio with schema_version {self.schema_version!r} cannot be paired, use the "
+                "cluster bootstrap or carry a bootstrap summary: only schema_version '3' has them"
+            )
         if self.threshold_a.axis.name != self.threshold_b.axis.name:
             raise ValueError(
                 "Ratio.threshold_a and .threshold_b must share an axis name, got "
@@ -204,6 +259,32 @@ class Ratio:
         _check_finite_number(self.level, label="Ratio.level")
         if not (0.0 < self.level < 1.0):
             raise ValueError(f"Ratio.level must satisfy 0 < level < 1, got {self.level!r}")
+        if self.method == "cluster_bootstrap" and self.dependence != "paired":
+            raise ValueError("Ratio.method 'cluster_bootstrap' needs dependence='paired'")
+        if self.bootstrap is not None and self.method != "cluster_bootstrap":
+            raise ValueError(
+                "Ratio.bootstrap may only be set when method is 'cluster_bootstrap', got "
+                f"method={self.method!r}"
+            )
+        if self.dependence == "paired":
+            fit_a, fit_b = self.threshold_a.fit, self.threshold_b.fit
+            if self.threshold_a.dependence != "clustered" or (
+                self.threshold_b.dependence != "clustered"
+            ):
+                raise ValueError(
+                    "Ratio.dependence 'paired' needs both thresholds to be clustered "
+                    "(dependence='clustered'), got "
+                    f"{self.threshold_a.dependence!r} and {self.threshold_b.dependence!r}"
+                )
+            if (
+                fit_a.cluster_ids is None
+                or fit_b.cluster_ids is None
+                or (set(fit_a.cluster_ids) != set(fit_b.cluster_ids))
+            ):
+                raise ValueError(
+                    "Ratio.dependence 'paired' needs both fits to carry the same set of cluster "
+                    "ids: a paired ratio compares two outcomes measured on the same clusters"
+                )
 
         # The constructor does not check `threshold_a.fit is threshold_b.fit`. A directly
         # constructed `Ratio` over one `Fit` under `dependence="independent"` is accepted,
@@ -292,7 +373,7 @@ class Ratio:
                     f"Ratio.lo must not exceed .hi when shape is BOUNDED, got lo={self.lo!r}, "
                     f"hi={self.hi!r}"
                 )
-            if not (self.lo <= estimate <= self.hi):
+            if self.method != "cluster_bootstrap" and not (self.lo <= estimate <= self.hi):
                 raise ValueError(
                     "Ratio.estimate must lie within [lo, hi] when shape is BOUNDED, got "
                     f"estimate={estimate!r}, lo={self.lo!r}, hi={self.hi!r}"
@@ -309,11 +390,8 @@ class Ratio:
                 )
         elif self.shape is IntervalShape.EXCLUSIVE:
             # Unreachable through `ratio_interval` while `dependence="independent"` fixes the
-            # covariance term at 0: every same-signed-root case that would
-            # produce this shape needs a nonzero covariance, which only a future
-            # `dependence="paired"` can supply. The invariant stays enforced -- for a `Ratio`
-            # built directly (as `robustmargin.testing.fake_ratio` does) and for when `paired`
-            # lands -- rather than being deleted along with the now-dead production path.
+            # covariance term at 0: every same-signed-root case that would produce this shape
+            # needs a nonzero covariance, which `dependence="paired"` supplies.
             if self.lo is None or self.hi is None:
                 raise ValueError(
                     "Ratio.lo and .hi must both be set when shape is EXCLUSIVE and censoring "
@@ -341,7 +419,7 @@ class Ratio:
                     "Ratio.hi must be None when shape is HALF_OPEN and censoring is NONE, got "
                     f"hi={self.hi!r}"
                 )
-            if not (self.lo <= estimate):
+            if self.method != "cluster_bootstrap" and not (self.lo <= estimate):
                 raise ValueError(
                     "Ratio.estimate must be >= lo when shape is HALF_OPEN, got "
                     f"estimate={estimate!r}, lo={self.lo!r}"
@@ -387,22 +465,35 @@ _CENSORING_FLIP: dict[Censoring, Censoring] = {
 
 
 def _welch_satterthwaite_df(
-    variance_a: float, df_a: int, variance_b: float, df_b: int
+    variance_a: float, df_a: float, variance_b: float, df_b: float
 ) -> float | None:
     """``(Va + Vb)^2 / (Va^2 / df_a + Vb^2 / df_b)``, the Welch-Satterthwaite degrees of freedom
     of a sum of two variance estimates (Satterthwaite, 1946, *Biometrics Bulletin* 2:110-114;
     Welch, 1947, *Biometrika* 34:28-35), or ``None`` when both variances are zero and the degrees
-    of freedom are undefined."""
+    of freedom are undefined. An infinite ``df`` (a variance known exactly, or taken as such) drops
+    its term from the denominator."""
     denominator = variance_a**2 / df_a + variance_b**2 / df_b
     if not denominator > 0.0:
         return None
     return float((variance_a + variance_b) ** 2 / denominator)
 
 
+def _threshold_df(t: Threshold) -> float:
+    """The degrees of freedom of a threshold's variance estimate: ``G - 1`` for a clustered
+    threshold, the residual degrees of freedom of a Gaussian fit, and infinity otherwise (a
+    binomial variance is treated as exact, with a normal quantile)."""
+    if t.fit.dependence == "clustered":
+        assert t.fit.cluster_ids is not None
+        return float(len(t.fit.cluster_ids) - 1)
+    if t.fit.model == "gaussian" and t.fit.residual is not None:
+        return float(t.fit.residual.df)
+    return math.inf
+
+
 def _gaussian_quantile(level: float, df: float | None) -> float:
-    """The two-sided Student-t quantile at ``df`` for a ratio of Gaussian thresholds. Where the
-    degrees of freedom are undefined because both variances are zero, no interval end depends on
-    the quantile, and the normal one is used."""
+    """The two-sided Student-t quantile at ``df`` for a ratio with a finite-df threshold (a
+    Gaussian fit, or a clustered one). Where the degrees of freedom are undefined because both
+    variances are zero, no interval end depends on the quantile, and the normal one is used."""
     probability = 0.5 + level / 2.0
     if df is None:
         return float(norm.ppf(probability))
@@ -470,17 +561,19 @@ def _stable_quadratic_roots(
 
 
 def _fieller_shape(
-    *, theta_a: float, va: float, theta_b: float, vb: float, z: float
+    *, theta_a: float, va: float, theta_b: float, vb: float, z: float, cov: float = 0.0
 ) -> tuple[IntervalShape, float | None, float | None, tuple[str, ...]]:
     """Solve ``{rho : A*rho^2 - 2*B*rho + K <= 0}`` (module docstring) for
-    ``A = theta_b^2 - z^2*Vb``, ``B = theta_a*theta_b`` (``C = 0`` under
+    ``A = theta_b^2 - z^2*Vb``, ``B = theta_a*theta_b - z^2*C`` (``C = cov``, zero under
     ``dependence="independent"``), ``K = theta_a^2 - z^2*Va``, then intersects the result with
     the positive parameter space a severity ratio must live in.
 
     ``A > 0``: ``BOUNDED``. The discriminant is non-negative here: the quadratic at the point
-    estimate is ``q(theta_a/theta_b) = -z^2 * (Va + rho_hat^2 * Vb) <= 0`` and ``A > 0``, so two
-    real roots bracket the estimate. Under ``C = 0`` this holds unconditionally; the guard in
-    the code is kept for a future estimated covariance. A lower root below zero is intersected
+    estimate is ``q(theta_a/theta_b) = -z^2 * (Va + rho_hat^2 * Vb - 2*rho_hat*C)``, which is
+    ``<= 0`` because the bracket is the variance of ``theta_a - rho_hat*theta_b`` under a
+    positive semi-definite covariance, and ``A > 0``, so two real roots bracket the estimate.
+    The guard in the code covers a covariance that is not positive semi-definite. A lower root
+    below zero is intersected
     with the positive parameter space -- ``lo = 0.0``, the unclipped root goes in ``warnings``,
     ``shape`` stays ``BOUNDED`` (the upper-only geometry never becomes ``HALF_OPEN``).
 
@@ -494,19 +587,22 @@ def _fieller_shape(
     - ``K <= 0``: both roots are negative (product ``>= 0``, sum ``< 0``), so the set is exactly
       ``(0, inf)`` -- ``UNBOUNDED``, exact.
 
-    ``EXCLUSIVE`` (same-signed roots with ``A < 0``) needs ``B <= 0``, i.e. a nonzero covariance
-    term -- unreachable through this function while ``dependence="independent"`` fixes ``C = 0``.
-    :class:`Ratio`'s invariants for it stay enforced against a future ``dependence="paired"``.
+    ``A < 0``, ``K <= 0`` and ``B < 0`` (a covariance ``C`` large enough that ``z^2*C`` exceeds
+    ``theta_a*theta_b``): both roots are positive, the set is ``(-inf, lo] union [hi, inf)`` with
+    ``0 <= lo < hi``, and the shape is ``EXCLUSIVE``. It needs a nonzero covariance term, so it is
+    unreachable under ``dependence="independent"`` (``C = 0``) and reachable with
+    ``dependence="paired"``.
 
     ``A < 0`` with a non-positive discriminant: ``UNBOUNDED`` (no real roots, confidence set is
     the whole line).
 
     ``A == 0`` exactly (``g == 1``): the quadratic degenerates to the linear
-    ``-2*B*rho + K <= 0``, i.e. ``rho >= K/(2*B)`` when ``B > 0``. ``K > 0`` puts that boundary
-    strictly above zero -- ``HALF_OPEN`` with ``lo = K/(2*B)``. ``A == 0`` is itself
-    measure-zero, but it borders the open ``A < 0, K > 0`` region, which gives the same
-    half-line, so the two are reported alike. ``K <= 0`` puts the boundary at or below zero, so
-    the intersected set is exactly ``(0, inf)`` -- ``UNBOUNDED``.
+    ``-2*B*rho + K <= 0``, i.e. ``rho >= K/(2*B)`` when ``B > 0``, and ``rho <= K/(2*B)`` when
+    ``B < 0``, where the set is the ``BOUNDED`` interval ``[0, K/(2*B)]``. ``K > 0`` puts that
+    boundary strictly above zero -- ``HALF_OPEN`` with ``lo = K/(2*B)``. ``A == 0`` is itself
+    measure-zero, but it borders the open ``A < 0, K > 0`` region, which gives the same half-line,
+    so the two are reported alike. ``K <= 0`` puts the boundary at or below zero, so the intersected
+    set is exactly ``(0, inf)`` -- ``UNBOUNDED``.
 
     Raises
     ------
@@ -516,16 +612,17 @@ def _fieller_shape(
         reporting "``A`` is exactly 0" -- a false statement about a quantity that was never
         computed to a real number in the first place.
     """
-    if not (math.isfinite(va) and math.isfinite(vb)):
+    if not (math.isfinite(va) and math.isfinite(vb) and math.isfinite(cov)):
         raise ValueError(
-            "ratio_interval: method='fieller' needs finite per-threshold variances, got "
-            f"Va={va!r} and Vb={vb!r}. A non-finite delta-method variance means the interval "
+            "ratio_interval: method='fieller' needs finite per-threshold variances and "
+            f"covariance, got Va={va!r}, Vb={vb!r} and C={cov!r}. A non-finite delta-method "
+            "variance means the interval "
             "shape cannot be determined -- this is a distinct failure from the A == 0 boundary "
             "and is not silently routed through it"
         )
 
     a_coef = theta_b * theta_b - z * z * vb
-    b_coef = theta_a * theta_b
+    b_coef = theta_a * theta_b - z * z * cov
     k_coef = theta_a * theta_a - z * z * va
     disc = b_coef * b_coef - a_coef * k_coef
 
@@ -564,12 +661,17 @@ def _fieller_shape(
     if a_coef < 0.0 and disc > 0.0:
         r1, r2 = _stable_quadratic_roots(a_coef=a_coef, b_coef=b_coef, k_coef=k_coef, disc=disc)
         lo, hi = sorted([r1, r2])
+        if k_coef <= 0.0 and b_coef < 0.0:
+            # K <= 0 and A < 0 make the roots' product K/A >= 0, so they share a sign, and
+            # B < 0 makes their sum 2*B/A > 0: both are non-negative. The set is the two outer
+            # rays, and neither contains the whole positive axis.
+            return IntervalShape.EXCLUSIVE, lo, hi, ()
         if k_coef <= 0.0:
-            # Under `dependence="independent"` (C=0), B = theta_a*theta_b > 0, so the roots'
-            # product K/A >= 0 (K <= 0, A < 0) and their sum 2*B/A < 0 -- both roots share a
-            # sign, and that sign is negative. The right ray [hi, inf) with hi < 0 already
-            # contains all of (0, inf), so intersected with the positive parameter space the
-            # confidence set is exactly (0, inf): UNBOUNDED, exact.
+            # With B >= 0 (always so under `dependence="independent"`, where C = 0 and
+            # B = theta_a*theta_b), the roots' product K/A >= 0 (K <= 0, A < 0) and their sum
+            # 2*B/A <= 0 -- both roots share a sign, and that sign is negative. The right ray
+            # [hi, inf) with hi < 0 already contains all of (0, inf), so intersected with the
+            # positive parameter space the confidence set is exactly (0, inf): UNBOUNDED, exact.
             warning = (
                 "ratio_interval: the Fieller set is two rays both lying below zero "
                 f"(unclipped lo={lo!r}, hi={hi!r}); a severity ratio cannot be negative, so the "
@@ -577,10 +679,9 @@ def _fieller_shape(
                 "-- reporting shape=UNBOUNDED exactly, not as a conservative superset"
             )
             return IntervalShape.UNBOUNDED, None, None, (warning,)
-        # K > 0 with A < 0 forces opposite-signed roots (product K/A < 0), so
-        # under independence this branch is always a half-line intersected with the positive
-        # axis -- [hi, inf), reported as HALF_OPEN with lo=hi (the positive root), never
-        # EXCLUSIVE. EXCLUSIVE needs B <= 0 (a nonzero covariance term), unreachable while C=0.
+        # K > 0 with A < 0 forces opposite-signed roots (product K/A < 0), so this branch is
+        # always a half-line intersected with the positive axis -- [hi, inf), reported as
+        # HALF_OPEN with lo=hi (the positive root), never EXCLUSIVE.
         return IntervalShape.HALF_OPEN, hi, None, ()
 
     if a_coef < 0.0:
@@ -605,15 +706,14 @@ def _fieller_shape(
         return IntervalShape.UNBOUNDED, None, None, (warning,)
 
     # B <= 0 cannot arise under dependence="independent" (B = theta_a*theta_b, and both values
-    # are non-negative by Threshold's own invariant), so this is a defensive branch matching the
-    # general algebra rather than a case reachable in this release.
+    # are non-negative by Threshold's own invariant); a paired covariance can reach it.
     if b_coef == 0.0:
         # A == 0 and B == 0 degenerate the inequality to `K <= 0`, so K > 0 is an EMPTY
         # confidence set -- not a half-line, and emphatically not the whole axis. Reporting
         # UNBOUNDED there would be the least informative possible answer to an input that is
         # actually contradictory, so it raises rather than silently falling back. Unreachable
         # while dependence="independent" keeps B = theta_a*theta_b >= 0 (B == 0 forces
-        # theta_a == 0, hence K = -z^2*Va <= 0), but a future paired covariance can reach it.
+        # theta_a == 0, hence K = -z^2*Va <= 0), but a paired covariance can reach it.
         if k_coef > 0.0:
             raise ValueError(
                 "ratio_interval: the Fieller confidence set is empty (A == 0, B == 0, "
@@ -622,7 +722,20 @@ def _fieller_shape(
             )
         note = "no finite half-line endpoint either (B == 0 too)"
     elif b_coef < 0.0:
-        note = f"rho <= {k_coef / (2.0 * b_coef)!r}"
+        # -2*B*rho + K <= 0 with B < 0 is rho <= K/(2*B). The estimate always satisfies the
+        # inequality (its left side is -z^2 times a variance of `a - rho*b`), so K/(2*B) is at or
+        # above the estimate, hence non-negative, and the set intersected with the positive
+        # parameter space is the representable [0, K/(2*B)]. A positive K would put the
+        # boundary below zero: an empty set, which only a non-positive-semidefinite covariance
+        # can produce.
+        if k_coef > 0.0:
+            raise ValueError(
+                "ratio_interval: the Fieller confidence set is empty on the positive axis "
+                f"(A == 0, B == {b_coef!r} < 0, K == {k_coef!r} > 0), which no IntervalShape can "
+                "represent and which means the inputs are mutually contradictory rather than "
+                "merely uninformative"
+            )
+        return IntervalShape.BOUNDED, 0.0, k_coef / (2.0 * b_coef), ()
     else:
         note = f"rho >= {k_coef / (2.0 * b_coef)!r}"
     warning = (
@@ -635,16 +748,22 @@ def _fieller_shape(
 
 
 def _log_delta_shape(
-    *, theta_a: float, var_log_a: float, theta_b: float, var_log_b: float, z: float
+    *,
+    theta_a: float,
+    var_log_a: float,
+    theta_b: float,
+    var_log_b: float,
+    z: float,
+    cov_log: float = 0.0,
 ) -> tuple[float, float]:
-    """``log(ratio) = log(theta_a) - log(theta_b)``, variance ``Va + Vb`` (``C = 0`` under
-    ``dependence="independent"``), exponentiated back around the point estimate. Always
+    """``log(ratio) = log(theta_a) - log(theta_b)``, variance ``Va + Vb - 2*C`` (``C = cov_log``,
+    zero under ``dependence="independent"``), exponentiated back around the point estimate. Always
     ``BOUNDED`` -- :class:`Ratio`'s own invariant requires it for ``method="log_delta"`` -- so a
     half-width too large for a finite ``float`` has no shape left to fall back to and raises
     instead: no number is invented, and no shape ``Ratio`` cannot represent for this method is
     reported.
     """
-    sigma_log_ratio = math.sqrt(max(var_log_a + var_log_b, 0.0))
+    sigma_log_ratio = math.sqrt(max(var_log_a + var_log_b - 2.0 * cov_log, 0.0))
     half_width = z * sigma_log_ratio
     estimate = theta_a / theta_b
     if not math.isfinite(half_width) or half_width > _MAX_LOG_HALF_WIDTH:
@@ -728,6 +847,152 @@ def _propagate_censoring(
     return status, censoring, tuple(collected_warnings)
 
 
+def _check_resample_arguments(method: str, n_resamples: int | None, seed: int | None) -> None:
+    """``n_resamples`` and ``seed`` are meaningful only for the cluster bootstrap: given with any
+    other method they raise, and given to it they must be an ``int >= 1`` and an ``int >= 0``
+    (neither a ``bool``)."""
+    if method != "cluster_bootstrap":
+        for name, value in (("n_resamples", n_resamples), ("seed", seed)):
+            if value is not None:
+                raise ValueError(
+                    f"ratio_interval: {name} applies only to method='cluster_bootstrap', got "
+                    f"method={method!r}"
+                )
+        return
+    if n_resamples is not None and (
+        isinstance(n_resamples, bool) or not isinstance(n_resamples, int) or n_resamples < 1
+    ):
+        raise ValueError(f"ratio_interval: n_resamples must be an int >= 1, got {n_resamples!r}")
+    if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int) or seed < 0):
+        raise ValueError(f"ratio_interval: seed must be None or an int >= 0, got {seed!r}")
+
+
+def _check_paired_inputs(t_a: Threshold, t_b: Threshold) -> None:
+    """The inputs of ``dependence="paired"``: two clustered thresholds, from clustered fits that
+    carry the same set of cluster ids."""
+    if t_a.dependence != "clustered" or t_b.dependence != "clustered":
+        raise ValueError(
+            "ratio_interval: dependence='paired' needs both thresholds to be clustered "
+            "(threshold(..., dependence='clustered') on a fit made with "
+            f"dependence='clustered'), got {t_a.dependence!r} and {t_b.dependence!r}"
+        )
+    ids_a, ids_b = t_a.fit.cluster_ids, t_b.fit.cluster_ids
+    if ids_a is None or ids_b is None or set(ids_a) != set(ids_b):
+        raise ValueError(
+            "ratio_interval: dependence='paired' needs both fits to carry the same set of cluster "
+            "ids (the two outcomes must be measured on the same clusters)"
+        )
+
+
+def _paired_moments(t_a: Threshold, t_b: Threshold) -> _PairedMoments:
+    """``Var(theta_a)``, ``Var(theta_b)`` and ``Cov(theta_a, theta_b)`` of two clustered
+    thresholds on their transformed axis (``log`` of the severity on a log axis), from one
+    stacked cluster-robust recomputation on the decreasing views of their fits."""
+    inputs_a = _solve_inputs(t_a.definition, fit=t_a.fit)
+    inputs_b = _solve_inputs(t_b.definition, fit=t_b.fit)
+    return _paired_theta_moments(
+        inputs_a.fit,
+        inputs_b.fit,
+        definition_a=inputs_a.definition,
+        definition_b=inputs_b.definition,
+        target_a=inputs_a.target,
+        target_b=inputs_b.target,
+    )
+
+
+def _paired_bootstrap_ratio(
+    t_a: Threshold,
+    t_b: Threshold,
+    *,
+    moments: _PairedMoments,
+    level: float,
+    n_resamples: int,
+    seed: int,
+    warnings: list[str],
+) -> Ratio:
+    """The paired cluster-bootstrap :class:`Ratio` of two converged, uncensored clustered
+    thresholds.
+
+    The bootstrap interval is the percentile interval of :func:`_paired_bootstrap_interval`. An
+    upper side that does not close gives ``HALF_OPEN`` ``[lo, inf)``, a lower side that does not
+    close gives ``BOUNDED`` ``[0, hi]`` (a ratio is not negative), and both open (or a zero-width
+    interval, which carries no uncertainty to report) gives ``UNBOUNDED``. A bootstrap that gives
+    up reports ``NOT_CONVERGED`` and no numbers, with its summary. Unlike the analytic intervals
+    it is not required to contain the estimate. The cross-check compares it with the paired
+    log-delta standard error on a log axis and the paired Fieller (linearised) one on a linear
+    axis.
+    """
+    assert t_a.value is not None and t_b.value is not None
+    estimate = t_a.value / t_b.value
+    log_axis = t_a.axis.scale == "log"
+    if log_axis:
+        ratio_hat = math.log(t_a.value) - math.log(t_b.value)
+        variance = moments.var_a + moments.var_b - 2.0 * moments.cov
+    else:
+        ratio_hat = estimate
+        variance = (
+            moments.var_a - 2.0 * estimate * moments.cov + estimate * estimate * moments.var_b
+        ) / (t_b.value * t_b.value)
+    inputs_a = _solve_inputs(t_a.definition, fit=t_a.fit)
+    inputs_b = _solve_inputs(t_b.definition, fit=t_b.fit)
+    outcome = _paired_bootstrap_interval(
+        inputs_a.fit,
+        inputs_b.fit,
+        definition_a=inputs_a.definition,
+        definition_b=inputs_b.definition,
+        level=level,
+        n_resamples=n_resamples,
+        seed=seed,
+        ratio_hat=ratio_hat,
+        standard_error=math.sqrt(max(variance, 0.0)),
+    )
+    warnings.extend(outcome.warnings)
+    lo: float | None
+    hi: float | None
+    if outcome.gave_up:
+        return Ratio(
+            threshold_a=t_a,
+            threshold_b=t_b,
+            estimate=None,
+            lo=None,
+            hi=None,
+            shape=None,
+            method="cluster_bootstrap",
+            dependence="paired",
+            level=level,
+            censoring=Censoring.NONE,
+            status=Status.NOT_CONVERGED,
+            warnings=tuple(warnings),
+            bootstrap=outcome.summary,
+        )
+    if outcome.lo is None and outcome.hi is None:
+        shape, lo, hi = IntervalShape.UNBOUNDED, None, None
+    elif outcome.hi is None:
+        shape, lo, hi = IntervalShape.HALF_OPEN, outcome.lo, None
+    else:
+        shape, lo, hi = IntervalShape.BOUNDED, 0.0 if outcome.lo is None else outcome.lo, outcome.hi
+    return Ratio(
+        threshold_a=t_a,
+        threshold_b=t_b,
+        estimate=estimate,
+        lo=lo,
+        hi=hi,
+        shape=shape,
+        method="cluster_bootstrap",
+        dependence="paired",
+        level=level,
+        censoring=Censoring.NONE,
+        status=Status.OK,
+        warnings=tuple(warnings),
+        bootstrap=outcome.summary,
+    )
+
+
+def _few_clusters_count(warning: str) -> int:
+    """The cluster count named by a ``"FEW_CLUSTERS: "`` warning."""
+    return int(warning[len(_FEW_CLUSTERS_WARNING_PREFIX) :].split(" ", 1)[0])
+
+
 def ratio_interval(
     t_a: Threshold,
     t_b: Threshold,
@@ -736,6 +1001,8 @@ def ratio_interval(
     method: str,
     dependence: str,
     level: float | None = None,
+    n_resamples: int | None = None,
+    seed: int | None = None,
 ) -> Ratio:
     """The ratio of two thresholds' severities, ``t_a / t_b``, on the same axis, with a
     confidence interval.
@@ -759,15 +1026,19 @@ def ratio_interval(
     evaluated at the estimate ``rho = ED_a / ED_b`` and held fixed there. A count threshold and a
     continuous-response threshold are not comparable and raise ``ValueError``.
 
+    **Clustered thresholds under** ``dependence="independent"`` (disjoint cluster sets, or a
+    clustered input with an unclustered one) also use Student-t on Welch-Satterthwaite degrees of
+    freedom, built from ``(Va, G_a - 1)`` and ``(Vb, G_b - 1)``. An unclustered binomial input
+    has infinite degrees of freedom, so its term drops out of the denominator. A paired ratio uses
+    t on ``G - 1`` degrees of freedom.
+
     ``IntervalShape.EXCLUSIVE`` is **unreachable** through this function while
     ``dependence="independent"``: a two-ray Fieller set turns out, once intersected with the
     positive parameter space, to always be either the half-line ``[hi, inf)`` (reported as
     ``IntervalShape.HALF_OPEN``; an open region of the parameter space, not a measure-zero
     boundary -- how often it occurs is a property of the design's power) or the whole positive
     axis (``UNBOUNDED``) -- never a genuine two-ray exclusion, which needs a nonzero covariance
-    term that only a future ``dependence="paired"`` can supply. ``EXCLUSIVE``'s :class:`Ratio`
-    invariants stay enforced against that future, but no call through this function reaches them
-    today.
+    term. ``dependence="paired"`` supplies one, so ``EXCLUSIVE`` is reachable there.
 
     Parameters
     ----------
@@ -778,13 +1049,18 @@ def ratio_interval(
         duplicated here -- they fire when the resulting :class:`Ratio` is constructed, on every
         path through this function.
     method
-        ``"fieller"`` or ``"log_delta"``.
+        ``"fieller"``, ``"log_delta"`` or ``"cluster_bootstrap"``. The last needs
+        ``dependence="paired"``; for a paired ratio ``"log_delta"`` and ``"fieller"`` are the
+        recommended methods, and ``"cluster_bootstrap"`` is an alternative that needs about 40 or
+        more clusters.
     dependence
-        ``"independent"`` only, in this release. ``"paired"`` raises, naming that it is not
-        implemented yet (mirrors :func:`robustmargin.threshold`'s own guard for the same request).
-        Under ``"independent"``, ``t_a.fit`` and ``t_b.fit`` must not be the same object and
-        must not share a cluster id -- both checks are necessary but **not sufficient** for
-        actual independence.
+        ``"independent"`` or ``"paired"``. ``t_a.fit`` and ``t_b.fit`` must never be the same
+        object: one fit with itself has a ratio of exactly one. Under ``"independent"`` they must
+        also not share a cluster id -- both checks are necessary but **not sufficient** for
+        actual independence. Two clustered thresholds on disjoint cluster sets may use
+        ``"independent"``. ``"paired"`` is a ratio of two outcomes measured on the same clusters:
+        both thresholds must be clustered (``dependence="clustered"``), and their fits must carry
+        the same set of cluster ids, the same axis and the same definition.
 
         **This function does not verify independence; establishing it is the caller's
         responsibility.** Nothing in robustmargin records an observation id (only
@@ -797,6 +1073,10 @@ def ratio_interval(
         ``None`` (the default) inherits the confidence level from ``t_a``/``t_b``, which must
         agree; an explicit ``level`` that disagrees with either also raises -- there is no
         silently-assumed default.
+    n_resamples, seed
+        The number of bootstrap replicates (``None`` means 999; otherwise an ``int`` of at least 1)
+        and the seed (``None`` or an ``int`` of at least 0). Neither may be a ``bool``, and both
+        must be ``None`` unless ``method="cluster_bootstrap"``.
 
     Returns
     -------
@@ -812,13 +1092,16 @@ def ratio_interval(
     ValueError
         On any of: either threshold from an isotonic fit (it has no covariance); ``t_a`` and
         ``t_b`` fitted with different models (a count threshold against a
-        continuous-response one); ``t_a.fit is t_b.fit`` under ``dependence="independent"``
-        (checked directly by this function); mismatched axis name/unit, mismatched ``definition``,
+        continuous-response one); ``t_a.fit is t_b.fit`` (checked directly by this function);
+        mismatched axis name/unit, mismatched ``definition``,
         or shared cluster
         ids under ``dependence="independent"`` (via :class:`Ratio`'s own validation, once this
         function reaches the point of constructing one); ``method`` outside
-        ``{"fieller", "log_delta"}``; ``dependence`` anything other than ``"independent"``
-        (``"paired"`` gets its own message, not yet implemented); ``level`` outside ``(0, 1)``, or a
+        ``{"fieller", "log_delta", "cluster_bootstrap"}``; ``dependence`` anything other than
+        ``"independent"`` or ``"paired"``; ``method="cluster_bootstrap"`` without
+        ``dependence="paired"``; ``n_resamples`` or ``seed`` given with any other method, or
+        invalid; ``dependence="paired"`` with a threshold that is not clustered or fits that do not
+        share their set of cluster ids; ``level`` outside ``(0, 1)``, or a
         ``level`` mismatch; ``threshold_b.value == 0`` (nothing to divide by); for
         ``method="log_delta"`` once both inputs are ``(OK, NONE)``, either axis not ``scale="log"``
         or either ``value`` not ``> 0``; for ``method="log_delta"``, a combined log-scale standard
@@ -840,27 +1123,26 @@ def ratio_interval(
             f"({t_a.fit.model!r} and {t_b.fit.model!r}); a count threshold and a "
             "continuous-response threshold are not comparable"
         )
-    if dependence == "paired":
-        raise ValueError(
-            "ratio_interval: dependence='paired' is not implemented in this release; pass "
-            "dependence='independent' explicitly to acknowledge independence is being assumed "
-            "anyway, or wait for a future release that adds it"
-        )
     if dependence not in _VALID_DEPENDENCE:
         raise ValueError(
-            "ratio_interval: dependence must be 'independent' ('paired' is not yet "
-            f"implemented), got {dependence!r}"
+            f"ratio_interval: dependence must be one of {sorted(_VALID_DEPENDENCE)}, "
+            f"got {dependence!r}"
         )
+    if method == "cluster_bootstrap" and dependence != "paired":
+        raise ValueError("ratio_interval: method='cluster_bootstrap' needs dependence='paired'")
+    _check_resample_arguments(method, n_resamples, seed)
+    if dependence == "paired":
+        _check_paired_inputs(t_a, t_b)
 
     # The shared-`Fit`-object check lives here, in the function, rather than in
     # `Ratio.__post_init__` where the cluster-id check below (delegated to `Ratio`'s own
     # construction) lives. `Ratio`'s constructor does not check it, so that the public type's
     # accepted inputs do not change; every real caller goes through this function (see the
     # matching comment in `Ratio.__post_init__`).
-    if dependence == "independent" and t_a.fit is t_b.fit:
+    if t_a.fit is t_b.fit:
         raise ValueError(
             "ratio_interval: threshold_a.fit and threshold_b.fit are the very same Fit object, "
-            "which is incompatible with dependence='independent'. This is an object-identity "
+            "so the ratio is identically 1 with no uncertainty. This is an object-identity "
             "check only, not a value-equality one: two disjoint samples may legitimately "
             "produce an equal Fit by value, and that ratio is valid."
         )
@@ -887,7 +1169,24 @@ def ratio_interval(
     # Carry both inputs' own warnings (for example a "NON_MONOTONE_DATA: " token from either
     # threshold) onto the ratio, on every path below -- the censored/failed early return and the
     # OK+NONE path alike.
-    collected_warnings: list[str] = [*t_a.warnings, *t_b.warnings]
+    # A ratio carries the few-clusters warning exactly once: the inherited copy naming the smaller
+    # cluster count, which is the more severe case, kept at the position of the first copy.
+    collected_warnings: list[str] = []
+    for inherited in (*t_a.warnings, *t_b.warnings):
+        if inherited.startswith(_FEW_CLUSTERS_WARNING_PREFIX):
+            held = next(
+                (
+                    i
+                    for i, w in enumerate(collected_warnings)
+                    if w.startswith(_FEW_CLUSTERS_WARNING_PREFIX)
+                ),
+                None,
+            )
+            if held is not None:
+                if _few_clusters_count(inherited) < _few_clusters_count(collected_warnings[held]):
+                    collected_warnings[held] = inherited
+                continue
+        collected_warnings.append(inherited)
 
     a_clean = t_a.status is Status.OK and t_a.censoring is Censoring.NONE
     b_clean = t_b.status is Status.OK and t_b.censoring is Censoring.NONE
@@ -961,14 +1260,50 @@ def ratio_interval(
 
     z = float(norm.ppf(0.5 + resolved_level / 2.0))
     estimate = value_a / value_b
-    gaussian = t_a.fit.model == "gaussian"
-    df_a = t_a.fit.residual.df if t_a.fit.residual is not None else 0
-    df_b = t_b.fit.residual.df if t_b.fit.residual is not None else 0
+    paired_moments: _PairedMoments | None = None
+    if dependence == "paired":
+        paired_moments = _paired_moments(t_a, t_b)
+        assert t_a.fit.cluster_ids is not None
+        clusters = len(t_a.fit.cluster_ids)
+        z = float(student_t.ppf(0.5 + resolved_level / 2.0, clusters - 1))
+        if method == "cluster_bootstrap" and clusters < _FEW_CLUSTERS_BOOTSTRAP:
+            collected_warnings = [
+                w for w in collected_warnings if not w.startswith(_FEW_CLUSTERS_WARNING_PREFIX)
+            ]
+            collected_warnings.append(_few_clusters_warning(clusters, bootstrap=True))
+        elif clusters < _FEW_CLUSTERS_SANDWICH and not any(
+            w.startswith(_FEW_CLUSTERS_WARNING_PREFIX) for w in collected_warnings
+        ):
+            collected_warnings.append(_few_clusters_warning(clusters))
+        if method == "cluster_bootstrap":
+            return _paired_bootstrap_ratio(
+                t_a,
+                t_b,
+                moments=paired_moments,
+                level=resolved_level,
+                n_resamples=n_resamples if n_resamples is not None else _DEFAULT_RESAMPLES,
+                seed=seed if seed is not None else _fresh_seed(),
+                warnings=collected_warnings,
+            )
+    df_a = _threshold_df(t_a)
+    df_b = _threshold_df(t_b)
+    # A paired ratio already uses t on `G - 1` degrees of freedom; an independent one uses
+    # Welch-Satterthwaite whenever either input has finitely many.
+    finite_df = dependence != "paired" and (math.isfinite(df_a) or math.isfinite(df_b))
 
     if method == "fieller":
         va = _fieller_variance(t_a, value=value_a)
         vb = _fieller_variance(t_b, value=value_b)
-        if gaussian:
+        cov = 0.0
+        if paired_moments is not None:
+            # One stacked recomputation supplies all three moments, never a mix with the stored
+            # covariances. On a log axis the natural-scale moments are the log-scale ones times
+            # the values (the delta method for `value = exp(theta)`).
+            weight_a, weight_b = (value_a, value_b) if t_a.axis.scale == "log" else (1.0, 1.0)
+            va = weight_a * weight_a * paired_moments.var_a
+            vb = weight_b * weight_b * paired_moments.var_b
+            cov = weight_a * weight_b * paired_moments.cov
+        if finite_df:
             # The pivot `ED_a - rho * ED_b` has variance `Va + rho^2 Vb`, whose Satterthwaite
             # degrees of freedom are evaluated at the estimate `rho` and held fixed there.
             z = _gaussian_quantile(
@@ -976,7 +1311,7 @@ def ratio_interval(
                 _welch_satterthwaite_df(va, df_a, estimate**2 * vb, df_b),
             )
         shape, lo, hi, shape_warnings = _fieller_shape(
-            theta_a=value_a, va=va, theta_b=value_b, vb=vb, z=z
+            theta_a=value_a, va=va, theta_b=value_b, vb=vb, z=z, cov=cov
         )
         collected_warnings.extend(shape_warnings)
     else:
@@ -984,12 +1319,19 @@ def ratio_interval(
         # `Var(log(value))` -- no natural-scale detour needed (module docstring).
         var_log_a = _theta_variance_for(t_a)
         var_log_b = _theta_variance_for(t_b)
-        if gaussian:
+        if paired_moments is not None:
+            var_log_a, var_log_b = paired_moments.var_a, paired_moments.var_b
+        if finite_df:
             z = _gaussian_quantile(
                 resolved_level, _welch_satterthwaite_df(var_log_a, df_a, var_log_b, df_b)
             )
         lo, hi = _log_delta_shape(
-            theta_a=value_a, var_log_a=var_log_a, theta_b=value_b, var_log_b=var_log_b, z=z
+            theta_a=value_a,
+            var_log_a=var_log_a,
+            theta_b=value_b,
+            var_log_b=var_log_b,
+            z=z,
+            cov_log=paired_moments.cov if paired_moments is not None else 0.0,
         )
         shape = IntervalShape.BOUNDED
 
