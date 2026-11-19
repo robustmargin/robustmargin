@@ -196,18 +196,18 @@ class TestObservationsClusterCells:
             trials=[5, 5, 5, 5],
             outcome="success",
             direction="decreasing",
-            cluster=["zeta", "alpha", "alpha", "zeta"],
+            cluster=["omega", "alpha", "alpha", "omega"],
         )
 
         cells = obs.cluster_cells()
 
         assert cells is not None
-        # First seen in the data is "zeta", so it leads at every level, even though "alpha" sorts
+        # First seen in the data is "omega", so it leads at every level, even though "alpha" sorts
         # first alphabetically and 2.0 appears first in the rows.
         assert [(c.severity, c.cluster) for c in cells] == [
-            (1.0, "zeta"),
+            (1.0, "omega"),
             (1.0, "alpha"),
-            (2.0, "zeta"),
+            (2.0, "omega"),
             (2.0, "alpha"),
         ]
 
