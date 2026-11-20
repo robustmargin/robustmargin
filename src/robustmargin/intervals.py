@@ -1424,20 +1424,22 @@ class _WallCurve:
     """The curve that the profile's constrained maximum approaches at far extrapolation, fitted
     lazily and at most once.
 
-    For ``absolute(a)`` with the lower asymptote estimated, the target ``a`` is reached ever
-    further out as the fitted lower asymptote tends to ``a`` while the transition stays inside the
-    data. This is the same data, link and fixed asymptotes as ``fit``, refitted by
-    :func:`robustmargin.fit_dose_response` with the lower asymptote fixed at ``a`` (the profile
-    works on the decreasing curve ``u - (u - l) F(z)``, so it is the lower asymptote that the
-    curve approaches beyond the data). Its parameters seed one optimiser start per ``theta``
-    (:func:`_wall_start`); no number from it is ever reported.
+    With the lower asymptote estimated, the target is reached ever further out as the fitted lower
+    asymptote tends to the target level while the transition stays inside the data. This is the
+    same data, link and fixed asymptotes as ``fit``, refitted by
+    :func:`robustmargin.fit_dose_response` with the lower asymptote fixed at the target level
+    evaluated at the fit's estimated upper asymptote (for ``absolute(a)`` that is ``a``). The
+    level is held fixed in the refit and does not move with the refit's own upper asymptote. The
+    profile works on the decreasing curve ``u - (u - l) F(z)``, so it is the lower asymptote that
+    the curve approaches beyond the data. Its parameters seed one optimiser start per ``theta``
+    (:func:`_wall_start`) and give one attained log-likelihood per ``theta``
+    (:func:`_wall_witness_llf`), a lower bound on the profile there.
 
-    :attr:`params` is ``None`` where the definition is not ``absolute``, where the lower asymptote
+    :attr:`params` is ``None`` where the definition is ``relative``, where the lower asymptote
     is fixed, or where the refit raises (a numerical or validation error) or ends with a status
-    other than ``Status.OK``. That is a missing optimiser start, not a substitute result: the
-    profile value then comes from the other starts alone. :attr:`raised` tells the two failures
-    apart: only a refit that raised is reported to the caller, because a refit whose status is
-    not ``OK`` means there is no wall curve to start from.
+    other than ``Status.OK``. The profile value then comes from the other starts alone.
+    :attr:`raised` tells the two failures apart: only a refit that raised is reported to the
+    caller, because a refit whose status is not ``OK`` means there is no wall curve to use.
     """
 
     fit: Fit
@@ -1448,9 +1450,14 @@ class _WallCurve:
         """``(params, raised)``: the refit's ``(mu, s, upper)`` or ``None``, and whether the refit
         raised an error, a numerical or a validation one."""
         fit = self.fit
-        if self.definition.kind != "absolute" or fit.params is None or fit.params["lower"].fixed:
+        if self.definition.kind == "relative" or fit.params is None or fit.params["lower"].fixed:
             return None, False
         upper_param = fit.params["upper"]
+        wall_lower = _target_for(
+            self.definition,
+            upper=upper_param.value,
+            lower=math.nan,
+        )
         cells = _count_cells(fit)
         try:
             obs = Observations.from_counts(
@@ -1466,7 +1473,7 @@ class _WallCurve:
                 model="binomial",
                 link=cast(Literal["probit", "logit", "cloglog"], fit.link),
                 upper=upper_param.value if upper_param.fixed else "estimate",
-                lower=self.definition.value,
+                lower=wall_lower,
             )
         except (np.linalg.LinAlgError, ValueError):
             return None, True
@@ -1496,16 +1503,18 @@ def _wall_start(
     """One optimiser start in the ``z*`` chart that reproduces the wall refit's curve at the
     candidate ``theta`` of ``z_chart``, or ``None``.
 
-    The wall refit has ``(mu_w, s_w, u_w)`` and lower asymptote ``a``. The curve through the
+    The wall refit has ``(mu_w, s_w, u_w)``. The curve through the
     target at ``theta`` with the same ``s_w`` and the same upper asymptote has
     ``z* = (theta - mu_w) / s_w``. With both asymptotes estimated the free coordinate is the logit
-    of the share ``t / t_max`` where ``t = (u_w - a) / F(z*)`` (the chart's own construction), and
-    with only the lower one estimated there is none. The start is an optimiser start only: the
-    value it reaches is the attained log-likelihood of a feasible curve, used under the same rule
-    as every other alternative. ``None`` when there is no wall refit, when ``z*`` is outside
-    ``interval`` (the chart's feasible ``z*`` values), or when the share is not defined or is at
-    least one: the refit's upper asymptote is then not reachable at that ``z*`` with a
-    non-negative lower asymptote, and a clipped share would start from a different curve.
+    of the share ``t / t_max`` where ``t = (u_w - a) / F(z*)`` and ``a`` is the absolute target
+    (the chart's own construction), and with only the lower one estimated there is none. The
+    start is an optimiser start only: the value it reaches is the attained log-likelihood of a
+    feasible curve, used under the same rule as every other alternative. ``None`` when there is
+    no wall refit, when ``z*`` is outside ``interval`` (the chart's feasible ``z*`` values), when
+    both asymptotes are estimated and the definition is not ``absolute`` (the share formula is
+    specific to it), or when the share is not defined or is at least one: the refit's upper
+    asymptote is then not reachable at that ``z*`` with a non-negative lower asymptote, and a
+    clipped share would start from a different curve.
     """
     params = wall.params
     if params is None:
@@ -1517,6 +1526,8 @@ def _wall_start(
         return None
     extra: list[float] = []
     if z_chart.estimate_lower and z_chart.estimate_upper:
+        if z_chart.definition.kind != "absolute":
+            return None
         f, s = _cdf_and_survival(z_star, z_chart.link)
         a = z_chart.definition.value
         t_max = min(_ratio_or_inf(1.0 - a, f), _ratio_or_inf(a, s))
@@ -1527,6 +1538,53 @@ def _wall_start(
             return None
         extra = [_share_logits(share)[0]]
     return z_chart, np.array([math.log(s_w), z_star, *extra], dtype=np.float64)
+
+
+def _wall_witness_llf(
+    theta: float, wall: _WallCurve, fit: Fit, definition: Definition
+) -> float | None:
+    """The log-likelihood of a feasible curve through the target at ``theta`` built from the wall
+    refit, or ``None``.
+
+    With the wall refit's ``(mu_w, s_w, u_w)`` and ``z = (theta - mu_w) / s_w``, the lower
+    asymptote that puts the curve ``u_w - (u_w - l) F(z)`` through the target at ``theta`` is
+    derived from the definition. If it is feasible (``0 <= l < u_w``; it is never clipped), the
+    curve is an admissible alternative at ``theta``, so its full binomial log-likelihood is
+    attained there and is a lower bound on the profile log-likelihood. As ``theta`` grows it tends
+    to the log-likelihood at ``(mu_w, s_w, u_w)`` with the lower asymptote at the target level for
+    ``u_w``. ``None`` when there is no wall refit, when no
+    such lower asymptote is feasible, or when the value is not finite.
+    """
+    params = wall.params
+    if params is None:
+        return None
+    mu_w, s_w, upper_w = params
+    asymptotes = _zstar_chart_asymptotes(
+        (theta - mu_w) / s_w,
+        np.empty(0, dtype=np.float64),
+        definition=definition,
+        link=fit.link,
+        estimate_lower=True,
+        estimate_upper=False,
+        lower_value=math.nan,
+        upper_value=upper_w,
+    )
+    if asymptotes is None:
+        return None
+    lower, upper = asymptotes
+    severity, successes, trials = _cells_to_arrays(_count_cells(fit))
+    value = _full_binomial_log_likelihood(
+        severity,
+        successes,
+        trials,
+        mu=mu_w,
+        s=s_w,
+        upper=upper,
+        lower=lower,
+        scale=fit.axis.scale,
+        link=fit.link,
+    )
+    return value if math.isfinite(value) else None
 
 
 def _alternative_starts(
@@ -1790,17 +1848,19 @@ def _estimated_profile_llf(
     finite end of its feasible interval, on that box face) and otherwise in the first chart. The
     best of the scanned alternatives and, where it is a different run, the best alternative overall
     (the wall start can be that) are each Newton-polished if they beat the first run by more than
-    the Newton tolerance. ``ell_p`` is the largest of the first run's value and the BFGS and
-    polished values of those, so it is never below the value obtained without a wall start. An
-    alternative that raises is skipped and reported through ``on_failed_alternative``, once per
-    start; the first run's own failure returns ``None``.
+    the Newton tolerance. ``ell_p`` is the largest of the first run's value, the BFGS and polished
+    values of those, and the wall witness below, so it is never below the value obtained without
+    them. An alternative that raises is skipped and reported through ``on_failed_alternative``,
+    once per start; the first run's own failure returns ``None``.
 
-    For ``absolute`` targets with an estimated lower asymptote the alternatives include a wall
-    start (:class:`_WallCurve`): the refit with the lower asymptote fixed at the target, placed in
-    the ``z*`` chart at this ``theta``. It lets the optimiser reach the constrained maximum that
-    lies at the reachability wall far beyond the tested range. It is an optimiser start like the
-    others, so the value is always one attained by a feasible curve, and the wall start can only
-    raise ``ell_p``.
+    For every definition except ``relative`` with an estimated lower asymptote there is a
+    wall refit (:class:`_WallCurve`): the refit with the lower asymptote fixed at the target level.
+    It supplies a wall start, placed in the ``z*`` chart at this ``theta``, and a wall witness
+    (:func:`_wall_witness_llf`): the log-likelihood of the feasible curve with the refit's
+    transition and upper asymptote whose lower asymptote puts it through the target at ``theta``.
+    Each is an attained value of a feasible curve at ``theta``, so neither can overstate the
+    constrained maximum, and the constrained maximum that lies at the reachability wall far beyond
+    the tested range is bounded below by the witness even where no optimiser start reaches it.
     ``wall`` shares the refit between calls (one per interval); left unset, a call makes its own,
     and only if the alternatives run.
 
@@ -1853,13 +1913,8 @@ def _estimated_profile_llf(
         and 2.0 * (llf_hat - pilot_best) - chi2_target < 0.0
     )
     if not fixed_unit_range and not sign_settled:
-        completed = _alternative_fits(
-            fit,
-            loglike_fn,
-            start,
-            on_failed_alternative,
-            wall if wall is not None else _WallCurve(fit, definition),
-        )
+        wall_curve = wall if wall is not None else _WallCurve(fit, definition)
+        completed = _alternative_fits(fit, loglike_fn, start, on_failed_alternative, wall_curve)
         best_scanned: tuple[float, GenericLikelihoodModel, NDArray[np.float64]] | None = None
         best_overall: tuple[float, GenericLikelihoodModel, NDArray[np.float64]] | None = None
         for alt_llf, alt_model, alt_params, is_wall in completed:
@@ -1884,6 +1939,11 @@ def _estimated_profile_llf(
             best = max(best, candidate)
         if best > pilot_best:
             llf = best
+        wall_llf = (
+            None if lower_param.fixed else _wall_witness_llf(theta, wall_curve, fit, definition)
+        )
+        if wall_llf is not None and wall_llf > llf:
+            llf = wall_llf
     if not math.isfinite(llf) or llf <= _UNREACHABLE_LOGLIKELIHOOD / 2.0:
         return None
     return llf
