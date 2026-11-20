@@ -7,6 +7,8 @@ minor release may change the public API, and every such change carries a migrati
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-11-20
+
 ### Added
 - **Design planning: `robustmargin.design`.** A submodule (not re-exported from the package root,
   like `report` and `testing`) that sizes a sweep from a pilot fit. `severity_grid` builds a

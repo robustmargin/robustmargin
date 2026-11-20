@@ -21,13 +21,12 @@ robustness and safety carry weight:
 - **Autonomous and safety-critical systems**: margins reported with honest uncertainty, and
   censored bounds instead of invented numbers when the data cannot support an estimate.
 
-> **Status: latest release `0.3.0`.** Dose-response fits for pass/fail outcomes that fall or rise
-> with severity and for real-valued scores (Gaussian least squares), thresholds with
-> profile-likelihood or delta confidence intervals, censoring, ratios of two thresholds with
-> Fieller or log-delta intervals, fit diagnostics, and the grid break-point rule. The development
-> version adds model-free isotonic fits, bootstrap intervals, and clustered and paired inference
-> (see below). Design helpers are planned for `0.4`. While the version is below 1.0, a minor
-> release may change the public API.
+> **Status: latest release `0.4.0`.** Dose-response fits for pass/fail outcomes that fall or rise
+> with severity and for real-valued scores (Gaussian least squares), model-free isotonic fits,
+> thresholds with profile-likelihood, delta or bootstrap confidence intervals, censoring, ratios
+> of two thresholds with Fieller or log-delta intervals, clustered and paired inference for
+> outcomes that share scenarios, simulation-based design planning, fit diagnostics, and the grid
+> break-point rule. While the version is below 1.0, a minor release may change the public API.
 
 ## What it does
 
@@ -64,7 +63,10 @@ its results into robustmargin's input:
 Because the interface is only severities and outcomes, the same adapter pattern works for any
 evaluator. A typical use is comparing checkpoints, for example before and after RL
 post-training: `ratio_interval` gives a confidence interval for the ratio of their margins, so
-"the new checkpoint is more robust" becomes a claim with an interval attached.
+"the new checkpoint is more robust" becomes a claim with an interval attached. Before the sweep,
+`robustmargin.design` simulates candidate designs from a pilot fit, so the number of runs per
+level (and of shared scenarios, for a paired comparison) is chosen for the interval width you
+need.
 
 ## Install
 
