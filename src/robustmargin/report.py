@@ -72,6 +72,7 @@ from functools import lru_cache
 from importlib import resources
 from typing import Any
 
+from robustmargin.design import WidthPlan
 from robustmargin.empirical import BaselineRate, GridBreakPoint
 from robustmargin.models import Covariance, Fit, Parameter
 from robustmargin.ratio import Ratio
@@ -296,7 +297,9 @@ def to_dict(obj: object) -> dict[str, JSONValue]:
     obj
         A :class:`Scorecard`, :class:`~robustmargin.GridBreakPoint`, :class:`~robustmargin.Fit`,
         :class:`~robustmargin.Threshold` or :class:`~robustmargin.Ratio` instance -- the five tagged
-        types. Nothing else is accepted at the top level (a helper type such as
+        types -- or a :class:`~robustmargin.design.WidthPlan`, which is its own document with its
+        own ``"plan_schema_version"`` and is not part of the score-card schema. Nothing else is
+        accepted at the top level (a helper type such as
         :class:`~robustmargin.Axis` only ever appears nested inside one of these).
 
     Returns
@@ -310,13 +313,15 @@ def to_dict(obj: object) -> dict[str, JSONValue]:
     ValueError
         If any float anywhere in ``obj`` (including inside ``provenance``) is NaN or infinite.
     TypeError
-        If ``obj`` is not one of the five tagged types, or if a ``provenance`` value is not
-        plain JSON.
+        If ``obj`` is not one of the five tagged types or a ``WidthPlan``, or if a ``provenance``
+        value is not plain JSON.
     """
+    if isinstance(obj, WidthPlan):
+        return _width_plan_to_dict(obj)
     if not isinstance(obj, _TAGGED_CLASSES):
         raise TypeError(
-            "to_dict expects a Scorecard, GridBreakPoint, Fit, Threshold or Ratio instance, "
-            f"got {type(obj).__name__}"
+            "to_dict expects a Scorecard, GridBreakPoint, Fit, Threshold, Ratio or WidthPlan "
+            f"instance, got {type(obj).__name__}"
         )
     return _encode_dataclass_instance(obj)
 
@@ -793,12 +798,45 @@ def _scorecard_from_dict(data: object, card_version: str | None) -> Scorecard:
     own_version_str = own_version if isinstance(own_version, str) else "<unknown>"
     fields = _validated_fields(Scorecard, data, tagged=True, card_version=own_version_str)
     fields["results"] = tuple(
-        _from_dict_impl(item, card_version=own_version_str) for item in fields["results"]
+        _from_dict_impl(item, card_version=own_version_str, builders=_CARD_RESULT_BUILDERS)
+        for item in fields["results"]
     )
     return Scorecard(**fields)
 
 
+_WIDTH_PLAN_PLAN_VERSIONS = frozenset({"1"})
+
+
+def _width_plan_to_dict(width_plan: WidthPlan) -> dict[str, JSONValue]:
+    """A ``WidthPlan`` as its own JSON document: its fields and a ``"type"`` tag."""
+    result = _encode_dataclass_instance(width_plan)
+    result["type"] = "WidthPlan"
+    return result
+
+
+def _width_plan_from_dict(data: object, card_version: str | None) -> WidthPlan:
+    # Validated here rather than against the score-card schema: it has its own version.
+    if not isinstance(data, Mapping):
+        raise ValueError(f"from_dict: expected a mapping for WidthPlan, got {type(data).__name__}")
+    body = {key: value for key, value in data.items() if key != "type"}
+    fields = _validated_fields(WidthPlan, body, tagged=False, card_version=card_version)
+    version = fields.get("plan_schema_version")
+    if version not in _WIDTH_PLAN_PLAN_VERSIONS:
+        raise ValueError(
+            f"from_dict: unknown plan_schema_version {version!r} for WidthPlan, expected one of "
+            f"{sorted(_WIDTH_PLAN_PLAN_VERSIONS)!r}"
+        )
+    fields["axis"] = _axis_from_dict(fields["axis"], card_version)
+    fields["definition"] = _definition_from_dict(fields["definition"], card_version)
+    for name in ("severity", "widths", "outcomes"):
+        if not isinstance(fields[name], (list, tuple)):
+            raise ValueError(f"from_dict: WidthPlan.{name} must be a list")
+        fields[name] = tuple(fields[name])
+    return WidthPlan(**fields)
+
+
 _RESULT_BUILDERS: dict[str, Any] = {
+    "WidthPlan": _width_plan_from_dict,
     "GridBreakPoint": _grid_break_point_from_dict,
     "Fit": _fit_from_dict,
     "Threshold": _threshold_from_dict,
@@ -807,13 +845,20 @@ _RESULT_BUILDERS: dict[str, Any] = {
 }
 
 
-def _from_dict_impl(data: object, *, card_version: str | None) -> object:
+_CARD_RESULT_BUILDERS: dict[str, Any] = {
+    name: builder for name, builder in _RESULT_BUILDERS.items() if name != "WidthPlan"
+}
+
+
+def _from_dict_impl(
+    data: object, *, card_version: str | None, builders: dict[str, Any] | None = None
+) -> object:
     if not isinstance(data, Mapping):
         raise ValueError(f"from_dict expects a mapping, got {type(data).__name__}")
     type_name = data.get("type")
     if type_name is None:
         raise ValueError("from_dict: missing required field 'type'")
-    builder = _RESULT_BUILDERS.get(type_name)
+    builder = (_RESULT_BUILDERS if builders is None else builders).get(type_name)
     if builder is None:
         raise ValueError(f"from_dict: unknown type {type_name!r}")
     result: object = builder(data, card_version)
@@ -828,7 +873,9 @@ def from_dict(data: object) -> object:
     ----------
     data
         A mapping carrying a ``"type"`` key naming one of ``Scorecard``, ``GridBreakPoint``,
-        ``Fit``, ``Threshold`` or ``Ratio``, plus that type's fields.
+        ``Fit``, ``Threshold``, ``Ratio`` or ``WidthPlan``, plus that type's fields. A
+        ``WidthPlan`` is read with its own ``plan_schema_version`` (``"1"``) and is not checked
+        against the score-card schema.
 
     Returns
     -------

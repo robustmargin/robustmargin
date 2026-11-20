@@ -10,8 +10,11 @@ The package exports the vocabulary types (:class:`Axis`, :class:`Observations`,
 (:func:`fit_dose_response`, returning a :class:`Fit` whose :meth:`~Fit.predict` returns a
 :class:`Prediction`; ``model="isotonic"`` fits a monotone, parameter-free :class:`Fit` whose
 values are ``Fit.cell_estimates``, and has no ``predict``). The JSON report module
-(``robustmargin.report``) and the schema-valid test fakes (``robustmargin.testing``) are
-importable as submodules but are not re-exported here.
+(``robustmargin.report``), the schema-valid test fakes (``robustmargin.testing``) and the
+design-planning helpers (``robustmargin.design``: :func:`~robustmargin.design.severity_grid`,
+:func:`~robustmargin.design.plan_threshold_width`, :func:`~robustmargin.design.plan_ratio_width`
+and :class:`~robustmargin.design.WidthPlan`) are importable as submodules but are not re-exported
+here.
 
 :func:`threshold` solves for the severity at which a fitted curve crosses a target performance and
 attaches an interval or an explicit censoring label, together with :class:`BaselineRate`,
