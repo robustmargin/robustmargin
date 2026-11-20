@@ -230,6 +230,25 @@ minor release may change the public API, and every such change carries a migrati
   `lo` and `hi` of `Fit.predict` for every binomial fit with both asymptotes fixed, in both
   directions and with every link; the estimates and every threshold are unchanged. Bands for fits
   with an estimated asymptote were unaffected. Recompute any stored bands after upgrading.
+- **Profile interval with an estimated asymptote: finite upper bound too narrow at the
+  reachability wall.** When the constrained maximum lay at the reachability wall far beyond the
+  tested range, the profile could report a finite upper bound that was too narrow. The profile
+  now also uses, at each candidate severity, the log-likelihood of a feasible curve through the
+  target as a lower bound on the constrained maximum, so a bound cannot move inward. This
+  extends to `baseline_fraction` and `baseline_multiple` targets. Where the interval truly has no
+  finite upper end it is now reported open, as it was for `absolute` targets. Fits with both
+  asymptotes fixed are unchanged.
+
+### Known limitations
+- Profile bounds with an estimated asymptote can still be too narrow when the constrained maximum
+  lies in an inner basin narrower than the scan grid used to place the optimiser's starts.
+- `Fit.predict` on a count fit with an estimated asymptote: at a severity far beyond the tested
+  range, where the fitted curve equals its asymptote in double precision, `lo` and `hi` are `nan`;
+  slightly closer in, they can collapse onto the estimate. The estimate itself is unaffected.
+  Read the band within or near the tested range.
+- For `baseline_fraction` and `baseline_multiple` targets with an estimated upper asymptote, the
+  far-extrapolation bound uses the curve at the estimated upper asymptote, so an upper bound can
+  still be slightly narrower than the full profile allows. It is never narrower than before.
 
 ## [0.3.0] — 2026-11-11
 

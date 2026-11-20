@@ -2234,13 +2234,14 @@ def test_alternatives_still_run_at_the_estimate_and_where_the_first_run_is_outsi
 # Five designs, both asymptotes estimated, on which independent attained-likelihood witnesses show
 # the profile deviance is below the chi-square target well beyond the bound a single-start inner
 # fit reports. The witnesses hold (the witness test below). The profile's inner fit now reaches
-# the far-extrapolation cases ``wall-a``, ``wall-c`` and ``wall-d``, whose bound test passes. Two
-# cases remain known misses and are strict xfail, so a fix turns them into XPASS, which fails the
-# suite until the marker is removed:
+# the far-extrapolation cases ``wall-a`` to ``wall-d``, whose bound test passes. ``wall-b`` has a
+# target that moves with the upper asymptote, so no wall start applies; it is reached by the wall
+# witness instead: the wall refit's curve, with the lower asymptote that puts it through the
+# target at ``theta``, is an attained value there (``_wall_witness_llf``). One case remains a
+# known miss and is strict xfail, so a fix turns it into XPASS, which fails the suite until the
+# marker is removed:
 #
 # * ``step`` is a basin narrower than the starting grid, which no start lands in.
-# * ``wall-b`` has a target that moves with the upper asymptote, so the wall start, which applies
-#   to absolute targets, does not cover it.
 #
 # * ``step``: the profile is flat at ``g = -0.1196`` from 10.85 up to the tested level
 #   11.612, where the best curve is a step between 2.078 and 11.612. Witness:
@@ -2471,10 +2472,6 @@ def _expect_inner_fit_miss(reason: str) -> Any:
 
 
 _STEP_MISS = "inner fit misses a step basin narrower than the starting grid"
-_WALL_MISS = (
-    "the target moves with the upper asymptote, which the wall start (absolute targets) "
-    "does not cover"
-)
 
 
 @pytest.mark.parametrize(
@@ -2482,15 +2479,15 @@ _WALL_MISS = (
     [
         pytest.param("step", marks=_expect_inner_fit_miss(_STEP_MISS)),
         pytest.param("wall-a", marks=pytest.mark.slow),
-        pytest.param("wall-b", marks=_expect_inner_fit_miss(_WALL_MISS)),
+        pytest.param("wall-b", marks=pytest.mark.slow),
         pytest.param("wall-c", marks=pytest.mark.slow),
         pytest.param("wall-d", marks=pytest.mark.slow),
     ],
 )
 def test_upper_bound_reaches_the_witnessed_extent_or_the_side_is_open(name: str) -> None:
     """The reported ``hi`` reaches the extent the witnesses prove (``_UnderCoveredCase.bound``), or
-    the upper side is open. ``step`` and ``wall-b`` are known misses (strict xfail: a fix makes
-    them XPASS, and the marker is then to be removed)."""
+    the upper side is open. ``step`` is a known miss (strict xfail: a fix makes it XPASS, and the
+    marker is then to be removed)."""
     result = _under_covered_upper_bound(name)
 
     assert result.hi is None or result.hi >= _UNDER_COVERED[name].bound
@@ -2502,6 +2499,8 @@ def test_upper_bound_reaches_the_witnessed_extent_or_the_side_is_open(name: str)
         ), result.warnings
 
 
+# wall-b is not here: its wall refit pins the lower asymptote at f times the fitted upper
+# asymptote, a lower bound on the constrained wall maximum, not the maximum itself.
 @pytest.mark.parametrize("name", ["wall-a", "wall-c", "wall-d"])
 def test_inner_fit_attains_the_wall_likelihood_at_the_last_witness(name: str) -> None:
     """Oracle: ``_wall_deviance`` is an explicit feasible curve, so its log-likelihood is a lower
@@ -2532,6 +2531,34 @@ def test_inner_fit_attains_the_wall_likelihood_at_the_last_witness(name: str) ->
         2.0 * (llf_hat - ell_p) - chi2_target,
         2.0 * (llf_hat - llf_wall) - chi2_target,
     )
+
+
+def test_inner_fit_for_a_moving_target_is_at_least_the_wall_witness_and_keeps_the_side_open() -> (
+    None
+):
+    """``wall-b`` (``baseline_fraction`` with the upper asymptote estimated): at the last witness
+    the profile log-likelihood is never below the package's own witness, its deviance is below the
+    chi-square target (the upper side stays open), and it falls short of the oracle's attained
+    value (``_wall_deviance``) by less than 0.01."""
+    case = _UNDER_COVERED["wall-b"]
+    x = case.witnesses[-1]
+    fit = _decreasing_fit(case.design)
+    llf_hat = fit.log_likelihood
+    assert llf_hat is not None
+    chi2_target = float(chi2.ppf(case.level, 1))
+    llf_wall = llf_hat - 0.5 * (_wall_deviance("wall-b", x) + chi2_target)
+    witness = iv._wall_witness_llf(x, iv._WallCurve(fit, case.definition), fit, case.definition)
+
+    ell_p = iv._estimated_profile_llf(x, fit=fit, definition=case.definition)
+
+    assert witness is not None
+    assert ell_p is not None
+    assert ell_p >= witness - 1.0e-9
+    assert 2.0 * (llf_hat - ell_p) - chi2_target < 0.0
+    # The wall refit pins the lower asymptote at f times the fitted upper asymptote, which costs
+    # about 0.0084 against the oracle's constrained wall maximum. Pinned so that a regression in
+    # the witness shows up.
+    assert llf_wall - ell_p < 0.01
 
 
 def test_wall_refit_that_raises_leaves_a_warning_and_the_finite_bound_of_the_other_starts(
@@ -2652,3 +2679,174 @@ def test_wall_start_never_lowers_the_estimated_profile_log_likelihood(
     for t, a, b in zip(thetas, with_wall, without, strict=True):
         assert a is not None, t
         assert b is None or a >= b - 1.0e-9, (t, a, b)
+
+
+# --- the wall witness leaves the other paths unchanged ------------------------------------------
+#
+# The lower-bound values below were computed on the code before the wall witness was added.
+
+
+_FIXED_UNIT_RANGE_CASES = [
+    ("d52", Definition.relative(0.5)),
+    ("d101", Definition.absolute(0.5)),
+]
+
+
+@pytest.mark.parametrize(
+    ("design_name", "definition"), _FIXED_UNIT_RANGE_CASES, ids=["d52-relative", "d101-absolute"]
+)
+def test_fixed_unit_range_profile_never_reaches_the_wall_witness_or_the_wall_refit(
+    design_name: str, definition: Definition, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With the asymptotes fixed at 1 and 0 the profile goes through the generalised linear
+    model's likelihood alone: neither the witness nor the wall refit is ever evaluated."""
+    design = replace(_DESIGNS[design_name], upper=1.0, lower=0.0)
+    calls: list[str] = []
+
+    def witness_spy(*args: Any, **kwargs: Any) -> float | None:
+        calls.append("witness")
+        return None
+
+    def outcome_spy(self: Any) -> Any:
+        calls.append("outcome")
+        return None, False
+
+    monkeypatch.setattr(iv, "_wall_witness_llf", witness_spy)
+    monkeypatch.setattr(iv._WallCurve, "_outcome", property(outcome_spy))
+
+    result = threshold(
+        _decreasing_fit(design), definition=definition, interval_method="profile", level=_LEVEL
+    )
+
+    assert result.status is Status.OK
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("design_name", "definition"), _FIXED_UNIT_RANGE_CASES, ids=["d52-relative", "d101-absolute"]
+)
+def test_fixed_unit_range_profile_interval_is_identical_with_the_witness_removed(
+    design_name: str, definition: Definition, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """In one process, the interval on a fixed (1, 0) design equals, exactly, the interval with
+    the witness patched to raise: the witness plays no part there."""
+    design = replace(_DESIGNS[design_name], upper=1.0, lower=0.0)
+    fit = _decreasing_fit(design)
+
+    plain = threshold(fit, definition=definition, interval_method="profile", level=_LEVEL)
+
+    def raising(*args: Any, **kwargs: Any) -> float | None:
+        raise AssertionError("the wall witness was called")
+
+    monkeypatch.setattr(iv, "_wall_witness_llf", raising)
+    patched = threshold(fit, definition=definition, interval_method="profile", level=_LEVEL)
+
+    assert plain.status is Status.OK
+    assert (patched.value, patched.lo, patched.hi) == (plain.value, plain.lo, plain.hi)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    ("name", "lo"),
+    [
+        ("wall-a", 36.922000038829026),
+        ("wall-b", 83.58524238673716),
+        ("wall-c", 60.06500021392489),
+        ("wall-d", 67.40000030091022),
+    ],
+)
+def test_lower_bound_of_the_far_extrapolation_designs_is_unchanged_by_the_witness(
+    name: str, lo: float
+) -> None:
+    """The witness can only raise the profile log-likelihood at a tested level, never lower it,
+    and it adds nothing on the lower side of the estimate. The lower end-points of the four wall
+    designs equal the values computed before the witness existed (relative ``1e-9``)."""
+    result = _under_covered_upper_bound(name)
+
+    assert result.lo == pytest.approx(lo, rel=1.0e-9)
+
+
+def _decreasing_absolute_fit() -> Fit:
+    return _decreasing_fit(_DESIGNS["d52"])
+
+
+@pytest.mark.parametrize("link", _LINKS)
+def test_wall_witness_is_none_where_the_lower_asymptote_it_needs_is_negative(link: str) -> None:
+    """With ``u_w = 0.95`` and ``absolute(0.5)`` the lower asymptote through the target at
+    ``z`` is ``l = u - (u - 0.5) / F(z)``, negative wherever ``F(z) < 0.4737``. At
+    ``z = -3`` (``F`` below 0.05 for each link) it is below ``-8``: the witness contributes
+    nothing, and the lower asymptote is never clipped to 0 to make it feasible."""
+    fit = replace(_decreasing_absolute_fit(), link=link)
+    wall = _wall_stub(17.0, 1.0, 0.95)
+
+    witness = iv._wall_witness_llf(14.0, wall, fit, Definition.absolute(0.5))  # type: ignore[arg-type]
+
+    assert witness is None
+
+
+@pytest.mark.parametrize("link", _LINKS)
+def test_wall_witness_is_the_log_likelihood_of_the_curve_through_the_target(link: str) -> None:
+    """At ``z = 3`` the needed lower asymptote is positive. The witness equals the full binomial
+    log-likelihood at ``(mu_w, s_w, u_w, l)`` with ``l = u_w - (u_w - a) / F(z)`` from the
+    independent link functions of this file, and is finite."""
+    fit = replace(_decreasing_absolute_fit(), link=link)
+    mu_w, s_w, u_w, a = 17.0, 2.0, 0.95, 0.5
+    theta = mu_w + 3.0 * s_w
+    lower = u_w - (u_w - a) / _cdf(3.0, link)
+    assert 0.0 <= lower < u_w
+
+    witness = iv._wall_witness_llf(theta, _wall_stub(mu_w, s_w, u_w), fit, Definition.absolute(a))  # type: ignore[arg-type]
+
+    severity, successes, trials = iv._cells_to_arrays(iv._count_cells(fit))
+    expected = _full_binomial_log_likelihood(
+        severity,
+        successes,
+        trials,
+        mu=mu_w,
+        s=s_w,
+        upper=u_w,
+        lower=lower,
+        scale=fit.axis.scale,
+        link=link,
+    )
+    assert witness is not None
+    assert witness == pytest.approx(expected, rel=1.0e-12)
+
+
+def test_wall_witness_is_none_without_a_wall_refit() -> None:
+    witness = iv._wall_witness_llf(
+        23.0,
+        SimpleNamespace(params=None),  # type: ignore[arg-type]
+        _decreasing_absolute_fit(),
+        Definition.absolute(0.5),
+    )
+
+    assert witness is None
+
+
+def test_estimated_profile_below_the_wall_curve_is_the_same_with_the_witness_removed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """At a ``theta`` where the wall curve needs a negative lower asymptote the witness returns
+    ``None``, and the profile value is then the same with the witness patched out: a lower side
+    is unchanged."""
+    fit = _decreasing_fit(_UNDER_COVERED["wall-d"].design)
+    definition = _UNDER_COVERED["wall-d"].definition
+    wall = iv._WallCurve(fit, definition)
+    assert wall.params is not None
+    mu_w, s_w, _ = wall.params
+    theta = mu_w - 5.0 * s_w
+    returned: list[float | None] = []
+    original = iv._wall_witness_llf
+
+    def spy(*args: Any, **kwargs: Any) -> float | None:
+        returned.append(original(*args, **kwargs))
+        return returned[-1]
+
+    monkeypatch.setattr(iv, "_wall_witness_llf", spy)
+    with_witness = iv._estimated_profile_llf(theta, fit=fit, definition=definition, wall=wall)
+    monkeypatch.setattr(iv, "_wall_witness_llf", lambda *args, **kwargs: None)
+    without = iv._estimated_profile_llf(theta, fit=fit, definition=definition, wall=wall)
+
+    assert returned == [None]
+    assert with_witness == without
