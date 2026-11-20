@@ -8,6 +8,38 @@ minor release may change the public API, and every such change carries a migrati
 ## [Unreleased]
 
 ### Added
+- **Design planning: `robustmargin.design`.** A submodule (not re-exported from the package root,
+  like `report` and `testing`) that sizes a sweep from a pilot fit. `severity_grid` builds a
+  geometric (log axis) or arithmetic (linear axis) grid with an optional zero-severity control.
+  `plan_threshold_width` and `plan_ratio_width` take a binomial `Status.OK` `Fit` (two for a ratio)
+  as the truth, simulate whole experiments at a candidate design, refit the pilot's specification
+  (link, and the fixed or estimated asymptotes) and call the real `threshold` / `ratio_interval`,
+  returning a `WidthPlan` with one width per replicate.
+  - Clustered and paired designs (`n_clusters`, `icc`) use a Gaussian copula with a latent
+    threshold, so each level's marginal success rate is the pilot curve for every `icc`. `icc` is
+    the latent correlation, not the correlation of the binary outcomes (a latent 0.3 is about 0.19
+    at a success rate of 0.5 and 0.10 at 0.95); the docstring gives the conversion. In a paired
+    ratio the cross-arm latent correlation equals `icc`.
+  - Width is `log(hi / lo)` (log-axis thresholds and all ratios) or `hi - lo` (linear-axis
+    thresholds). A replicate with no finite width is `None` with a reason label in
+    `WidthPlan.outcomes`, and counts as an infinite width in `quantile`; `share_at_most` gives the
+    share of replicates at or under a width with its binomial plug-in standard error, which is 0
+    at a share of 0 or 1.
+  - Outcome labels are `"OK"`, a non-`OK` `Status` value, a non-`NONE` `Censoring` value, a
+    non-`BOUNDED` `IntervalShape` value, `"BOTH_SIDES_OPEN"` (a threshold with no finite end on
+    either side) and `"LOWER_AT_ZERO"` (a bounded ratio whose lower end is not positive).
+    `WidthPlan` validates every field on construction.
+  - `n_resamples` sets the bootstrap resample count for a bootstrap interval or ratio method (it is
+    an error for any other) and is recorded on the `WidthPlan`. Bootstrap intervals draw their seed
+    from the replicate's own stream, so a bootstrap design is reproducible for any `workers`.
+  - Replicate streams are spawned from `numpy.random.SeedSequence(seed)`, so the result is identical
+    for any `workers`; `workers > 1` uses `concurrent.futures.ProcessPoolExecutor`, which under the
+    `spawn` start method needs the calling script to guard its entry point with
+    `if __name__ == "__main__":`.
+  - Gaussian and isotonic pilot fits raise `ValueError`.
+  - `report.to_dict` / `report.from_dict` read and write a `WidthPlan` as its own document
+    (`"type": "WidthPlan"`, `plan_schema_version` `"1"`). The score-card schema stays `"3"`. A
+    `WidthPlan` inside a `Scorecard`'s `results` is rejected with `ValueError`.
 - **Isotonic fits: `fit_dose_response(obs, model="isotonic")`.** A monotone, parameter-free fit to
   counts or to a continuous response. `link`, `upper` and `lower` must be omitted (`ValueError`
   if given). The fit is the weighted least-squares monotone fit to the cell rates (weights

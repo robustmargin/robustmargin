@@ -553,6 +553,63 @@ two disagree by more than a stated tolerance. A ratio of clustered thresholds on
 clusters (`dependence="independent"`) uses a Student-t quantile with Welch-Satterthwaite degrees of
 freedom.
 
+### Planning a design
+
+Before running a sweep, `robustmargin.design` estimates how wide the interval will be. Give it a
+pilot `Fit` (say, from a coarse sweep) and a candidate design: it treats the pilot's point
+estimates as the truth, simulates whole experiments at that design, refits the same model on each,
+and calls the real `threshold` with your interval method. `severity_grid` builds the levels. Each
+replicate gets its own random stream from `seed`, so the result is the same for any `workers`. With
+`n_clusters` and `icc` the trials come in clusters, with the pilot curve as every level's marginal
+success rate; `icc` is the latent correlation of the underlying normal variables, smaller on the
+binary outcomes (a latent 0.3 is about 0.19 at a success rate of 0.5). `plan_ratio_width` does the
+same for a ratio, independent or paired. A bootstrap interval method takes `n_resamples`, and costs
+about 13 s per replicate at the default 999 resamples.
+
+```python
+import numpy as np
+from scipy.stats import norm
+
+from robustmargin import Axis, Definition, Observations, fit_dose_response
+from robustmargin.design import plan_threshold_width, severity_grid
+
+axis = Axis(name="severity", unit="unit", scale="log")
+pilot_levels = severity_grid(axis, lowest=0.1, highest=12.8, n_levels=8, control=False)
+rate = 1.0 - norm.cdf(np.log(pilot_levels) / 0.5)
+pilot = fit_dose_response(
+    Observations.from_counts(
+        axis,
+        severity=pilot_levels,
+        successes=[round(100 * p) for p in rate],
+        trials=[100] * len(pilot_levels),
+        outcome="success",
+        direction="decreasing",
+    ),
+    model="binomial",
+    link="probit",
+    upper=1.0,
+    lower=0.0,
+)
+
+widths = plan_threshold_width(
+    pilot,
+    severity=severity_grid(axis, lowest=0.25, highest=4.0, n_levels=5, control=False),
+    trials_per_level=100,
+    definition=Definition.absolute(0.5),
+    interval_method="delta",
+    level=0.95,
+    n_replicates=20,
+    seed=1,
+)
+share, se = widths.share_at_most(1.0)  # share of experiments with log(hi / lo) <= 1
+print(widths.quantile(0.5), share, se, widths.outcome_counts())
+```
+
+A replicate with no finite width (a censored threshold, a failed fit) is counted as an infinite
+width and tallied by reason in `widths.outcome_counts()`, never dropped. The reasons are `"OK"`, a
+`Status`, `Censoring` or `IntervalShape` value, `"BOTH_SIDES_OPEN"` and `"LOWER_AT_ZERO"`. A `WidthPlan` serialises with
+`robustmargin.report.to_dict` as its own document, separate from the score-card schema.
+
 ## Grid break-point rule
 
 `grid_break_point` finds the smallest tested severity at which observed performance falls
